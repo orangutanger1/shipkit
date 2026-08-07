@@ -518,7 +518,7 @@ export async function run({ args, flags }) {
 	}
 
 	// ---- 4. MCP ------------------------------------------------------------
-	if (flags['no-mcp'] || flags.mcp === false) {
+	if (flags['no-mcp']) {
 		step('mcp');
 		note('skipped (--no-mcp)');
 	} else {

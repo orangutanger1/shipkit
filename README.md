@@ -108,6 +108,13 @@ someone had to remember:
 - **`ship rc audit`** fails on the four things that ship a dead paywall: no
   current offering, a current offering with zero packages, a RevenueCat bundle id
   that disagrees with the build, a missing entitlement.
+- **`ship preflight`** asks App Store Connect what screenshots are actually
+  attached to the primary locale, and fails when there is no iPhone set. A
+  version with zero iPhone screenshots is bounced before a human sees it, and
+  `asc validate` does not always say so.
+- **`ship shots validate`** measures every PNG/JPEG header against the live
+  `asc screenshots sizes` matrix and, when a capture fits a *different* display
+  type, names the directory it belongs in — most rejections here are a `mv`.
 
 ## Research → listing → ads
 
@@ -203,4 +210,6 @@ skills/shipping-ios/      the skill agents load before touching a release
 templates/                `ship new` scaffold
 ci/                       GitHub Actions workflows
 schema/                   JSON Schema for ship.config.json
+.oxlintrc.json            static checks — `npx oxlint src bin` must report zero errors
+test/                     `node --test test/` — no deps, no network, no fixtures on disk
 ```

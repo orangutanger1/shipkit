@@ -7,5 +7,10 @@
 	"bin": { "ship": "./bin/ship" },
 	"engines": { "node": ">=20" },
 	"files": ["bin", "src", "mcp", "skills", "templates", "ci"],
+	"scripts": {
+		"test": "node --test \"test/**/*.test.mjs\"",
+		"lint": "npx --yes oxlint@latest src bin",
+		"check": "npm run lint && npm test"
+	},
 	"dependencies": {}
 }
