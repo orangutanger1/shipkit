@@ -1,0 +1,94 @@
+# Gated App Store release. Copy to <repo>/.github/workflows/release.yml.
+#
+# Runs on ubuntu: every step is either `asc` (pure HTTP against App Store Connect)
+# or EAS cloud build. No macOS runner minutes are burned, because nothing here
+# needs Xcode.
+#
+# Prerequisite: shipkit must be reachable from the runner. Set the repository
+# variable SHIPKIT_REPO to its clone URL (`gh variable set SHIPKIT_REPO --body
+# https://github.com/<you>/shipkit`) — there is no public default.
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Marketing version (blank = read from app.json)
+        required: false
+      skip_build:
+        description: Reuse the latest existing build instead of building
+        type: boolean
+        default: false
+      dry_run:
+        description: Plan every mutation, apply none
+        type: boolean
+        default: true
+
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+      REVENUECAT_V2_KEY: ${{ secrets.REVENUECAT_V2_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install asc
+        run: |
+          curl -fsSL https://asccli.sh/install | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install shipkit
+        run: |
+          test -n "${{ vars.SHIPKIT_REPO }}" || { echo "::error::repository variable SHIPKIT_REPO is unset"; exit 1; }
+          git clone --depth 1 "${{ vars.SHIPKIT_REPO }}" "$RUNNER_TEMP/shipkit"
+          echo "$RUNNER_TEMP/shipkit/bin" >> "$GITHUB_PATH"
+
+      - name: Authenticate App Store Connect
+        run: |
+          # ASC_* env credentials are picked up directly; this only proves they work.
+          asc auth status --validate --output json
+
+      - name: Doctor
+        run: ship doctor --json
+
+      - name: Preflight
+        run: ship preflight ${{ inputs.version && format('--version {0}', inputs.version) || '' }} --json
+
+      - name: Apply store metadata
+        run: |
+          ship meta apply \
+            ${{ inputs.version && format('--version {0}', inputs.version) || '' }} \
+            ${{ inputs.dry_run && '--dry-run' || '' }}
+
+      - name: Build
+        if: ${{ !inputs.skip_build }}
+        run: ship build ${{ inputs.dry_run && '--dry-run' || '' }}
+
+      - name: Submit for review
+        run: ship submit ${{ inputs.dry_run && '--dry-run' || '' }}
+
+      - name: Status
+        if: always()
+        run: ship status
+
+      - name: Upload apply reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: asc-reports
+          path: .asc/reports/
+          if-no-files-found: ignore

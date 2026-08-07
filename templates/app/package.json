@@ -1,0 +1,29 @@
+{
+	"name": "__SLUG__",
+	"version": "1.0.0",
+	"private": true,
+	"main": "expo-router/entry",
+	"scripts": {
+		"start": "APP_VARIANT=development expo start",
+		"ios": "APP_VARIANT=development expo start --ios",
+		"web": "expo start --web"
+	},
+	"dependencies": {
+		"expo": "~57.0.9",
+		"expo-constants": "~57.0.8",
+		"expo-dev-client": "~57.0.10",
+		"expo-linking": "~57.0.4",
+		"expo-router": "~57.0.9",
+		"expo-status-bar": "~57.0.1",
+		"react": "19.2.3",
+		"react-native": "0.86.2",
+		"react-native-purchases": "^10.6.0",
+		"react-native-purchases-ui": "^10.6.0",
+		"react-native-safe-area-context": "~5.7.0",
+		"react-native-screens": "~4.26.0"
+	},
+	"devDependencies": {
+		"@types/react": "~19.2.2",
+		"typescript": "~6.0.3"
+	}
+}

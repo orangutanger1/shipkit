@@ -1,0 +1,131 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://github.com/mayfield/shipkit/schema/ship.config.schema.json",
+	"title": "ship.config.json",
+	"description": "Per-app identity manifest for the shipkit pipeline. One file per repo, at the repo root. Every ship command resolves paths and IDs through here; nothing else may hardcode an app.",
+	"type": "object",
+	"required": ["name", "bundleId"],
+	"additionalProperties": false,
+	"properties": {
+		"$schema": { "type": "string" },
+		"name": {
+			"type": "string",
+			"description": "Human-facing app name. Used in output only; the App Store name lives in the staged listing."
+		},
+		"bundleId": {
+			"type": "string",
+			"pattern": "^[A-Za-z0-9.-]+$",
+			"description": "Production iOS bundle identifier. Must match the binary EAS builds and the app RevenueCat is configured against."
+		},
+		"version": {
+			"type": "string",
+			"description": "Marketing version override. Omit to read expo.version from app.json, which is the usual case."
+		},
+		"appDir": {
+			"type": "string",
+			"default": ".",
+			"description": "Directory containing app.json / eas.json / package.json, relative to the repo root. Repos that nest the Expo app set this (e.g. \"mobile\")."
+		},
+		"asc": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"appId": {
+					"type": ["string", "null"],
+					"description": "App Store Connect numeric app id. Find it with `asc apps list`. Null until the app exists in ASC."
+				},
+				"profile": {
+					"type": ["string", "null"],
+					"description": "Named `asc auth` credential to use. Null uses the default profile."
+				},
+				"primaryLocale": {
+					"type": "string",
+					"default": "en-US",
+					"description": "Source locale. Shared URLs fall back to this locale's staged listing."
+				},
+				"platform": { "type": "string", "enum": ["IOS", "MAC_OS", "TV_OS", "VISION_OS"], "default": "IOS" }
+			}
+		},
+		"eas": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"projectId": { "type": ["string", "null"], "description": "expo.extra.eas.projectId" },
+				"owner": { "type": ["string", "null"], "description": "Expo account owning the project." },
+				"profile": { "type": "string", "default": "production", "description": "eas.json build profile used by `ship build`." },
+				"platform": { "type": "string", "enum": ["ios", "android", "all"], "default": "ios" },
+				"channel": { "type": "string", "default": "production", "description": "EAS Update channel/branch used by `ship ota`." }
+			}
+		},
+		"store": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"dir": {
+					"type": "string",
+					"default": "store",
+					"description": "Root of the listing tree: staged/ (authored) plus app-info/ and version/<v>/ (generated — never hand-edit)."
+				},
+				"locales": {
+					"type": "array",
+					"items": { "type": "string" },
+					"description": "ASC locales this app ships. Informational; the staged directory is the real source."
+				}
+			}
+		},
+		"revenuecat": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"projectId": { "type": ["string", "null"], "description": "RevenueCat v2 project id, e.g. projf0d996da." },
+				"appId": { "type": ["string", "null"], "description": "RevenueCat app id for the App Store app." },
+				"entitlement": {
+					"type": ["string", "null"],
+					"description": "Entitlement lookup_key gating paid features. `ship rc audit` fails when it is missing from the project."
+				},
+				"keyEnv": {
+					"type": ["string", "null"],
+					"description": "Name of the env var holding the public SDK key the app reads at runtime, e.g. EXPO_PUBLIC_RC_IOS_KEY. Name only — never the value."
+				}
+			}
+		},
+		"ads": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"orgId": { "type": ["string", "null"], "description": "Apple Ads org id. Credentials are separate from App Store Connect." },
+				"dir": { "type": "string", "default": "aso/asa", "description": "Where `ship ads plan` writes campaign plans." }
+			}
+		},
+		"aso": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"dir": { "type": "string", "default": "aso", "description": "Keyword research artifacts, one subdirectory per locale." },
+				"markets": {
+					"type": "array",
+					"items": { "type": "string" },
+					"default": ["us"],
+					"description": "Storefronts to research."
+				},
+				"seeds": {
+					"type": "array",
+					"items": { "type": "string" },
+					"description": "Seed terms for autocomplete harvesting. Empty derives them from the primary listing's name and subtitle."
+				}
+			}
+		},
+		"legal": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"privacyUrl": {
+					"type": ["string", "null"],
+					"description": "Published privacy policy. `ship preflight` HEAD-requests it — a dead URL is an automatic review rejection."
+				},
+				"supportUrl": { "type": ["string", "null"] },
+				"marketingUrl": { "type": ["string", "null"] }
+			}
+		}
+	}
+}

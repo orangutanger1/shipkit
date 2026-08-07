@@ -1,0 +1,104 @@
+# Weekly growth loop. Copy to <repo>/.github/workflows/growth.yml.
+#
+# Keyword rankings and ad economics drift whether or not anyone looks. This job
+# looks, on a schedule, and opens an issue only when something actually moved —
+# a report nobody reads is worse than no report.
+name: growth
+
+on:
+  schedule:
+    - cron: "0 13 * * 1" # Mondays 13:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+      REVENUECAT_V2_KEY: ${{ secrets.REVENUECAT_V2_KEY }}
+      ASA_CLIENT_ID: ${{ secrets.ASA_CLIENT_ID }}
+      ASA_TEAM_ID: ${{ secrets.ASA_TEAM_ID }}
+      ASA_KEY_ID: ${{ secrets.ASA_KEY_ID }}
+      ASA_ORG_ID: ${{ secrets.ASA_ORG_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install asc + shipkit
+        run: |
+          curl -fsSL https://asccli.sh/install | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          test -n "${{ vars.SHIPKIT_REPO }}" || { echo "::error::repository variable SHIPKIT_REPO is unset"; exit 1; }
+          git clone --depth 1 "${{ vars.SHIPKIT_REPO }}" "$RUNNER_TEMP/shipkit"
+          echo "$RUNNER_TEMP/shipkit/bin" >> "$GITHUB_PATH"
+
+      - name: Restore Apple Ads key
+        if: ${{ env.ASA_CLIENT_ID != '' }}
+        run: |
+          mkdir -p ~/.asc && chmod 700 ~/.asc
+          printf '%s' "${{ secrets.ASA_PRIVATE_KEY }}" > ~/.asc/asa-private.p8
+          chmod 600 ~/.asc/asa-private.p8
+          echo "ASA_PRIVATE_KEY_PATH=$HOME/.asc/asa-private.p8" >> "$GITHUB_ENV"
+
+      - name: Re-harvest and re-score keywords
+        run: |
+          set -euo pipefail
+          # Sequential on purpose: Apple throttles the autocomplete endpoint hard
+          # and parallel harvesting returns a wall of 403/429 and zero terms.
+          for LOCALE in $(node -p "JSON.parse(require('fs').readFileSync('ship.config.json')).store.locales.join(' ') || 'en-US'"); do
+            ship aso harvest --locale "$LOCALE"
+            ship aso score --locale "$LOCALE"
+          done
+
+      - name: Diff proposed keywords against the live listing
+        run: |
+          {
+            echo "## Keyword drift"
+            echo
+            for LOCALE in $(ls aso 2>/dev/null); do
+              echo "### $LOCALE"
+              echo '```'
+              ship aso suggest --locale "$LOCALE" || echo "(no scored data)"
+              echo '```'
+            done
+            echo "## Monetization"
+            echo '```'
+            ship rc audit || true
+            echo '```'
+            echo "## Ads (last 7 days)"
+            echo '```'
+            ship ads report || true
+            echo '```'
+          } > "$RUNNER_TEMP/report.md"
+          cat "$RUNNER_TEMP/report.md"
+
+      - name: Commit refreshed research
+        run: |
+          git config user.name  "shipkit"
+          git config user.email "shipkit@users.noreply.github.com"
+          git add aso/
+          git diff --cached --quiet || git commit -m "chore(aso): weekly keyword refresh"
+          git diff HEAD~1 --quiet -- aso/ 2>/dev/null || git push
+
+      - name: Open an issue when the recommendation changed
+        run: |
+          # Only bother a human when the proposed keyword field differs from what
+          # is currently staged; otherwise this job is silent.
+          if git diff HEAD~1 --quiet -- aso/ 2>/dev/null; then
+            echo "no drift"; exit 0
+          fi
+          gh issue create \
+            --title "Keyword drift $(date -u +%Y-%m-%d)" \
+            --body-file "$RUNNER_TEMP/report.md" \
+            --label aso
+        env:
+          GH_TOKEN: ${{ github.token }}

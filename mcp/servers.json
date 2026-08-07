@@ -1,0 +1,29 @@
+{
+	"$schema": "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json",
+	"mcpServers": {
+		"revenuecat": {
+			"type": "http",
+			"url": "https://mcp.revenuecat.ai/mcp",
+			"headers": {
+				"Authorization": "!printf 'Bearer %s' \"${REVENUECAT_V2_KEY:-$(cat \"$HOME/.omp/revenuecat.key\" 2>/dev/null)}\""
+			}
+		},
+		"astro": {
+			"type": "http",
+			"url": "${ASTRO_MCP_URL:-http://127.0.0.1:8089/mcp}",
+			"timeout": 20000
+		},
+		"apple-ads": {
+			"type": "stdio",
+			"command": "npx",
+			"args": ["--yes", "apple-search-ads-mcp@latest"],
+			"env": {
+				"ASA_CLIENT_ID": "${ASA_CLIENT_ID:-}",
+				"ASA_TEAM_ID": "${ASA_TEAM_ID:-}",
+				"ASA_KEY_ID": "${ASA_KEY_ID:-}",
+				"ASA_PRIVATE_KEY_PATH": "${ASA_PRIVATE_KEY_PATH:-$HOME/.asc/asa-private.p8}",
+				"ASA_ORG_ID": "${ASA_ORG_ID:-}"
+			}
+		}
+	}
+}

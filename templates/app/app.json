@@ -1,0 +1,31 @@
+{
+	"expo": {
+		"name": "__NAME__",
+		"slug": "__SLUG__",
+		"scheme": "__SCHEME__",
+		"version": "1.0.0",
+		"orientation": "portrait",
+		"userInterfaceStyle": "automatic",
+		"platforms": ["ios"],
+		"ios": {
+			"bundleIdentifier": "__BUNDLE_ID__",
+			"supportsTablet": false,
+			"infoPlist": {
+				"ITSAppUsesNonExemptEncryption": false
+			}
+		},
+		"plugins": ["expo-router"],
+		"runtimeVersion": {
+			"policy": "appVersion"
+		},
+		"experiments": {
+			"typedRoutes": true
+		},
+		"extra": {
+			"router": {},
+			"eas": {
+				"projectId": null
+			}
+		}
+	}
+}

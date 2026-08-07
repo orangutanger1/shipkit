@@ -1,0 +1,119 @@
+# Localized App Store screenshots. Copy to <repo>/.github/workflows/screenshots.yml.
+#
+# This is the ONE job that needs a macOS runner: App Store screenshots must come
+# out of a real iOS simulator, and no Linux host can boot one.
+#
+# Why Maestro and not `fastlane snapshot`:
+#   `snapshot` drives an XCUITest target inside an Xcode project. These apps are
+#   managed Expo — there is no committed Xcode project and no UI test target, so
+#   `snapshot` would require ejecting to a bare workflow first. Maestro drives the
+#   simulator from a YAML flow with no native test target at all, which is the
+#   only option that does not force a workflow change purely to take pictures.
+#
+# Flow files live at <repo>/.maestro/screenshots.yaml and name their captures
+# after the store slot they fill, e.g. `01-hero`, `02-detail`.
+name: screenshots
+
+on:
+  workflow_dispatch:
+    inputs:
+      locales:
+        description: Comma-separated ASC locales to capture
+        default: en-US
+      upload:
+        description: Upload to App Store Connect after capture
+        type: boolean
+        default: false
+
+jobs:
+  capture:
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # The two slots Apple actually requires for a modern iPhone-only listing.
+        device:
+          - { name: iPhone 16 Pro Max, displayType: APP_IPHONE_67 }
+          - { name: iPhone 16 Pro, displayType: APP_IPHONE_61 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install asc + shipkit + maestro
+        run: |
+          curl -fsSL https://asccli.sh/install | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          test -n "${{ vars.SHIPKIT_REPO }}" || { echo "::error::repository variable SHIPKIT_REPO is unset"; exit 1; }
+          git clone --depth 1 "${{ vars.SHIPKIT_REPO }}" "$RUNNER_TEMP/shipkit"
+          echo "$RUNNER_TEMP/shipkit/bin" >> "$GITHUB_PATH"
+          curl -fsSL https://get.maestro.mobile.dev | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+
+      - name: Build simulator app
+        run: |
+          # A simulator build is a .tar.gz containing the .app — no signing, no
+          # provisioning profile, and it installs straight into simctl.
+          npx --yes eas-cli@latest build \
+            --platform ios --profile preview --non-interactive --local \
+            --output "$RUNNER_TEMP/sim.tar.gz"
+        env:
+          EAS_BUILD_PROFILE_PREVIEW_IOS_SIMULATOR: "true"
+
+      - name: Boot simulator and install
+        id: sim
+        run: |
+          set -euo pipefail
+          UDID=$(xcrun simctl create shots "${{ matrix.device.name }}")
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+          mkdir -p "$RUNNER_TEMP/app" && tar -xzf "$RUNNER_TEMP/sim.tar.gz" -C "$RUNNER_TEMP/app"
+          APP=$(find "$RUNNER_TEMP/app" -maxdepth 2 -name '*.app' | head -1)
+          xcrun simctl install "$UDID" "$APP"
+
+      - name: Capture
+        run: |
+          set -euo pipefail
+          BUNDLE=$(node -p "require('./ship.config.json').bundleId")
+          IFS=',' read -ra LOCALES <<< "${{ inputs.locales }}"
+          for LOCALE in "${LOCALES[@]}"; do
+            OUT="store/screenshots/$LOCALE/${{ matrix.device.displayType }}"
+            mkdir -p "$OUT"
+            # Force the app's language so the captures match the listing locale.
+            xcrun simctl spawn "${{ steps.sim.outputs.udid }}" defaults write \
+              -g AppleLanguages -array "${LOCALE%%-*}"
+            maestro --device "${{ steps.sim.outputs.udid }}" test \
+              .maestro/screenshots.yaml \
+              --env "APP_ID=$BUNDLE" --env "LOCALE=$LOCALE" \
+              --format junit --output "$RUNNER_TEMP/maestro-$LOCALE.xml"
+            # Maestro writes captures to the working directory; move them into the
+            # store tree using the slot name baked into each takeScreenshot step.
+            find . -maxdepth 1 -name '*.png' -newer .maestro/screenshots.yaml \
+              -exec mv {} "$OUT/" \;
+          done
+
+      - name: Validate against Apple's required dimensions
+        run: ship shots plan && ship shots validate
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-${{ matrix.device.displayType }}
+          path: store/screenshots/
+
+      - name: Upload to App Store Connect
+        if: ${{ inputs.upload }}
+        run: ship shots upload --display-type ${{ matrix.device.displayType }}
+
+      - name: Tear down simulator
+        if: always()
+        run: xcrun simctl delete "${{ steps.sim.outputs.udid }}" || true

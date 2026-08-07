@@ -1,0 +1,11 @@
+{
+	"name": "shipkit",
+	"version": "1.0.0",
+	"private": true,
+	"description": "One pipeline for shipping iOS apps: research → build → ship → grow",
+	"type": "module",
+	"bin": { "ship": "./bin/ship" },
+	"engines": { "node": ">=20" },
+	"files": ["bin", "src", "mcp", "skills", "templates", "ci"],
+	"dependencies": {}
+}

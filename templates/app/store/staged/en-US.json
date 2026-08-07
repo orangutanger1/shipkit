@@ -1,0 +1,34 @@
+{
+	"locale": "en-US",
+	"name": "",
+	"subtitle": "",
+	"keywords": "",
+	"description": "",
+	"promotionalText": "",
+	"whatsNew": "",
+	"privacyPolicyUrl": "",
+	"supportUrl": "",
+	"marketingUrl": "",
+	"notes": {
+		"limits": {
+			"name": "30 characters. Indexed by search — put your strongest term in it.",
+			"subtitle": "30 characters. Also indexed. Do not repeat words already in the name.",
+			"keywords": "100 characters TOTAL, comma-separated. The single most wasted field on the App Store.",
+			"promotionalText": "170 characters. Not indexed, but editable without a new build.",
+			"description": "4000 characters. Not indexed by search; write it for the human who is already reading.",
+			"whatsNew": "4000 characters. Required on every version after 1.0."
+		},
+		"keywordRules": [
+			"No space after commas. \"a,b,c\" not \"a, b, c\" — every space burns one of your 100 characters.",
+			"Never repeat a word that is already in the name or subtitle. Those are indexed already; repeating them buys nothing and costs slots."
+		],
+		"workflow": [
+			"ship aso harvest   — pull real competitor terms for your markets",
+			"ship aso score     — rank them by traffic vs difficulty",
+			"ship aso pack      — fill these 100 characters optimally",
+			"ship meta lint     — offline validation before anything touches ASC",
+			"ship meta apply    — push this listing to App Store Connect"
+		],
+		"delete": "This notes block is ignored by every ship command. Delete it once the listing is written."
+	}
+}
