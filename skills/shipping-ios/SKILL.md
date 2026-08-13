@@ -1,6 +1,6 @@
 ---
 name: shipping-ios
-description: Ship an iOS app with the `ship` CLI — App Store Connect metadata, ASO keyword research, EAS builds, OTA updates, RevenueCat monetization, and Apple Search Ads. Use when the task involves releasing, updating, or growing an iOS app in /home/myen/tour, /home/myen/idea6, /home/myen/noor, or any repo containing ship.config.json.
+description: Ship an iOS app with the `ship` CLI — App Store Connect metadata, ASO keyword research, EAS builds, OTA updates, RevenueCat monetization, and Apple Search Ads. Use when the task involves releasing, updating, or growing an iOS app in /home/myen/tour, /home/myen/glovebox, /home/myen/noor, or any repo containing ship.config.json.
 ---
 
 # Shipping iOS apps
