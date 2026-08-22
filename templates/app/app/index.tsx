@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
+import { t } from '../src/i18n';
 import { presentPaywall, restore } from '../src/purchases';
 import { useIsPro } from '../src/purchases/useIsPro';
 
@@ -24,9 +25,9 @@ export default function Home() {
 	return (
 		<SafeAreaView style={styles.screen}>
 			<View style={styles.body}>
-				<Text style={styles.title}>__NAME__</Text>
+				<Text style={styles.title}>{t('app.name')}</Text>
 				<Text style={styles.subtitle}>
-					{isPro ? 'Pro unlocked. Everything is yours.' : 'The free tier. There is more.'}
+					{isPro ? t('home.subtitle.pro') : t('home.subtitle.free')}
 				</Text>
 
 				{isPro ? null : (
@@ -35,12 +36,12 @@ export default function Home() {
 						style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}
 						onPress={guard(presentPaywall)}
 					>
-						<Text style={styles.buttonLabel}>{busy ? 'One moment…' : 'Upgrade to Pro'}</Text>
+						<Text style={styles.buttonLabel}>{busy ? t('home.action.busy') : t('home.action.upgrade')}</Text>
 					</Pressable>
 				)}
 
 				<Pressable accessibilityRole="button" onPress={guard(restore)} style={styles.link}>
-					<Text style={styles.linkLabel}>Restore purchases</Text>
+					<Text style={styles.linkLabel}>{t('home.action.restore')}</Text>
 				</Pressable>
 			</View>
 		</SafeAreaView>

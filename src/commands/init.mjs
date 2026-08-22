@@ -474,8 +474,11 @@ export async function run({ args, flags }) {
 		},
 		store: { dir: 'store', locales },
 		revenuecat: { projectId: null, appId: null, entitlement: entitlement.value, keyEnv: keyEnv.value },
-		ads: { orgId: null, dir: 'aso/asa' },
-		aso: { dir: 'aso', markets: ['us'], seeds: [] },
+		ads: { orgId: null, dir: 'aso/asa', targetCpi: null, subPrice: null },
+		aso: { dir: 'aso', seeds: [], seedsByLocale: {}, minVolume: 0 },
+		loc: { sourceLocale: null, glossary: 'store/glossary.json' },
+		analytics: { dir: '.asc/analytics' },
+		price: { dir: 'store/pricing', basePriceUsd: null },
 		legal,
 	};
 

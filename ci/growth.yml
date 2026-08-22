@@ -1,8 +1,14 @@
 # Weekly growth loop. Copy to <repo>/.github/workflows/growth.yml.
 #
 # Keyword rankings and ad economics drift whether or not anyone looks. This job
-# looks, on a schedule, and opens an issue only when something actually moved —
-# a report nobody reads is worse than no report.
+# looks, on a schedule, and speaks up only when something actually moved — a
+# report nobody reads is worse than no report.
+#
+# "Only when something moved" is load-bearing and used to be broken: the previous
+# version derived drift from `git diff HEAD~1`, which does not exist in a depth-1
+# checkout, so the error was swallowed and the job pushed and filed an issue every
+# single week. Drift is now a step output produced by the step that does the
+# committing — the only place that actually knows.
 name: growth
 
 on:
@@ -13,6 +19,12 @@ on:
 permissions:
   contents: write
   issues: write
+  pull-requests: write
+
+concurrency:
+  # A manual run racing the cron would collide on push.
+  group: growth-${{ github.repository }}
+  cancel-in-progress: false
 
 jobs:
   research:
@@ -29,42 +41,52 @@ jobs:
       ASA_ORG_ID: ${{ secrets.ASA_ORG_ID }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
 
-      - name: Install asc + shipkit
-        run: |
-          curl -fsSL https://asccli.sh/install | bash
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          test -n "${{ vars.SHIPKIT_REPO }}" || { echo "::error::repository variable SHIPKIT_REPO is unset"; exit 1; }
-          git clone --depth 1 "${{ vars.SHIPKIT_REPO }}" "$RUNNER_TEMP/shipkit"
-          echo "$RUNNER_TEMP/shipkit/bin" >> "$GITHUB_PATH"
+      - uses: orangutanger1/shipkit/.github/actions/setup@main
+        with:
+          asc-version: ${{ vars.ASC_VERSION }}
 
       - name: Restore Apple Ads key
         if: ${{ env.ASA_CLIENT_ID != '' }}
+        env:
+          ASA_PRIVATE_KEY: ${{ secrets.ASA_PRIVATE_KEY }}
         run: |
+          set -euo pipefail
           mkdir -p ~/.asc && chmod 700 ~/.asc
-          printf '%s' "${{ secrets.ASA_PRIVATE_KEY }}" > ~/.asc/asa-private.p8
+          printf '%s' "$ASA_PRIVATE_KEY" > ~/.asc/asa-private.p8
           chmod 600 ~/.asc/asa-private.p8
           echo "ASA_PRIVATE_KEY_PATH=$HOME/.asc/asa-private.p8" >> "$GITHUB_ENV"
 
       - name: Re-harvest and re-score keywords
         run: |
-          set -euo pipefail
+          set -uo pipefail
           # Sequential on purpose: Apple throttles the autocomplete endpoint hard
           # and parallel harvesting returns a wall of 403/429 and zero terms.
-          for LOCALE in $(node -p "JSON.parse(require('fs').readFileSync('ship.config.json')).store.locales.join(' ') || 'en-US'"); do
-            ship aso harvest --locale "$LOCALE"
-            ship aso score --locale "$LOCALE"
+          # One locale failing must not cost the other locales their refresh, so
+          # `set -e` is deliberately off here and failures are counted instead.
+          FAILED=0 TOTAL=0
+          LOCALES=$(node -p "JSON.parse(require('fs').readFileSync('ship.config.json')).store?.locales?.join(' ') || 'en-US'")
+          for LOCALE in $LOCALES; do
+            TOTAL=$((TOTAL + 1))
+            if ship aso harvest --locale "$LOCALE" && ship aso score --locale "$LOCALE"; then
+              echo "refreshed $LOCALE"
+            else
+              echo "::warning::harvest failed for $LOCALE — keeping last week's scores"
+              FAILED=$((FAILED + 1))
+            fi
           done
+          # Every locale failing is not throttling, it is broken credentials.
+          if [ "$FAILED" = "$TOTAL" ]; then echo "::error::all $TOTAL locales failed"; exit 1; fi
 
-      - name: Diff proposed keywords against the live listing
+      - name: Build the report
         run: |
+          set -uo pipefail
           {
             echo "## Keyword drift"
             echo
-            for LOCALE in $(ls aso 2>/dev/null); do
+            for DIR in aso/*/; do
+              [ -d "$DIR" ] || continue
+              LOCALE=$(basename "$DIR")
               echo "### $LOCALE"
               echo '```'
               ship aso suggest --locale "$LOCALE" || echo "(no scored data)"
@@ -72,33 +94,48 @@ jobs:
             done
             echo "## Monetization"
             echo '```'
-            ship rc audit || true
+            ship rc audit || echo "(rc audit failed — see the job log)"
             echo '```'
             echo "## Ads (last 7 days)"
             echo '```'
-            ship ads report || true
+            ship ads report || echo "(ads report failed — see the job log)"
             echo '```'
           } > "$RUNNER_TEMP/report.md"
-          cat "$RUNNER_TEMP/report.md"
+          cat "$RUNNER_TEMP/report.md" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Commit refreshed research
+        id: commit
         run: |
+          set -euo pipefail
           git config user.name  "shipkit"
           git config user.email "shipkit@users.noreply.github.com"
           git add aso/
-          git diff --cached --quiet || git commit -m "chore(aso): weekly keyword refresh"
-          git diff HEAD~1 --quiet -- aso/ 2>/dev/null || git push
-
-      - name: Open an issue when the recommendation changed
-        run: |
-          # Only bother a human when the proposed keyword field differs from what
-          # is currently staged; otherwise this job is silent.
-          if git diff HEAD~1 --quiet -- aso/ 2>/dev/null; then
-            echo "no drift"; exit 0
+          # The staged diff is the only trustworthy drift signal: it is computed
+          # before the commit exists and needs no history beyond the checkout.
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "no drift"
+            exit 0
           fi
-          gh issue create \
-            --title "Keyword drift $(date -u +%Y-%m-%d)" \
-            --body-file "$RUNNER_TEMP/report.md" \
-            --label aso
+          git commit -m "chore(aso): weekly keyword refresh"
+          git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update the drift issue
+        if: steps.commit.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # One issue per open drift, reopened and appended rather than a fresh
+          # issue every week — weekly duplicates are how a report gets muted.
+          TITLE="Keyword drift"
+          EXISTING=$(gh issue list --label aso --state open --search "$TITLE in:title" \
+            --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body-file "$RUNNER_TEMP/report.md"
+            echo "commented on #$EXISTING"
+          else
+            gh issue create --title "$TITLE" --body-file "$RUNNER_TEMP/report.md" --label aso
+          fi

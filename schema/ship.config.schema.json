@@ -4,10 +4,15 @@
 	"title": "ship.config.json",
 	"description": "Per-app identity manifest for the shipkit pipeline. One file per repo, at the repo root. Every ship command resolves paths and IDs through here; nothing else may hardcode an app.",
 	"type": "object",
-	"required": ["name", "bundleId"],
+	"required": [
+		"name",
+		"bundleId"
+	],
 	"additionalProperties": false,
 	"properties": {
-		"$schema": { "type": "string" },
+		"$schema": {
+			"type": "string"
+		},
 		"name": {
 			"type": "string",
 			"description": "Human-facing app name. Used in output only; the App Store name lives in the staged listing."
@@ -31,11 +36,17 @@
 			"additionalProperties": false,
 			"properties": {
 				"appId": {
-					"type": ["string", "null"],
+					"type": [
+						"string",
+						"null"
+					],
 					"description": "App Store Connect numeric app id. Find it with `asc apps list`. Null until the app exists in ASC."
 				},
 				"profile": {
-					"type": ["string", "null"],
+					"type": [
+						"string",
+						"null"
+					],
 					"description": "Named `asc auth` credential to use. Null uses the default profile."
 				},
 				"primaryLocale": {
@@ -43,18 +54,55 @@
 					"default": "en-US",
 					"description": "Source locale. Shared URLs fall back to this locale's staged listing."
 				},
-				"platform": { "type": "string", "enum": ["IOS", "MAC_OS", "TV_OS", "VISION_OS"], "default": "IOS" }
+				"platform": {
+					"type": "string",
+					"enum": [
+						"IOS",
+						"MAC_OS",
+						"TV_OS",
+						"VISION_OS"
+					],
+					"default": "IOS"
+				}
 			}
 		},
 		"eas": {
 			"type": "object",
 			"additionalProperties": false,
 			"properties": {
-				"projectId": { "type": ["string", "null"], "description": "expo.extra.eas.projectId" },
-				"owner": { "type": ["string", "null"], "description": "Expo account owning the project." },
-				"profile": { "type": "string", "default": "production", "description": "eas.json build profile used by `ship build`." },
-				"platform": { "type": "string", "enum": ["ios", "android", "all"], "default": "ios" },
-				"channel": { "type": "string", "default": "production", "description": "EAS Update channel/branch used by `ship ota`." }
+				"projectId": {
+					"type": [
+						"string",
+						"null"
+					],
+					"description": "expo.extra.eas.projectId"
+				},
+				"owner": {
+					"type": [
+						"string",
+						"null"
+					],
+					"description": "Expo account owning the project."
+				},
+				"profile": {
+					"type": "string",
+					"default": "production",
+					"description": "eas.json build profile used by `ship build`."
+				},
+				"platform": {
+					"type": "string",
+					"enum": [
+						"ios",
+						"android",
+						"all"
+					],
+					"default": "ios"
+				},
+				"channel": {
+					"type": "string",
+					"default": "production",
+					"description": "EAS Update channel/branch used by `ship ota`."
+				}
 			}
 		},
 		"store": {
@@ -68,7 +116,9 @@
 				},
 				"locales": {
 					"type": "array",
-					"items": { "type": "string" },
+					"items": {
+						"type": "string"
+					},
 					"description": "ASC locales this app ships. Informational; the staged directory is the real source."
 				}
 			}
@@ -77,15 +127,40 @@
 			"type": "object",
 			"additionalProperties": false,
 			"properties": {
-				"projectId": { "type": ["string", "null"], "description": "RevenueCat v2 project id, e.g. projf0d996da." },
-				"appId": { "type": ["string", "null"], "description": "RevenueCat app id for the App Store app." },
+				"projectId": {
+					"type": [
+						"string",
+						"null"
+					],
+					"description": "RevenueCat v2 project id, e.g. projf0d996da."
+				},
+				"appId": {
+					"type": [
+						"string",
+						"null"
+					],
+					"description": "RevenueCat app id for the App Store app."
+				},
 				"entitlement": {
-					"type": ["string", "null"],
+					"type": [
+						"string",
+						"null"
+					],
 					"description": "Entitlement lookup_key gating paid features. `ship rc audit` fails when it is missing from the project."
 				},
 				"keyEnv": {
-					"type": ["string", "null"],
+					"type": [
+						"string",
+						"null"
+					],
 					"description": "Name of the env var holding the public SDK key the app reads at runtime, e.g. EXPO_PUBLIC_RC_IOS_KEY. Name only — never the value."
+				},
+				"key": {
+					"type": [
+						"string",
+						"null"
+					],
+					"description": "Name of the secret-key file under ~/.omp/revenuecat/ (stem, e.g. \"car\"), or an absolute path. Omit it: `ship rc` tries the ambient ~/.omp/revenuecat.key first and, only if that key cannot see projectId, picks the key in ~/.omp/revenuecat/ that can. Name or path only — never the value."
 				}
 			}
 		},
@@ -93,25 +168,111 @@
 			"type": "object",
 			"additionalProperties": false,
 			"properties": {
-				"orgId": { "type": ["string", "null"], "description": "Apple Ads org id. Credentials are separate from App Store Connect." },
-				"dir": { "type": "string", "default": "aso/asa", "description": "Where `ship ads plan` writes campaign plans." }
+				"orgId": {
+					"type": [
+						"string",
+						"null"
+					],
+					"description": "Apple Ads org id. Credentials are separate from App Store Connect."
+				},
+				"dir": {
+					"type": "string",
+					"default": "aso/asa",
+					"description": "Where `ship ads plan` writes campaign plans."
+				},
+				"targetCpi": {
+					"type": [
+						"number",
+						"null"
+					],
+					"description": "Target cost per install in USD. `ship ads mine` negates any search term whose CPI exceeds 2x this."
+				},
+				"subPrice": {
+					"type": [
+						"number",
+						"null"
+					],
+					"description": "Monthly subscription price in USD, the denominator of the payback rule."
+				}
 			}
 		},
 		"aso": {
 			"type": "object",
 			"additionalProperties": false,
 			"properties": {
-				"dir": { "type": "string", "default": "aso", "description": "Keyword research artifacts, one subdirectory per locale." },
-				"markets": {
-					"type": "array",
-					"items": { "type": "string" },
-					"default": ["us"],
-					"description": "Storefronts to research."
+				"dir": {
+					"type": "string",
+					"default": "aso",
+					"description": "Keyword research artifacts, one subdirectory per locale."
 				},
 				"seeds": {
 					"type": "array",
-					"items": { "type": "string" },
-					"description": "Seed terms for autocomplete harvesting. Empty derives them from the primary listing's name and subtitle."
+					"items": {
+						"type": "string"
+					},
+					"description": "Fallback seed terms for autocomplete harvesting, in the source language. Empty derives them from the primary listing's name and subtitle."
+				},
+				"seedsByLocale": {
+					"type": "object",
+					"additionalProperties": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"description": "Per-locale seeds in that market's own language, written by `ship loc seed`. Harvesting a non-source storefront with source-language seeds returns translations of your own copy, not what locals type."
+				},
+				"minVolume": {
+					"type": "number",
+					"default": 0,
+					"description": "Drop scored terms whose demand estimate falls below this. Low competition with no demand is the default failure mode of supply-side scoring."
+				}
+			}
+		},
+		"loc": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"sourceLocale": {
+					"type": [
+						"string",
+						"null"
+					],
+					"description": "Locale the copy is authored in. Null means asc.primaryLocale."
+				},
+				"glossary": {
+					"type": "string",
+					"default": "store/glossary.json",
+					"description": "Brand terms, feature names and never-translate strings shared by store copy and in-app strings."
+				}
+			}
+		},
+		"analytics": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"dir": {
+					"type": "string",
+					"default": ".asc/analytics",
+					"description": "Where `ship analytics pull` caches App Store impression/conversion reports."
+				}
+			}
+		},
+		"price": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"dir": {
+					"type": "string",
+					"default": "store/pricing",
+					"description": "Territory price plans."
+				},
+				"basePriceUsd": {
+					"type": [
+						"number",
+						"null"
+					],
+					"description": "US price the territory plan is derived from."
 				}
 			}
 		},
@@ -120,11 +281,31 @@
 			"additionalProperties": false,
 			"properties": {
 				"privacyUrl": {
-					"type": ["string", "null"],
+					"type": [
+						"string",
+						"null"
+					],
 					"description": "Published privacy policy. `ship preflight` HEAD-requests it — a dead URL is an automatic review rejection."
 				},
-				"supportUrl": { "type": ["string", "null"] },
-				"marketingUrl": { "type": ["string", "null"] }
+				"supportUrl": {
+					"type": [
+						"string",
+						"null"
+					]
+				},
+				"marketingUrl": {
+					"type": [
+						"string",
+						"null"
+					]
+				},
+				"euTrader": {
+					"type": [
+						"boolean",
+						"null"
+					],
+					"description": "EU trader status declared in App Store Connect. Undeclared apps are removed from EU storefronts, so `ship preflight` fails when this is null and any EU locale ships."
+				}
 			}
 		}
 	}

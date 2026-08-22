@@ -21,6 +21,18 @@ import {
 	readStaged,
 	stage as expand,
 } from '../lib/locales.mjs';
+import {
+	cppDir,
+	cppRoot,
+	generatedDir,
+	lintPage,
+	readPage,
+	readPages,
+	screenshotDir,
+	slugify,
+	stagePage,
+	writeMeta,
+} from '../lib/cpp.mjs';
 
 export const help = `
 ${c.bold('ship meta')} ${c.dim('— App Store listing metadata')}
@@ -33,18 +45,23 @@ ${c.dim('usage:')} ship meta [subcommand] [flags]
   ${c.cyan('apply')}      lint → stage → state gate → dry-run → push to App Store Connect
   ${c.cyan('migrate')}    convert legacy .strings localizations into staged/<locale>.json
   ${c.cyan('keywords')}   inspect or rewrite the 100-char keyword field for one locale
+  ${c.cyan('cpp')}        custom product pages: list · stage · apply · link
 
 ${c.bold('Flags')}
   ${c.cyan('--version V')}     marketing version (default: ship.config.json / app.json)
   ${c.cyan('--force')}         proceed despite lint failures, a bad app store state, or an existing file
-  ${c.cyan('--no-stage')}      ${c.dim('apply')} push the tree as-is instead of regenerating it
+  ${c.cyan('--no-stage')}      ${c.dim('apply, cpp apply')} push the tree as-is instead of regenerating it
   ${c.cyan('--from D')}        ${c.dim('migrate')} directory of version-level .strings files
   ${c.cyan('--app-info D')}    ${c.dim('migrate')} directory of app-info .strings files
   ${c.cyan('--set "a,b,c"')}   ${c.dim('keywords')} replace the keyword field for the locale
-  ${c.cyan('--json')}          machine-readable output ${c.dim('(lint, keywords)')}
+  ${c.cyan('--ad-group N')}    ${c.dim('cpp link')} ad group this page serves ${c.dim('(ship ads sync reads it)')}
+  ${c.cyan('--screenshots')}   ${c.dim('cpp apply')} also upload each locale's screenshotDir
+  ${c.cyan('--local')}         ${c.dim('cpp list')} skip the live App Store Connect lookup
+  ${c.cyan('--json')}          machine-readable output ${c.dim('(lint, keywords, cpp)')}
   ${c.cyan('--dry-run')}       show what would change, write nothing
 
 ${c.dim('Source of truth: store/staged/<locale>.json — app-info/ and version/ are generated.')}
+${c.dim('Custom product pages: store/cpp/<slug>/<locale>.json — generated/ is generated.')}
 ${c.dim('Keyword research lives in `ship aso`; this command only enforces the fields.')}
 `;
 
@@ -268,6 +285,38 @@ function rows(payload) {
 const stateOf = (v) => v?.appStoreState ?? v?.state ?? v?.attributes?.appStoreState ?? null;
 
 /**
+ * Shared version-state gate. `apply` and `cpp apply` write against the same
+ * version record, so a state that rejects one rejects the other — and ASC
+ * rejects server-side, usually after a few locales have already landed.
+ */
+async function requireApplyableState(cfg, appId, version, flags) {
+	const live = rows(
+		await asc(['versions', 'list', '--app', appId, '--version', version, '--platform', cfg.asc.platform], {
+			fallback: [],
+		}),
+	);
+	const state = stateOf(live[0]);
+	if (!state) {
+		if (!flags.force)
+			throw new ShipError(`no ${cfg.asc.platform} version ${version} in App Store Connect`, {
+				hint: `create it first (\`asc versions list --app ${appId}\` to see what exists), or pass --force`,
+			});
+		warn(`--force: could not read app store state for ${version}`);
+		return null;
+	}
+	const ok = APPLYABLE.has(state);
+	info(`app store state: ${ok ? c.green(state) : c.red(state)}`);
+	if (!ok) {
+		if (!flags.force)
+			throw new ShipError(`version ${version} is ${state} — metadata is locked`, {
+				hint: `apply is only accepted in ${[...APPLYABLE].join(', ')}; wait for review to finish or pass --force`,
+			});
+		warn(`--force: applying anyway against ${state}`);
+	}
+	return state;
+}
+
+/**
  * Count planned mutations without depending on asc's exact plan schema — it has
  * changed shape twice and a hard-coded path silently reports "0 changes" when it
  * moves again, which reads exactly like a no-op release.
@@ -340,29 +389,7 @@ async function apply({ flags }) {
 		good(`staged ${locales.length} locales (${written.length} files)${dry ? c.dim(' — dry-run, not written') : ''}`);
 	}
 
-	const live = rows(
-		await asc(['versions', 'list', '--app', appId, '--version', version, '--platform', cfg.asc.platform], {
-			fallback: [],
-		}),
-	);
-	const state = stateOf(live[0]);
-	if (!state) {
-		if (!flags.force)
-			throw new ShipError(`no ${cfg.asc.platform} version ${version} in App Store Connect`, {
-				hint: `create it first (\`asc versions list --app ${appId}\` to see what exists), or pass --force`,
-			});
-		warn(`--force: could not read app store state for ${version}`);
-	} else {
-		const ok = APPLYABLE.has(state);
-		info(`app store state: ${ok ? c.green(state) : c.red(state)}`);
-		if (!ok) {
-			if (!flags.force)
-				throw new ShipError(`version ${version} is ${state} — metadata is locked`, {
-					hint: `apply is only accepted in ${[...APPLYABLE].join(', ')}; wait for review to finish or pass --force`,
-				});
-			warn(`--force: applying anyway against ${state}`);
-		}
-	}
+	await requireApplyableState(cfg, appId, version, flags);
 
 	const applyArgs = ['metadata', 'apply', '--app', appId, '--version', version, '--dir', cfg.paths.store, '--platform', cfg.asc.platform];
 
@@ -592,7 +619,355 @@ async function setKeywords(cfg, entry, flags) {
 	return 0;
 }
 
-const SUB = { lint, stage: stageCmd, pull, apply, migrate, keywords };
+// ─── custom product pages ────────────────────────────────────────────────────
+
+/**
+ * A custom product page is the only way an ad group's landing screen can say
+ * what its keyword says: name, subtitle, keywords and description are shared
+ * across every page, so promotional text and screenshots are the entire lever.
+ * One page per ad group, headline matching that keyword's intent.
+ *
+ * `ship ads sync` reads the `adGroup` recorded by `cpp link` and binds the page
+ * to the ad group through an Apple Ads creative.
+ */
+const attr = (o, key) => o?.[key] ?? o?.attributes?.[key] ?? null;
+const first = (payload) => rows(payload)[0] ?? null;
+const idOf = (o) => {
+	const id = o?.id ?? attr(o, 'id');
+	return id == null ? null : String(id);
+};
+
+/** Directory names under a screenshotDir are display types, exactly as `ship shots` lays them out. */
+async function deviceDirs(dir) {
+	if (!existsSync(dir)) return [];
+	return (await readdir(dir, { withFileTypes: true }))
+		.filter((e) => e.isDirectory())
+		.map((e) => e.name)
+		.sort();
+}
+
+function printCppProblems(entry, problems) {
+	if (!problems.length) return;
+	process.stdout.write(`\n  ${c.bold(entry.slug)}\n`);
+	for (const p of problems) {
+		const tag = p.level === 'fail' ? c.red('fail') : c.yellow('warn');
+		process.stdout.write(`    ${tag} ${c.cyan(`${p.locale}/${p.field}`)}  ${p.message}\n`);
+	}
+}
+
+async function pagesFor(cfg, slug) {
+	if (slug) {
+		const entry = await readPage(cfg, slugify(slug));
+		if (!entry)
+			throw new ShipError(`no custom product page "${slug}"`, {
+				hint: `expected ${cppDir(cfg, slugify(slug))}/ — it holds cpp.json plus one <locale>.json per language`,
+			});
+		return [entry];
+	}
+	const all = await readPages(cfg);
+	if (!all.length)
+		throw new ShipError(`no custom product pages under ${cppRoot(cfg)}`, {
+			hint: 'a page is store/cpp/<slug>/cpp.json + <locale>.json — one per ad group, headline matching that keyword',
+		});
+	return all;
+}
+
+async function cppList(cfg, flags) {
+	const pages = await readPages(cfg);
+	const local = pages.map((p) => ({
+		slug: p.slug,
+		name: p.page.name ?? p.slug,
+		adGroup: p.page.adGroup ?? null,
+		locales: p.locales.map((l) => l.locale),
+		pageId: p.page.pageId ?? null,
+		problems: lintPage(p),
+	}));
+
+	let live = null;
+	if (!flags.local && cfg.asc?.appId) {
+		const payload = await asc(
+			['product-pages', 'custom-pages', 'list', '--app', String(cfg.asc.appId), '--paginate'],
+			{ fallback: null, allowFail: true },
+		);
+		if (payload)
+			live = rows(payload).map((r) => ({
+				id: idOf(r),
+				name: attr(r, 'name'),
+				visible: attr(r, 'visible'),
+			}));
+	}
+
+	if (flags.json) {
+		emit({ dir: cppRoot(cfg), pages: local, live });
+		return local.some((p) => p.problems.some((x) => x.level === 'fail')) ? 1 : 0;
+	}
+
+	heading(`Custom product pages (${local.length})`);
+	if (!local.length) {
+		note(`none in ${cppRoot(cfg)}`);
+		note('create store/cpp/<slug>/cpp.json + <locale>.json, then `ship meta cpp link <slug> --ad-group "…"`');
+	} else {
+		table(local, [
+			{ header: 'slug', get: (p) => p.slug },
+			{ header: 'name', get: (p) => p.name },
+			{ header: 'ad group', get: (p) => p.adGroup ?? c.dim('—') },
+			{ header: 'locales', get: (p) => p.locales.join(',') || '—' },
+			{ header: 'pageId', get: (p) => p.pageId ?? '—' },
+		]);
+		for (const p of pages) printCppProblems(p, lintPage(p));
+	}
+
+	if (live) {
+		heading(`Live in App Store Connect (${live.length})`);
+		table(live, [
+			{ header: 'id', get: (p) => p.id ?? '' },
+			{ header: 'name', get: (p) => p.name ?? '' },
+			{ header: 'visible', get: (p) => String(p.visible ?? '') },
+		]);
+		const names = new Set(local.map((p) => p.name));
+		const orphans = live.filter((p) => p.name && !names.has(p.name));
+		if (orphans.length)
+			warn(`${orphans.length} live page(s) with no local source: ${orphans.map((p) => p.name).join(', ')}`);
+	} else if (!flags.local) {
+		note('no asc.appId — skipped the live lookup');
+	}
+	return local.some((p) => p.problems.some((x) => x.level === 'fail')) ? 1 : 0;
+}
+
+async function cppStage(cfg, entries, flags) {
+	const dry = isDryRun();
+	const staged = [];
+	for (const entry of entries) {
+		const problems = lintPage(entry);
+		printCppProblems(entry, problems);
+		const failures = problems.filter((p) => p.level === 'fail');
+		if (failures.length) {
+			if (!flags.force)
+				throw new ShipError(`${entry.slug}: ${failures.length} failure${failures.length === 1 ? '' : 's'}`, {
+					hint: 'fix them, or re-run with --force',
+				});
+			warn(`--force: staging ${entry.slug} past ${failures.length} failure(s)`);
+		}
+		const res = await stagePage(cfg, entry, { write: !dry });
+		staged.push({ slug: entry.slug, locales: res.locales, written: res.written, screenshots: res.screenshots });
+	}
+
+	if (flags.json) {
+		emit({ dryRun: dry, staged });
+		return 0;
+	}
+	for (const s of staged) {
+		const label = `${s.slug} → ${s.written.length} file(s) for ${s.locales.length} locale(s)`;
+		if (dry) info(`${c.yellow('dry-run')} would write ${label}`);
+		else good(label);
+	}
+	note('generated/ is generated — never hand-edit it, `cpp stage` overwrites it');
+	return 0;
+}
+
+/**
+ * ASC nests the copy page → version → localization and every write needs the id
+ * above it, so each run re-resolves the chain by name. Matching by name is what
+ * makes a re-run idempotent: ASC will happily create a second page called
+ * "Oil change" and then serve whichever one the ad happens to point at.
+ */
+async function cppApply(cfg, entries, flags) {
+	const appId = requireAppId(cfg);
+	const version = await resolveVersion(cfg, str(flags.version));
+	const dry = isDryRun();
+	heading(`${cfg.name} ${version} — custom product pages`);
+	await requireApplyableState(cfg, appId, version, flags);
+
+	const livePages = rows(
+		await asc(['product-pages', 'custom-pages', 'list', '--app', appId, '--paginate'], { fallback: [] }),
+	);
+	const results = [];
+
+	for (const entry of entries) {
+		const name = entry.page.name ?? entry.slug;
+		step(`${entry.slug} · "${name}"`);
+		if (!flags['no-stage']) await stagePage(cfg, entry, { write: !dry });
+
+		let page = livePages.find((p) => attr(p, 'name') === name) ?? null;
+		if (page) note(`page exists → ${idOf(page)}`);
+		else
+			page = first(
+				await asc(['product-pages', 'custom-pages', 'create', '--app', appId, '--name', name], {
+					mutating: true,
+					fallback: null,
+				}),
+			);
+		const pageId = idOf(page);
+		if (!pageId) {
+			if (dry) {
+				note(`dry-run: ${entry.locales.length} localization(s) would follow page creation`);
+				continue;
+			}
+			throw new ShipError(`custom product page create returned no id for "${name}"`);
+		}
+
+		// Versions are append-only and a submitted one is frozen. Prefer the
+		// editable draft; fall back to the newest and let ASC reject rather than
+		// silently writing into a page nobody is serving.
+		const versions = rows(
+			await asc(['product-pages', 'custom-pages', 'versions', 'list', '--custom-page-id', pageId, '--paginate'], {
+				fallback: [],
+			}),
+		);
+		let pageVersion =
+			versions.find((v) => stateOf(v) === 'PREPARE_FOR_SUBMISSION') ?? versions[0] ?? null;
+		if (!pageVersion)
+			pageVersion = first(
+				await asc(['product-pages', 'custom-pages', 'versions', 'create', '--custom-page-id', pageId], {
+					mutating: true,
+					fallback: null,
+				}),
+			);
+		const versionId = idOf(pageVersion);
+		if (!versionId) {
+			if (dry) continue;
+			throw new ShipError(`custom product page "${name}" has no writable version`);
+		}
+		if (stateOf(pageVersion) && stateOf(pageVersion) !== 'PREPARE_FOR_SUBMISSION')
+			warn(`${entry.slug}: version ${versionId} is ${stateOf(pageVersion)} — ASC may reject the write`);
+
+		const existing = rows(
+			await asc(
+				['product-pages', 'custom-pages', 'localizations', 'list', '--custom-page-version-id', versionId, '--paginate'],
+				{ fallback: [] },
+			),
+		);
+
+		const applied = [];
+		for (const { locale } of entry.locales) {
+			const payload = await readMaybe(join(generatedDir(entry.dir), `${locale}.json`));
+			if (!payload) {
+				warn(`${entry.slug}/${locale}: nothing staged — run \`ship meta cpp stage ${entry.slug}\``);
+				continue;
+			}
+			const promo = payload.promotionalText ?? '';
+			const live = existing.find((l) => attr(l, 'locale') === locale) ?? null;
+			const localizationId = idOf(live);
+			if (localizationId)
+				await asc(
+					['product-pages', 'custom-pages', 'localizations', 'update', '--localization-id', localizationId, '--promotional-text', promo],
+					{ mutating: true, fallback: null },
+				);
+			else
+				await asc(
+					['product-pages', 'custom-pages', 'localizations', 'create', '--custom-page-version-id', versionId, '--locale', locale, '--promotional-text', promo],
+					{ mutating: true, fallback: null },
+				);
+			applied.push({ locale, action: localizationId ? 'update' : 'create', localizationId });
+			if (!flags.json) note(`${locale} ${localizationId ? 'updated' : 'created'} ${c.dim(`${chars(promo)}/${LIMITS.promotionalText}`)}`);
+
+			// Opt-in: this endpoint has no --skip-existing, so a second run would
+			// append the same captures again and a set over 10 is rejected at
+			// submission. `ship shots` owns the main listing's sets for the same reason.
+			const shots = entry.locales.find((l) => l.locale === locale)?.data?.screenshotDir;
+			if (!shots) continue;
+			if (!flags.screenshots) {
+				note(`${locale}: screenshotDir set — pass --screenshots to upload it`);
+				continue;
+			}
+			const dir = screenshotDir(cfg, shots);
+			const types = await deviceDirs(dir);
+			const explicit = str(flags['device-type']);
+			if (!types.length && !explicit) {
+				warn(`${locale}: ${dir} has no <DISPLAY_TYPE>/ subdirectories — pass --device-type`);
+				continue;
+			}
+			for (const deviceType of types.length ? types : [explicit]) {
+				const path = types.length ? join(dir, deviceType) : dir;
+				const localizationTarget = localizationId ?? idOf(first(
+					await asc(
+						['product-pages', 'custom-pages', 'localizations', 'list', '--custom-page-version-id', versionId, '--paginate'],
+						{ fallback: [] },
+					),
+				));
+				if (!localizationTarget) break;
+				step(`upload ${locale}/${deviceType}`);
+				await asc(
+					['product-pages', 'custom-pages', 'localizations', 'screenshot-sets', 'upload', '--localization-id', localizationTarget, '--path', path, '--device-type', deviceType],
+					{ mutating: true, fallback: null, allowFail: true },
+				);
+			}
+		}
+
+		results.push({ slug: entry.slug, name, pageId, versionId, locales: applied });
+		if (!dry) await writeMeta(entry, { ...entry.page, name, pageId, versionId, appliedAt: new Date().toISOString() });
+	}
+
+	if (flags.json) {
+		emit({ app: appId, version, dryRun: dry, pages: results });
+		return 0;
+	}
+	process.stdout.write('\n');
+	good(`${dry ? 'dry-run: ' : ''}${results.length} page(s) applied`);
+	const unlinked = entries.filter((e) => !e.page.adGroup);
+	if (unlinked.length)
+		warn(`${unlinked.map((e) => e.slug).join(', ')} serve no ad group — \`ship meta cpp link <slug> --ad-group "…"\``);
+	else note('next: ship ads sync — it binds each page to its ad group');
+	return 0;
+}
+
+async function cppLink(cfg, entry, flags) {
+	const adGroup = str(flags['ad-group'] ?? flags.adGroup);
+	if (!adGroup)
+		throw new ShipError('meta cpp link: --ad-group is required', {
+			hint: 'use the ad group name from aso/asa/campaign-plan.json, e.g. --ad-group "EX · oil change reminder"',
+		});
+
+	const clash = (await readPages(cfg)).find((p) => p.slug !== entry.slug && p.page.adGroup === adGroup);
+	if (clash && !flags.force)
+		throw new ShipError(`ad group "${adGroup}" is already served by ${clash.slug}`, {
+			hint: 'one ad group, one page — that split is the only thing making the pages measurable. --force moves it.',
+		});
+
+	const page = {
+		...entry.page,
+		name: entry.page.name ?? entry.slug,
+		adGroup,
+		campaign: str(flags.campaign) ?? entry.page.campaign ?? null,
+	};
+	if (flags.json) {
+		if (!isDryRun()) await writeMeta(entry, page);
+		emit(page);
+		return 0;
+	}
+	if (isDryRun()) {
+		info(`${c.yellow('dry-run')} ${entry.metaFile.replace(`${cfg.root}/`, '')}`);
+		note(`adGroup: ${adGroup}`);
+		return 0;
+	}
+	await writeMeta(entry, page);
+	good(`${entry.slug} serves ad group "${adGroup}"`);
+	note('next: ship ads sync — it binds the page to that ad group through an Apple Ads creative');
+	return 0;
+}
+
+const CPP_SUB = new Set(['list', 'stage', 'apply', 'link']);
+
+async function cpp({ args, flags }) {
+	const [sub = 'list', ...rest] = args;
+	if (!CPP_SUB.has(sub))
+		throw new ShipError(`meta cpp: unknown subcommand "${sub}"`, {
+			hint: `try: ${[...CPP_SUB].join(', ')}`,
+		});
+	const cfg = await loadConfig();
+	if (sub === 'list') return cppList(cfg, flags);
+
+	const slug = rest[0] ? String(rest[0]) : (str(flags.slug) ?? null);
+	if (sub === 'link') {
+		if (!slug) throw new ShipError('meta cpp link: name the page', { hint: 'ship meta cpp link <slug> --ad-group "…"' });
+		const [entry] = await pagesFor(cfg, slug);
+		return cppLink(cfg, entry, flags);
+	}
+	const entries = await pagesFor(cfg, slug);
+	return sub === 'stage' ? cppStage(cfg, entries, flags) : cppApply(cfg, entries, flags);
+}
+
+const SUB = { lint, stage: stageCmd, pull, apply, migrate, keywords, cpp };
 
 export async function run({ args, flags }) {
 	const [sub = 'lint', ...rest] = args;

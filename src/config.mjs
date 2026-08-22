@@ -24,9 +24,12 @@ const DEFAULTS = {
 	eas: { profile: 'production', platform: 'ios', channel: 'production' },
 	store: { dir: 'store', locales: [] },
 	revenuecat: { projectId: null, appId: null, entitlement: null, keyEnv: null },
-	ads: { orgId: null, dir: 'aso/asa' },
-	aso: { dir: 'aso', markets: ['us'], seeds: [] },
-	legal: { privacyUrl: null, supportUrl: null, marketingUrl: null },
+	ads: { orgId: null, dir: 'aso/asa', targetCpi: null, subPrice: null },
+	aso: { dir: 'aso', seeds: [], seedsByLocale: {}, minVolume: 0 },
+	loc: { sourceLocale: null, glossary: 'store/glossary.json' },
+	analytics: { dir: '.asc/analytics' },
+	price: { dir: 'store/pricing', basePriceUsd: null },
+	legal: { privacyUrl: null, supportUrl: null, marketingUrl: null, euTrader: null },
 };
 
 function deepMerge(base, over) {
@@ -89,6 +92,9 @@ export function normalise(raw, file) {
 		aso: abs(cfg.aso.dir),
 		asa: abs(cfg.ads.dir),
 		reports: join(root, '.asc', 'reports'),
+		analytics: abs(cfg.analytics.dir),
+		pricing: abs(cfg.price.dir),
+		glossary: abs(cfg.loc.glossary),
 	};
 	cfg.versionDir = (version) => join(cfg.paths.store, 'version', version);
 	return cfg;

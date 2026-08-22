@@ -5,6 +5,7 @@
 // This command is read-only on purpose, because gates and CI need a stable exit
 // code rather than a conversation. `ship rc audit` is that gate — every check it
 // runs is one that has shipped an empty paywall to a real user at least once.
+import { homedir } from 'node:os';
 import { loadConfig } from '../config.mjs';
 import { fetchJSON } from '../exec.mjs';
 import { Report, ShipError, c, heading, note, table } from '../log.mjs';
@@ -245,7 +246,10 @@ async function entitlements({ flags }) {
 
 async function audit({ flags }) {
 	const { cfg, project } = await context();
-	const report = new Report(`RevenueCat — ${project.name} (${project.id})`);
+	// Which credential answered matters here: this gate's most confusing failure
+	// was a healthy project behind another account's key.
+	const via = project.keySource && project.keySource !== 'ambient' ? ` via ${project.keySource.replace(homedir(), '~')}` : '';
+	const report = new Report(`RevenueCat — ${project.name} (${project.id})${via}`);
 	for (const row of await auditProject(cfg, project)) report[row.level](row.name, row.detail);
 	return report.print({ json: flags.json });
 }

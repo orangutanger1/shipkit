@@ -7,6 +7,7 @@ shipkit release pipeline.
 - **Scheme:** `__SCHEME__` (`__SCHEME__dev` for the development build)
 - **Router:** expo-router, screens live in `app/`
 - **Monetisation:** RevenueCat, entitlement `pro`, wired in `src/purchases/`
+- **Languages:** `en` and `de`, catalogues in `src/i18n/`
 
 ## First run
 
@@ -50,6 +51,8 @@ ship rc audit       # gate: exits 1 on anything that renders an empty paywall
 | `ship aso score` | rank harvested terms by traffic vs difficulty |
 | `ship aso pack` | fill the 100 keyword characters optimally |
 | `ship meta lint` | offline validation of `store/staged/*.json` |
+| `ship loc draft` | translate the listing into the rest of `store.locales` |
+| `ship loc review` | gate: the localized listing against the glossary |
 | `ship meta apply` | push the listing to App Store Connect |
 | `ship shots` | validate and upload screenshots already on disk |
 | `ship build` | EAS cloud build (native changes) or OTA update (JS only) |
@@ -67,6 +70,33 @@ character limits and the two keyword rules that cost the most traffic:
 
 Delete the `notes` block once the listing is written; every ship command ignores
 it either way.
+
+## Languages
+
+The app ships `en` and `de`. `src/i18n/en.ts` is the source of truth; every
+other catalogue is typed against it, so a key you forget to translate is a
+build error rather than an English sentence in the middle of a German screen.
+
+```tsx
+import { t } from '../src/i18n';
+
+<Text>{t('home.action.upgrade')}</Text>;
+```
+
+Add a language by dropping `src/i18n/<code>.ts` next to the others and listing
+it in `CATALOGUES`. `app.config.js` reads this directory to build
+`ios.infoPlist.CFBundleLocalizations`; do not maintain that array by hand. iOS
+offers the app only the languages the bundle declares, so an undeclared
+catalogue is dead code — the phone reports `en`, and the localized listing you
+paid for sells an English binary.
+
+**The one rule: the binary and the listing share one vocabulary.**
+`store/glossary.json` holds it — the source term, its translation per locale,
+and the `neverTranslate` list (the app name, the entitlement, anything the
+paywall calls a product). A feature named one way in `src/i18n/de.ts` and
+another way in the German listing costs you the install twice: the searcher
+does not find the word they typed, and the person who installs anyway does not
+find the feature they were sold. `ship loc review` fails on that mismatch.
 
 ## Native vs OTA
 

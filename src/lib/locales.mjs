@@ -12,6 +12,7 @@ import { existsSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { LIMITS } from '../config.mjs';
 import { ShipError } from '../log.mjs';
+import { charCount, indexedWords, isCovered } from './text.mjs';
 
 export const APP_INFO_FIELDS = [
 	'name',
@@ -73,9 +74,15 @@ export async function readStaged(cfg) {
 
 /**
  * Offline validation of one listing.
+ *
+ * Every measurement is locale-aware: ASC counts code points, and the tokens
+ * Apple indexes from `カレンダー 予定` or a German compound are not the ones a
+ * whitespace split finds — the "already indexed" rule silently never fires for
+ * a third of the store when it splits on /\s+/.
  * @returns {{level:'fail'|'warn', field:string, message:string}[]}
  */
 export function lintListing({ locale, file, data }) {
+	const tag = data.locale ?? locale ?? 'en';
 	const problems = [];
 	const fail = (field, message) => problems.push({ level: 'fail', field, message, locale, file });
 	const warn = (field, message) => problems.push({ level: 'warn', field, message, locale, file });
@@ -89,7 +96,7 @@ export function lintListing({ locale, file, data }) {
 	for (const [field, max] of Object.entries(LIMITS)) {
 		const value = data[field];
 		if (value == null) continue;
-		const len = [...String(value)].length;
+		const len = charCount(value);
 		if (len > max) fail(field, `${len}/${max} chars — over limit`);
 		else if (field === 'keywords' && len < max * 0.8)
 			warn(field, `${len}/${max} chars — ${max - len} keyword characters unused`);
@@ -100,13 +107,8 @@ export function lintListing({ locale, file, data }) {
 		const list = keywordList(data.keywords);
 		const dupes = list.filter((k, i) => list.findIndex((o) => o.toLocaleLowerCase() === k.toLocaleLowerCase()) !== i);
 		if (dupes.length) fail('keywords', `duplicate terms: ${[...new Set(dupes)].join(', ')}`);
-		const nameWords = new Set(
-			`${data.name ?? ''} ${data.subtitle ?? ''}`
-				.toLocaleLowerCase()
-				.split(/[^\p{L}\p{N}]+/u)
-				.filter((w) => w.length > 2),
-		);
-		const wasted = list.filter((k) => nameWords.has(k.toLocaleLowerCase()));
+		const indexed = indexedWords(`${data.name ?? ''} ${data.subtitle ?? ''}`, tag);
+		const wasted = list.filter((k) => isCovered(k, indexed, tag));
 		if (wasted.length)
 			warn('keywords', `already indexed via name/subtitle: ${wasted.join(', ')} — free up the slots`);
 	}

@@ -1,0 +1,131 @@
+# The one bootstrap every shipkit pipeline shares.
+#
+# Consuming this as `uses: orangutanger1/shipkit/.github/actions/setup@<ref>` is
+# what removes the hand-rolled `git clone` the templates used to carry: GitHub
+# checks out the action's own repository before running it, so the whole shipkit
+# tree — bin/, src/, schema/ — is already on disk at
+# $GITHUB_ACTION_PATH/../../.., and
+# the `@<ref>` in `uses:` is the version pin. There is nothing left to clone and
+# no SHIPKIT_REPO variable to forget to set.
+#
+# `asc` and Maestro are the two third-party binaries. Both are installed from
+# their vendors' shell installers, which always resolve "latest"; pass an explicit
+# `asc-version` / `maestro-version` when a run has to be reproducible, and the
+# install switches to a checksum-verified download of that exact release.
+name: shipkit setup
+description: Put ship, asc, and optionally Maestro on PATH with a warm tool cache.
+
+inputs:
+  node-version:
+    description: Node version for the ship CLI (needs >=20)
+    default: "22"
+  asc-version:
+    description: 'App-Store-Connect-CLI release tag, e.g. v0.4.1 (blank = latest)'
+    default: ""
+  maestro-version:
+    description: Maestro CLI version (blank = latest)
+    default: ""
+  maestro:
+    description: Install Maestro — only the screenshot job needs it
+    default: "false"
+
+outputs:
+  ship-root:
+    description: Absolute path to the checked-out shipkit tree
+    value: ${{ steps.paths.outputs.root }}
+  asc-version:
+    description: The asc build actually installed
+    value: ${{ steps.tools.outputs.asc }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Resolve the shipkit checkout
+      id: paths
+      shell: bash
+      run: |
+        set -euo pipefail
+        # .github/actions/setup -> up three -> repo root.
+        ROOT=$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)
+        test -x "$ROOT/bin/ship" || { echo "::error::no ship CLI at $ROOT/bin/ship"; exit 1; }
+        echo "root=$ROOT" >> "$GITHUB_OUTPUT"
+        echo "$ROOT/bin" >> "$GITHUB_PATH"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+
+    - name: Tool cache key
+      id: key
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Unpinned installs still get cached, but the key carries an ISO week so
+        # "latest" is re-resolved every Monday instead of being frozen forever.
+        ASC="${{ inputs.asc-version }}"
+        MAESTRO="${{ inputs.maestro-version }}"
+        SUFFIX="${ASC:-latest@$(date -u +%G-%V)}-maestro:${{ inputs.maestro }}:${MAESTRO:-latest@$(date -u +%G-%V)}"
+        echo "value=shipkit-tools-$RUNNER_OS-$RUNNER_ARCH-asc:$SUFFIX" >> "$GITHUB_OUTPUT"
+
+    - uses: actions/cache@v4
+      with:
+        path: |
+          ~/.local/bin/asc
+          ~/.maestro
+        key: ${{ steps.key.outputs.value }}
+
+    - name: Install asc and Maestro
+      id: tools
+      shell: bash
+      env:
+        ASC_VERSION: ${{ inputs.asc-version }}
+        MAESTRO_VERSION: ${{ inputs.maestro-version }}
+        WANT_MAESTRO: ${{ inputs.maestro }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$HOME/.local/bin"
+
+        if command -v asc >/dev/null 2>&1; then
+          echo "asc restored from cache"
+        elif [ -n "$ASC_VERSION" ]; then
+          # Pinned: fetch that release's asset and verify it against the
+          # published checksum file. The vendor installer cannot target a tag.
+          case "$(uname -s)" in Darwin) OS=macOS ;; Linux) OS=linux ;; *) echo "::error::unsupported OS"; exit 1 ;; esac
+          case "$(uname -m)" in x86_64|amd64) ARCH=amd64 ;; arm64|aarch64) ARCH=arm64 ;; *) echo "::error::unsupported arch"; exit 1 ;; esac
+          BASE="https://github.com/rorkai/App-Store-Connect-CLI/releases/download/$ASC_VERSION"
+          ASSET="asc_${ASC_VERSION}_${OS}_${ARCH}"
+          TMP=$(mktemp -d)
+          curl -fsSL "$BASE/$ASSET" -o "$TMP/asc"
+          curl -fsSL "$BASE/asc_${ASC_VERSION}_checksums.txt" -o "$TMP/checksums.txt"
+          EXPECTED=$(grep -E "[ *]${ASSET}\$" "$TMP/checksums.txt" | awk '{print $1}')
+          test -n "$EXPECTED" || { echo "::error::no checksum for $ASSET in $ASC_VERSION"; exit 1; }
+          ACTUAL=$(sha256sum "$TMP/asc" | awk '{print $1}')
+          [ "$EXPECTED" = "$ACTUAL" ] || { echo "::error::asc checksum mismatch: $ACTUAL != $EXPECTED"; exit 1; }
+          install -m 0755 "$TMP/asc" "$HOME/.local/bin/asc"
+          rm -rf "$TMP"
+        else
+          curl -fsSL https://asccli.sh/install | bash
+        fi
+
+        if [ "$WANT_MAESTRO" = "true" ] && ! command -v maestro >/dev/null 2>&1; then
+          # The vendor installer honours MAESTRO_VERSION; blank means latest.
+          curl -fsSL https://get.maestro.mobile.dev | bash
+        fi
+
+        export PATH="$HOME/.local/bin:$HOME/.maestro/bin:$PATH"
+        ASC_ACTUAL=$(asc --version 2>/dev/null | head -1 || echo unknown)
+        echo "asc=$ASC_ACTUAL" >> "$GITHUB_OUTPUT"
+        {
+          echo "### Toolchain"
+          echo
+          echo "| tool | version |"
+          echo "| --- | --- |"
+          echo "| ship | $(ship --version) |"
+          echo "| asc | $ASC_ACTUAL |"
+          echo "| node | $(node --version) |"
+          if [ "$WANT_MAESTRO" = "true" ]; then
+            echo "| maestro | $(maestro --version 2>/dev/null || echo unknown) |"
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"

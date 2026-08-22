@@ -1,0 +1,93 @@
+# JS-only shipping on every push. Copy to <repo>/.github/workflows/ota.yml.
+#
+# This is the daily cadence; release.yml is the rare path. `ship ota --check` is
+# built for exactly this decision and answers with an exit code: 0 means the
+# native dependency + expo-config fingerprint still matches the binary users have
+# installed, 1 means it drifted and an OTA would crash every installed client on
+# launch. So the routing is mechanical — publish, or ask for a build.
+#
+# Requires `.asc/native-lock.json` to be committed: it is the baseline `ship build`
+# records, and it is what the fingerprint is compared against. Without it every
+# push lands in the "needs a build" branch, which is the safe direction.
+name: ota
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - .github/**
+      - store/**
+      - aso/**
+  workflow_dispatch:
+    inputs:
+      message:
+        description: Update message (blank = the head commit subject)
+        required: false
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  # Updates are published to a channel; last push wins, and superseding an
+  # in-flight publish is exactly what we want.
+  group: ota-${{ github.repository }}
+  cancel-in-progress: true
+
+jobs:
+  ota:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+      MESSAGE: ${{ inputs.message }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: orangutanger1/shipkit/.github/actions/setup@main
+
+      - name: Is an OTA legal?
+        id: check
+        run: |
+          set -uo pipefail
+          if ship ota --check; then
+            echo "safe=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "safe=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish
+        if: steps.check.outputs.safe == 'true'
+        run: |
+          set -euo pipefail
+          if [ -z "$MESSAGE" ]; then MESSAGE=$(git log -1 --format=%s); fi
+          ship ota --message "$MESSAGE"
+          echo "Published OTA: $MESSAGE" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Ask for a binary instead
+        if: steps.check.outputs.safe == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The verdict, not a summary of it: `ship ota --check` prints exactly
+          # which native dependencies and config keys moved.
+          {
+            echo "\`ship ota --check\` refused an update for ${GITHUB_SHA:0:7}."
+            echo
+            echo '```'
+            ship ota --check || true
+            echo '```'
+            echo
+            echo "Run the \`release\` workflow — installed binaries cannot load this bundle."
+          } > "$RUNNER_TEMP/drift.md"
+          cat "$RUNNER_TEMP/drift.md" >> "$GITHUB_STEP_SUMMARY"
+          TITLE="Native drift — OTA blocked"
+          EXISTING=$(gh issue list --label ota --state open --search "$TITLE in:title" \
+            --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body-file "$RUNNER_TEMP/drift.md"
+          else
+            gh issue create --title "$TITLE" --body-file "$RUNNER_TEMP/drift.md" --label ota
+          fi

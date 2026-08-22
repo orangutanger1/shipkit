@@ -16,7 +16,7 @@ import { Report, c } from '../log.mjs';
 // the wrong function.
 import { ASC, asc, run as exec, which } from '../exec.mjs';
 import { loadConfig, readExpoConfig } from '../config.mjs';
-import { KEY_FILE, apiKey, listProjects } from '../lib/revenuecat.mjs';
+import { KEY_FILE, apiKey, listProjects, useKeyForProject } from '../lib/revenuecat.mjs';
 
 export const help = `
 ${c.bold('ship doctor')} ${c.dim('— check credentials, tooling and MCP wiring')}
@@ -141,16 +141,28 @@ async function checkEas(report) {
 	else report.ok('eas account', account);
 }
 
-async function checkRevenueCat(report) {
+async function checkRevenueCat(report, cfg) {
 	const key = await apiKey({ optional: true });
 	if (!key) {
 		report.skip('revenuecat', `no v2 key — set REVENUECAT_V2_KEY or write ${tilde(KEY_FILE)}`);
 		return;
 	}
 	try {
+		// Report the account that owns *this* repo's project, not whichever one the
+		// ambient key happens to point at. Naming another account's projects here
+		// as a green check is how a wrong-credential failure got read as a
+		// misconfigured repo.
+		let via = '';
+		if (cfg?.revenuecat?.projectId) {
+			const chosen = await useKeyForProject(cfg);
+			if (chosen.switched) via = ` via ${tilde(chosen.source)}`;
+		}
 		const projects = await listProjects();
 		const names = projects.map((p) => p.name).join(', ');
-		report.ok('revenuecat', `${projects.length} project${projects.length === 1 ? '' : 's'}${names ? `: ${names}` : ''}`);
+		report.ok(
+			'revenuecat',
+			`${projects.length} project${projects.length === 1 ? '' : 's'}${names ? `: ${names}` : ''}${via}`,
+		);
 	} catch (err) {
 		report.fail('revenuecat', err.message);
 	}
@@ -241,7 +253,7 @@ async function doctor({ flags }) {
 	await checkNode(report);
 	await checkAsc(report, { deep: !!flags.deep });
 	await checkEas(report);
-	await checkRevenueCat(report);
+	await checkRevenueCat(report, cfg);
 	await checkMcp(report, cfg?.root ?? process.cwd());
 
 	if (!cfg) report.skip('repo', `no ship.config.json from ${tilde(process.cwd())} — run \`ship init\` in an app repo`);

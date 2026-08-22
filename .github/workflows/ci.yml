@@ -1,0 +1,108 @@
+# shipkit's own CI. The workflows under ci/ ship *to* other repos; this one
+# guards the CLI they all call, and it is the reason a broken command module or a
+# malformed template workflow cannot reach an app repo.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # 20 is the floor declared in package.json engines; 22 is what CI templates use.
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # No dependencies and no lockfile, so there is nothing to install or cache.
+      - run: npm run lint
+      - run: npm test
+
+  smoke:
+    # Every command is lazily imported by the registry, so a syntax error or a bad
+    # export only surfaces when that module is actually loaded. Loading all of
+    # them, then scaffolding an app and validating the result against the schema,
+    # is the cheapest end-to-end proof that needs no Apple credentials.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+
+      - name: Every command module loads and renders help
+        run: |
+          set -euo pipefail
+          ship --help >/dev/null
+          for f in src/commands/*.mjs; do
+            name=$(basename "$f" .mjs)
+            ship "$name" --help >/dev/null || { echo "::error file=$f::ship $name --help failed"; exit 1; }
+          done
+          echo "loaded $(ls src/commands/*.mjs | wc -l) command modules"
+
+      - name: Scaffold an app and validate it against the schema
+        run: |
+          set -euo pipefail
+          ship new demo-app --dir "$RUNNER_TEMP/demo" --bundle-id com.example.demo
+          for f in ship.config.json app.json eas.json store/staged/en-US.json; do
+            test -f "$RUNNER_TEMP/demo/$f" || { echo "::error::scaffold missing $f"; exit 1; }
+          done
+          npx --yes ajv-cli@5 validate --spec=draft2020 --strict=false \
+            -s schema/ship.config.schema.json -d "$RUNNER_TEMP/demo/ship.config.json"
+
+      - name: The listing gate fires, and clears once the listing is real
+        working-directory: ${{ runner.temp }}/demo
+        run: |
+          set -euo pipefail
+          # Everything here is offline: `meta stage` lints and writes local files,
+          # so it proves the gate without any Apple credentials. A fresh scaffold
+          # has an empty listing and MUST be refused.
+          if ship meta stage --dry-run; then
+            echo "::error::meta stage accepted an empty listing"; exit 1
+          fi
+          node -e '
+            const f = "store/staged/en-US.json";
+            const j = JSON.parse(require("fs").readFileSync(f, "utf8"));
+            Object.assign(j, {
+              name: "Demo App",
+              subtitle: "CI fixture listing",
+              keywords: "demo,fixture,ci",
+              description: "A scaffolded app used only to prove the pipeline works.",
+              supportUrl: "https://example.com/support",
+              privacyPolicyUrl: "https://example.com/privacy",
+            });
+            delete j.notes;
+            require("fs").writeFileSync(f, JSON.stringify(j, null, "\t"));
+          '
+          ship meta stage --dry-run
+          test ! -e store/version || { echo "::error::--dry-run wrote files"; exit 1; }
+
+  workflows:
+    # The templates under ci/ are shipped artifacts. Nothing else parses them, so
+    # a typo there is only discovered by an app repo at release time.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: actionlint
+        run: |
+          set -euo pipefail
+          # ubuntu-latest ships shellcheck, and actionlint shells out to it, so
+          # every `run:` body in every template is shell-linted here too.
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color .github/workflows/*.yml ci/*.yml

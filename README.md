@@ -1,6 +1,7 @@
 # shipkit
 
-One pipeline for shipping iOS apps: **research → build → ship → grow.**
+One pipeline from a keyword to a localized, advertised app:
+**scout → build → ship → grow.**
 
 Every app repo gets a `ship.config.json` and inherits the same CLI, the same MCP
 servers, the same store-listing model, and the same gates. Nothing about an app's
@@ -9,10 +10,12 @@ identity lives in a script.
 ```
 ship doctor      credentials, tooling, MCP wiring, repo identity
 ship init        adopt an existing repo
-ship new         scaffold a new one, fully wired
+ship new         scaffold a new one, fully wired  (--from a scout brief)
 
-ship aso         keyword research: harvest · score · suggest · apply · competitors · audit
-ship meta        store listings: lint · stage · pull · apply · migrate · keywords
+ship scout       before a repo exists: terms · brief · new
+ship aso         keyword research: harvest · volume · score · suggest · apply · competitors · audit
+ship loc         localization: seed · draft · review · lock · status
+ship meta        store listings: lint · stage · pull · apply · migrate · keywords · cpp
 ship shots       screenshots: sizes · plan · validate · upload
 ship preflight   pre-submission readiness gate
 
@@ -22,8 +25,11 @@ ship submit      upload + submit for review
 ship release     preflight → meta → build → submit, gated at every step
 
 ship rc          RevenueCat: status · offerings · products · entitlements · audit
-ship ads         Apple Search Ads: status · plan · sync · report
+ship ads         Apple Search Ads: status · plan · sync · mine · report
+ship analytics   App Store analytics: pull · terms · funnel
+ship price       territory pricing: show · plan · apply
 ship status      one dashboard: review state, builds, revenue, ad spend, OTA safety
+ship portfolio   every app at once: revenue, spend, staleness, sunset candidates
 ```
 
 ## Install
@@ -65,9 +71,12 @@ binaries, and `ship doctor` tells you which one is missing.
   "eas":        { "projectId": "…", "profile": "production", "channel": "production" },
   "store":      { "dir": "store", "locales": ["en-US", "de-DE", …] },
   "revenuecat": { "projectId": "projf0d996da", "entitlement": "pro", "keyEnv": "EXPO_PUBLIC_RC_IOS_KEY" },
-  "ads":        { "orgId": null, "dir": "aso/asa" },
-  "aso":        { "dir": "aso", "markets": ["us"], "seeds": [] },
-  "legal":      { "privacyUrl": "https://…", "supportUrl": "https://…" }
+  "ads":        { "orgId": null, "dir": "aso/asa", "targetCpi": 1.50, "subPrice": 4.99 },
+  "aso":        { "dir": "aso", "seeds": [], "seedsByLocale": { "de-DE": ["kfz scheckheft"] }, "minVolume": 10 },
+  "loc":        { "sourceLocale": null, "glossary": "store/glossary.json" },
+  "analytics":  { "dir": ".asc/analytics" },
+  "price":      { "dir": "store/pricing", "basePriceUsd": 4.99 },
+  "legal":      { "privacyUrl": "https://…", "supportUrl": "https://…", "euTrader": true }
 }
 ```
 
@@ -115,29 +124,90 @@ someone had to remember:
 - **`ship shots validate`** measures every PNG/JPEG header against the live
   `asc screenshots sizes` matrix and, when a capture fits a *different* display
   type, names the directory it belongs in — most rejections here are a `mv`.
+- **`ship scout brief`** refuses an idea, with the number that killed it: a top-3
+  review median over 50,000 with a free tier present, demand under the floor, or
+  more than 6 of the top 10 carrying the term in their title. The brief is
+  written either way — a NO-GO you can read beats a hunch you cannot.
+- **`ship loc review`** fails a locale whose copy is a byte-identical clone of the
+  source, whose keywords overlap the source heavily but have **no support in that
+  locale's own harvest** (`translated-not-harvested`), whose glossary
+  `neverTranslate` terms got translated, or whose German copy says GDPR instead of
+  DSGVO. Every length check counts **code points**, because German compounds and
+  CJK blow a 30-character subtitle that `String.length` says is fine.
+- **`ship preflight`** additionally fails on the mechanical review blockers:
+  a missing `ITSAppUsesNonExemptEncryption` (which stalls every build before review
+  even starts), an incomplete age rating, unanswered content rights, absent privacy
+  labels, a dead support URL, and `legal.euTrader` unset while any EU locale ships
+  — an undeclared trader is removed from EU storefronts outright.
+- **`ship price apply`** refuses to move any territory price by more than 50%
+  without `--force`. Price changes are visible to existing subscribers and are not
+  casually reversible.
+- **`ship portfolio`** names sunset candidates by rule — under $10/mo, older than
+  90 days, no release in 60 — so an app cannot quietly consume attention because
+  you forgot it exists.
 
-## Research → listing → ads
+## Keyword → app → locale → ads → back
 
-The three growth surfaces are one loop, in this order:
+One loop. Nothing in it is advice; every arrow is a command whose output is the
+next one's input.
 
 ```mermaid
 graph LR
-  H[ship aso harvest<br/>live autocomplete] --> S[ship aso score<br/>top-10 competition]
-  S --> G[ship aso suggest<br/>pack 100 chars]
-  G --> M[ship meta apply<br/>listing ships]
-  M --> R[astro MCP<br/>rank over time]
-  R --> H
-  S --> P[ship ads plan<br/>exact-match campaigns]
-  P --> Y[ship ads sync]
-  Y --> T[ship ads report<br/>search terms] --> H
+  SC[ship scout terms<br/>category sweep, no repo] --> BR[ship scout brief<br/>go/no-go + drafted listing]
+  BR --> NEW[ship new --from<br/>the keyword becomes the app]
+  NEW --> LOC[ship loc seed/draft/review<br/>native terms per market]
+  LOC --> M[ship meta apply<br/>listing ships]
+  M --> CPP[ship meta cpp<br/>one page per ad group]
+  CPP --> ADS[ship ads sync<br/>exact · discovery · competitor · brand]
+  ADS --> MINE[ship ads mine<br/>negatives + promotions]
+  MINE --> AN[ship analytics pull<br/>impressions → CVR]
+  AN --> V[ship aso score<br/>demand × competition]
+  V --> LOC
   M --> RC[ship rc audit<br/>paywall converts]
+  AN --> PORT[ship portfolio<br/>double down or sunset]
 ```
 
 Bid only on terms the listing already targets. Bidding on terms your metadata
-ignores is paying Apple to compensate for your ASO.
+ignores is paying Apple to compensate for your ASO. `ship ads mine` enforces the
+other direction too: a term that converts on paid and is missing from the organic
+listing is the highest-value listing edit available at any moment, and it says so.
 
-`ship aso` scores each term 0-100 for `opportunity`, weighting weak incumbents
-(40%), low review moat (35%), and few exact-title matches (25%). Sort by it.
+### The score
+
+`opportunity = demand ÷ 100 × competition`, both 0-100, and the product is
+deliberate.
+
+`competition` is the supply side alone — weak incumbents (40%), low review moat
+(35%), few exact-title matches (25%). That number used to *be* the ranking, which
+meant the pipeline's top recommendation was reliably a keyword nobody searches.
+An uncontested term with no traffic is worth exactly nothing, so demand zeroes it
+instead of ranking it first.
+
+`demand` comes from the best source available, in this order:
+
+| Source | Where | Why it wins |
+| --- | --- | --- |
+| measured impressions | `.asc/analytics/<locale>-terms.json` | real users typed it; 0 impressions is a disproved guess, not an unknown |
+| popularity file | `aso/<locale>/volume.json`, hand-written, from the astro MCP, or a saved Apple Ads Platform API v1 response | a human or a paid dataset knows better than a heuristic |
+| autocomplete rank | `aso/<locale>/candidates.json` | Apple orders hints by popularity, so position is a free volume proxy — and a term several different seeds surface is a hub term, not a long-tail accident |
+
+### Evidence, not vocabulary
+
+A category sweep comes back full of store brands: `valvoline instant oil change`
+scores beautifully because the only app that matches is the one being named. Three
+filters keep them out of your own listing, all of them evidence-based:
+
+- publisher names come free with the search API's `sellerName`, but a seller token
+  the market types anyway (`service`) is rescued by its query support — banning
+  every word of "Express Oil Change Service Company LLC" once banned the category;
+- the keyword pool is **tokens, not phrases**, because Apple indexes the field word
+  by word — filtering whole queries dropped `vehicle` for the crime of standing
+  next to `mileage`;
+- the subtitle holds to a higher bar than the keyword field (three separate queries
+  per token), because 30 indexed characters are too expensive to spend on a company.
+
+Branded terms are not discarded — `ship ads plan` routes them into the Competitor
+campaign, where bidding on a rival's name is a decision you can see and price.
 
 ## MCP servers
 
@@ -148,24 +218,45 @@ for credentials.
 | --- | --- | --- |
 | `revenuecat` | products, entitlements, offerings, paywalls, revenue | hosted, key from `~/.omp/revenuecat.key` |
 | `astro` | keyword rank over time, popularity/difficulty, competitor keywords | **macOS app**; reach it over an SSH tunnel |
-| `apple-ads` | campaigns, ad groups, bids, search-term reports | 74 tools over Campaign Management API v5 |
+| `apple-ads` | campaigns, ad groups, bids, search-term reports | 74 tools over Campaign Management API v5 — [sunsets 2027-01-26](docs/apple-ads-platform-api.md) |
 
 **MCP is for conversation. The CLI is for determinism.** They hit the same APIs.
 Don't automate through MCP; don't explore through CI.
 
 ## CI
 
-Copy from `ci/` into `<repo>/.github/workflows/`.
+Copy from `ci/` into `<repo>/.github/workflows/`. Every one of them bootstraps
+through this repo's composite action, so there is no tool install to copy and the
+`@ref` in `uses:` is the version pin:
 
-- **`release.yml`** — ubuntu. `doctor → preflight → meta apply → build → submit`.
-  Defaults to `dry_run: true`. No macOS minutes: every step is either HTTP against
-  App Store Connect or an EAS cloud build.
-- **`screenshots.yml`** — macOS. The only job that needs a Mac.
-- **`growth.yml`** — weekly keyword re-harvest, RevenueCat audit, ad report. Opens
-  an issue **only** when the recommendation actually changed.
+```yaml
+- uses: orangutanger1/shipkit/.github/actions/setup@main
+```
+
+- **`ota.yml`** — ubuntu, on every push to main. `ship ota --check` decides:
+  fingerprint unchanged → publish the JS update; native drift → open an issue
+  asking for a build, because an OTA would crash installed clients. This is the
+  daily path; `release.yml` is the rare one.
+- **`release.yml`** — ubuntu. One `ship release` call: `preflight → meta stage →
+  meta apply → build → submit`, aborting on the first failure. Gated by the
+  `production` GitHub environment rather than by a dry-run default, so a reviewer
+  approves once instead of every operator paying for two runs. No macOS minutes:
+  every step is either HTTP against App Store Connect or an EAS cloud build.
+- **`screenshots.yml`** — macOS, the only job that needs a Mac. The simulator
+  build happens once and every device in the capture matrix downloads that
+  artifact; Xcode is pinned, because it decides the pixel dimensions Apple accepts.
+- **`growth.yml`** — weekly keyword re-harvest, RevenueCat audit, ad report.
+  Comments on one open issue **only** when the committed research actually
+  changed, and one throttled locale never costs the others their refresh.
 
 Secrets: `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_PRIVATE_KEY`, `EXPO_TOKEN`,
 `REVENUECAT_V2_KEY`, and the `ASA_*` set when Search Ads is live.
+Optional repo variables: `ASC_VERSION`, `MAESTRO_VERSION`, `XCODE_VERSION` — set
+them when a release has to be byte-reproducible; blank means latest.
+
+Dispatch inputs are never interpolated into a `run:` body. They arrive through
+`env:` and are referenced as shell variables, because a `workflow_dispatch` input
+is attacker-controlled text and these jobs hold the App Store Connect key.
 
 ## Why there is no fastlane
 
@@ -200,16 +291,21 @@ src/cli.mjs               command registry + arg parsing
 src/config.mjs            ship.config.json load/normalise/save
 src/exec.mjs              run/runJSON, asc(), eas(), fetchJSON, which()
 src/log.mjs               Report, table, ShipError, colour
+src/lib/text.mjs          locale-aware tokens: Intl.Segmenter words, code-point counts, brands, support
 src/lib/locales.mjs       staged ⇄ canonical listing model, lint, .strings parser
-src/lib/appstore.mjs      autocomplete harvest, competition scoring, keyword packing
+src/lib/cpp.mjs           custom product pages: model, lint, stage, ad-group binding
+src/lib/appstore.mjs      autocomplete harvest, demand × competition scoring, keyword packing
 src/lib/revenuecat.mjs    v2 REST client + paywall audit
 src/lib/native.mjs        OTA-vs-build decision
 src/commands/*.mjs        one module per command
 mcp/servers.json          canonical MCP definitions merged into each repo
 skills/shipping-ios/      the skill agents load before touching a release
 templates/                `ship new` scaffold
-ci/                       GitHub Actions workflows
+ci/                       workflow templates copied into app repos
+.github/actions/setup/    the bootstrap every template `uses:`
+.github/workflows/ci.yml  shipkit's own CI — lint, tests, scaffold smoke, actionlint
 schema/                   JSON Schema for ship.config.json
+docs/                     Apple Ads Platform API v1 migration + backlog
 .oxlintrc.json            static checks — `npx oxlint src bin` must report zero errors
 test/                     `node --test test/` — no deps, no network, no fixtures on disk
 ```

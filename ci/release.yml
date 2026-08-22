@@ -1,12 +1,19 @@
 # Gated App Store release. Copy to <repo>/.github/workflows/release.yml.
 #
 # Runs on ubuntu: every step is either `asc` (pure HTTP against App Store Connect)
-# or EAS cloud build. No macOS runner minutes are burned, because nothing here
+# or an EAS cloud build. No macOS runner minutes are burned, because nothing here
 # needs Xcode.
 #
-# Prerequisite: shipkit must be reachable from the runner. Set the repository
-# variable SHIPKIT_REPO to its clone URL (`gh variable set SHIPKIT_REPO --body
-# https://github.com/<you>/shipkit`) — there is no public default.
+# The body is one `ship release` call on purpose. That command already chains
+# preflight → meta stage → meta apply → build → submit and aborts on the first
+# failure; re-expanding the chain into separate workflow steps means two
+# implementations of the same gating, and the workflow copy is the one that
+# quietly drifts (the previous version of this file skipped `meta stage`).
+#
+# Approval, not dry-run-by-default, is the safety here: `dry_run` still exists for
+# rehearsal, but a real release goes through the `production` environment, so a
+# reviewer approves it once instead of every operator paying for two runs.
+# Create it with: gh api -X PUT repos/:owner/:repo/environments/production
 name: release
 
 on:
@@ -15,6 +22,11 @@ on:
       version:
         description: Marketing version (blank = read from app.json)
         required: false
+      from:
+        description: Resume the chain at this step
+        type: choice
+        default: preflight
+        options: [preflight, meta, build, submit]
       skip_build:
         description: Reuse the latest existing build instead of building
         type: boolean
@@ -22,7 +34,10 @@ on:
       dry_run:
         description: Plan every mutation, apply none
         type: boolean
-        default: true
+        default: false
+
+permissions:
+  contents: read
 
 concurrency:
   group: release-${{ github.repository }}
@@ -32,63 +47,63 @@ jobs:
   release:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    # Dry runs need no approval; real ones do.
+    environment: ${{ inputs.dry_run && 'rehearsal' || 'production' }}
     env:
       ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
       ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
       ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
       REVENUECAT_V2_KEY: ${{ secrets.REVENUECAT_V2_KEY }}
+      # Never interpolate ${{ inputs.* }} into a run body: a dispatch input is
+      # attacker-controlled text and would execute with these credentials in env.
+      VERSION: ${{ inputs.version }}
+      FROM: ${{ inputs.from }}
+      SKIP_BUILD: ${{ inputs.skip_build }}
+      DRY_RUN: ${{ inputs.dry_run }}
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - uses: orangutanger1/shipkit/.github/actions/setup@main
         with:
-          node-version: 22
-          cache: npm
-
-      - name: Install asc
-        run: |
-          curl -fsSL https://asccli.sh/install | bash
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Install shipkit
-        run: |
-          test -n "${{ vars.SHIPKIT_REPO }}" || { echo "::error::repository variable SHIPKIT_REPO is unset"; exit 1; }
-          git clone --depth 1 "${{ vars.SHIPKIT_REPO }}" "$RUNNER_TEMP/shipkit"
-          echo "$RUNNER_TEMP/shipkit/bin" >> "$GITHUB_PATH"
+          asc-version: ${{ vars.ASC_VERSION }}
 
       - name: Authenticate App Store Connect
-        run: |
-          # ASC_* env credentials are picked up directly; this only proves they work.
-          asc auth status --validate --output json
+        run: asc auth status --validate --output json
 
       - name: Doctor
-        run: ship doctor --json
+        run: ship doctor --json | tee "$RUNNER_TEMP/doctor.json"
 
-      - name: Preflight
-        run: ship preflight ${{ inputs.version && format('--version {0}', inputs.version) || '' }} --json
-
-      - name: Apply store metadata
+      - name: Release
         run: |
-          ship meta apply \
-            ${{ inputs.version && format('--version {0}', inputs.version) || '' }} \
-            ${{ inputs.dry_run && '--dry-run' || '' }}
-
-      - name: Build
-        if: ${{ !inputs.skip_build }}
-        run: ship build ${{ inputs.dry_run && '--dry-run' || '' }}
-
-      - name: Submit for review
-        run: ship submit ${{ inputs.dry_run && '--dry-run' || '' }}
+          set -euo pipefail
+          ARGS=(--from "$FROM")
+          # `[ ... ] && ARGS+=(...)` would abort the step under `set -e` whenever
+          # the test is false, because the AND-list itself exits non-zero.
+          if [ -n "$VERSION" ]; then ARGS+=(--version "$VERSION"); fi
+          if [ "$SKIP_BUILD" = "true" ]; then ARGS+=(--skip-build); fi
+          if [ "$DRY_RUN" = "true" ]; then ARGS+=(--dry-run); fi
+          ship release "${ARGS[@]}"
 
       - name: Status
         if: always()
-        run: ship status
+        run: |
+          set -euo pipefail
+          {
+            echo "### Review status"
+            echo
+            echo '```'
+            ship status || echo "(status unavailable)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload apply reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: asc-reports
-          path: .asc/reports/
+          path: |
+            .asc/reports/
+            ${{ runner.temp }}/doctor.json
+          retention-days: 30
           if-no-files-found: ignore

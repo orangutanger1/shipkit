@@ -43,6 +43,65 @@ entitlement, store dir, locales, legal URLs. Read it before assuming anything.
 `appDir` matters: `/home/myen/tour` keeps its Expo app in `mobile/`, the others
 at the repo root.
 
+## Choosing what to build
+
+`ship scout` is the research pass that happens before a repo exists. It reads
+public storefront data only and writes under `./scout/`.
+
+```bash
+ship scout terms "car maintenance" "service log"   # sweep + score a category
+ship scout brief "car maintenance log"             # go/no-go on one term
+ship scout names "glovebox"                        # is the brand word taken?
+ship scout new car-maintenance-log --from …        # scaffold the repo
+```
+
+**Read this before generating ideas.** Glovebox shipped in August 2026 into
+`car maintenance log` and found `Car Maintenance Log - Glovebox` already on the
+storefront: same feature set, same privacy-and-offline angle, same brand word,
+released two weeks earlier. Searching the term returned a page of car
+maintenance logs, all released within a month of each other, several of them
+pitching privacy. Nobody copied anybody. Every one of those developers ran the
+same pipeline — ask a model for high-volume low-competition terms, ask it for an
+app idea, ask it for a name — and models are near-deterministic, so the pipeline
+converged. The output of a popular process is a crowded market.
+
+Three concrete rules follow, all enforced by the tool:
+
+1. **Weak incumbents are not automatically a gap.** `ship scout terms` sorts by
+   `viability` = `opportunity × (1 − saturation/100)`, not by `opportunity`. The
+   `sat` and `clones` columns say whether the weakness is a decade-old category
+   nobody served or a stampede that started three weeks ago. `ship scout brief`
+   fails the `clones` gate when more than two of the top ten are titled after
+   the term, shipped inside a year, and still under 25 ratings — that is not a
+   competitor, it is your unbuilt app, already built. On a NO-GO the next step
+   is a different term. `--max-clones` moves the threshold; it does not move the
+   storefront.
+2. **The obvious differentiator is already taken.** Every brief prints
+   *Positioning already taken*, mined from the incumbents' own descriptions.
+   "Private, offline, no account" scored 6/10, 1/10 and 4/10 on the live
+   `car maintenance log` page — the angle Glovebox launched on was the category
+   norm. Anything at 40% or higher is table stakes; differentiation has to be
+   something not on that table, and it survives into the staged listing as
+   `notes.evidence.claimsAlreadyTaken`.
+3. **Name it against the storefront, not against the metaphor.** The first
+   metaphor a model produces for a car app is `glovebox`, which is exactly why
+   eleven live apps already use the word. `ship scout names` queries the brand
+   word on its own — a category sweep never surfaces a collision that lives in
+   somebody's title suffix.
+
+Two rules the tool cannot enforce, so they are yours:
+
+- **Seed the sweep from something a model would not say.** Seeds decide
+  everything downstream, and a model asked for "app ideas in a category" emits
+  the same list to everyone who asks. Seed from what you personally know, from
+  1-star reviews of a specific incumbent, from a forum thread, from a workflow
+  you actually perform. `ship scout terms` accepts many seeds; the sweep is only
+  as unique as they are.
+- **Confirm the market with a source that is not a keyword tool.** A term can
+  clear every gate and still be a category nobody pays for. `ship scout brief`
+  reads whether the leaders sell in-app for exactly that reason and says so when
+  no evidence of a payer exists.
+
 ## Store listings
 
 Listings are authored in `store/staged/<locale>.json` — one human-editable file
@@ -74,7 +133,8 @@ unless the ASC version state is one of `READY_FOR_SALE`, `PREPARE_FOR_SUBMISSION
 
 ## Keyword research
 
-Two complementary sources:
+Two complementary sources, for an app that already exists (pre-repo research is
+`ship scout`, above):
 
 - **`ship aso`** — live App Store autocomplete harvest plus top-10 competition
   scoring. No subscription, works from Linux. Produces an `opportunity` score

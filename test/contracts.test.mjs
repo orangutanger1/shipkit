@@ -6,6 +6,7 @@
 // shape, `ship <cmd> --help` and `ship release` can both drive it.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { COMMANDS, parseArgs } from '../src/cli.mjs';
 
 const NAMES = Object.keys(COMMANDS);
@@ -45,6 +46,27 @@ test('a summary that lists subcommands lists the ones that exist', async () => {
 			);
 		}
 	}
+});
+
+/**
+ * Exit code of a real `bin/ship` invocation.
+ * Deliberately a subprocess: stubbing process.stdout to silence main() also eats
+ * the test runner's own reporter output, which silently hides other results.
+ */
+function exitCode(...argv) {
+	const cli = new URL('../bin/ship', import.meta.url);
+	return spawnSync(process.execPath, [cli.pathname, ...argv], { encoding: 'utf8' }).status;
+}
+
+test('--help and --version succeed; a bare invocation is a usage error', () => {
+	// CI runs `ship <cmd> --help` over every module to prove it loads, so a
+	// non-zero exit from an explicit help request fails the pipeline.
+	assert.equal(exitCode('--help'), 0);
+	assert.equal(exitCode('-h'), 0);
+	assert.equal(exitCode('--version'), 0);
+	assert.equal(exitCode(), 1, 'no command named is still an error');
+	assert.equal(exitCode('nonsense'), 1, 'an unknown command is an error');
+	for (const name of NAMES) assert.equal(exitCode(name, '--help'), 0, `ship ${name} --help`);
 });
 
 test('parseArgs: value flags, boolean flags, clusters, positionals', () => {

@@ -1,7 +1,18 @@
 # Localized App Store screenshots. Copy to <repo>/.github/workflows/screenshots.yml.
 #
 # This is the ONE job that needs a macOS runner: App Store screenshots must come
-# out of a real iOS simulator, and no Linux host can boot one.
+# out of a real iOS simulator, and no Linux host can boot one. macOS minutes bill
+# at 10x, so the simulator build happens exactly once in `build` and every device
+# in `capture` downloads that artifact — the matrix used to rebuild the same .app
+# per device, which doubled the only expensive step in the file.
+#
+# The capture matrix is locale × device, expanded from `store.locales` in
+# ship.config.json. It used to be device-only with a bash loop over locales
+# inside, which meant a throttled or drifted flow in the fourth locale threw away
+# the three that had already succeeded, and the whole listing waited on one
+# serial runner. One job per pair isolates the failure and parallelises the work
+# — `max-parallel` is what keeps that from turning a ten-locale listing into
+# twenty simultaneous macOS runners.
 #
 # Why Maestro and not `fastlane snapshot`:
 #   `snapshot` drives an XCUITest target inside an Xcode project. These apps are
@@ -18,46 +29,59 @@ on:
   workflow_dispatch:
     inputs:
       locales:
-        description: Comma-separated ASC locales to capture
-        default: en-US
+        description: Comma-separated ASC locales; empty captures every store.locales entry
+        default: ""
       upload:
         description: Upload to App Store Connect after capture
         type: boolean
         default: false
 
+permissions:
+  contents: read
+
+concurrency:
+  group: screenshots-${{ github.repository }}
+  cancel-in-progress: true
+
 jobs:
-  capture:
+  build:
     runs-on: macos-15
     timeout-minutes: 60
+    outputs:
+      locales: ${{ steps.plan.outputs.locales }}
     env:
-      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
-      ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # The two slots Apple actually requires for a modern iPhone-only listing.
-        device:
-          - { name: iPhone 16 Pro Max, displayType: APP_IPHONE_67 }
-          - { name: iPhone 16 Pro, displayType: APP_IPHONE_61 }
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      # Pinned: the default Xcode on a macOS image moves without warning, and it
+      # decides both the simulator runtime and the pixel dimensions Apple accepts.
+      - uses: maxim-lobanov/setup-xcode@v1
         with:
-          node-version: 22
-          cache: npm
+          xcode-version: ${{ vars.XCODE_VERSION || '16.2' }}
 
-      - name: Install asc + shipkit + maestro
+      - uses: orangutanger1/shipkit/.github/actions/setup@main
+
+      # Before the build, not after: a listing whose locales cannot be resolved
+      # should cost seconds, not a 30-minute simulator build.
+      - name: Resolve capture locales
+        id: plan
+        env:
+          OVERRIDE: ${{ inputs.locales }}
         run: |
-          curl -fsSL https://asccli.sh/install | bash
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          test -n "${{ vars.SHIPKIT_REPO }}" || { echo "::error::repository variable SHIPKIT_REPO is unset"; exit 1; }
-          git clone --depth 1 "${{ vars.SHIPKIT_REPO }}" "$RUNNER_TEMP/shipkit"
-          echo "$RUNNER_TEMP/shipkit/bin" >> "$GITHUB_PATH"
-          curl -fsSL https://get.maestro.mobile.dev | bash
-          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+          set -euo pipefail
+          LOCALES=$(node -e '
+            const cfg = JSON.parse(require("fs").readFileSync("ship.config.json", "utf8"));
+            const override = (process.env.OVERRIDE || "").split(",").map((s) => s.trim()).filter(Boolean);
+            const locales = override.length ? override : (cfg.store && cfg.store.locales) || [];
+            if (!locales.length) {
+              console.error("no locales to capture: set store.locales in ship.config.json");
+              process.exit(1);
+            }
+            console.log(JSON.stringify(locales));
+          ')
+          echo "locales=$LOCALES" >> "$GITHUB_OUTPUT"
+          echo "Capturing $LOCALES" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Build simulator app
         run: |
@@ -69,50 +93,123 @@ jobs:
         env:
           EAS_BUILD_PROFILE_PREVIEW_IOS_SIMULATOR: "true"
 
-      - name: Boot simulator and install
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sim-app
+          path: ${{ runner.temp }}/sim.tar.gz
+          retention-days: 1
+
+  capture:
+    needs: build
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+      LOCALE: ${{ matrix.locale }}
+      DISPLAY_TYPE: ${{ matrix.device.displayType }}
+    strategy:
+      # One locale must not take the others down with it: a flow that drifted in
+      # German still leaves the English set uploadable.
+      fail-fast: false
+      # macOS runners are the scarce, expensive resource — this is the ceiling on
+      # simultaneous ones, not the number of locales the listing may have.
+      max-parallel: 4
+      matrix:
+        locale: ${{ fromJSON(needs.build.outputs.locales) }}
+        # The two slots Apple actually requires for a modern iPhone-only listing.
+        device:
+          - { name: iPhone 16 Pro Max, displayType: APP_IPHONE_67 }
+          - { name: iPhone 16 Pro, displayType: APP_IPHONE_61 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: ${{ vars.XCODE_VERSION || '16.2' }}
+
+      - uses: orangutanger1/shipkit/.github/actions/setup@main
+        with:
+          maestro: "true"
+          maestro-version: ${{ vars.MAESTRO_VERSION }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sim-app
+          path: ${{ runner.temp }}
+
+      - name: Boot simulator in ${{ matrix.locale }} and install
         id: sim
+        env:
+          DEVICE: ${{ matrix.device.name }}
         run: |
           set -euo pipefail
-          UDID=$(xcrun simctl create shots "${{ matrix.device.name }}")
+          # Resolve the device type and the newest installed iOS runtime by
+          # identifier. Creating by display name alone silently picks whatever the
+          # image happens to ship, which changes the output dimensions.
+          DEVICE_TYPE=$(xcrun simctl list devicetypes --json |
+            node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8")).devicetypes.find(x=>x.name===process.env.DEVICE);if(!d){console.error("no device type: "+process.env.DEVICE);process.exit(1)}console.log(d.identifier)')
+          RUNTIME=$(xcrun simctl list runtimes --json |
+            node -e 'const r=JSON.parse(require("fs").readFileSync(0,"utf8")).runtimes.filter(x=>x.isAvailable&&x.platform==="iOS").sort((a,b)=>a.version.localeCompare(b.version,undefined,{numeric:true})).pop();if(!r){console.error("no iOS runtime installed");process.exit(1)}console.log(r.identifier)')
+          echo "runtime=$RUNTIME" >> "$GITHUB_OUTPUT"
+          UDID=$(xcrun simctl create "shots-$LOCALE" "$DEVICE_TYPE" "$RUNTIME")
           echo "udid=$UDID" >> "$GITHUB_OUTPUT"
           xcrun simctl boot "$UDID"
           xcrun simctl bootstatus "$UDID" -b
-          mkdir -p "$RUNNER_TEMP/app" && tar -xzf "$RUNNER_TEMP/sim.tar.gz" -C "$RUNNER_TEMP/app"
+          # Set the language before the app is ever launched: AppleLanguages is
+          # read once at process launch, so a device relocalized afterwards keeps
+          # rendering the previous language until the app is killed. The base
+          # subtag is listed as a fallback for a binary that localizes `de` but
+          # not `de-DE`; AppleLocale drives number, date and currency format.
+          xcrun simctl spawn "$UDID" defaults write -g AppleLanguages -array "$LOCALE" "${LOCALE%%-*}"
+          xcrun simctl spawn "$UDID" defaults write -g AppleLocale -string "${LOCALE//-/_}"
+          mkdir -p "$RUNNER_TEMP/app"
+          tar -xzf "$RUNNER_TEMP/sim.tar.gz" -C "$RUNNER_TEMP/app"
           APP=$(find "$RUNNER_TEMP/app" -maxdepth 2 -name '*.app' | head -1)
+          test -n "$APP" || { echo "::error::no .app inside sim.tar.gz"; exit 1; }
           xcrun simctl install "$UDID" "$APP"
 
       - name: Capture
+        env:
+          UDID: ${{ steps.sim.outputs.udid }}
         run: |
           set -euo pipefail
           BUNDLE=$(node -p "require('./ship.config.json').bundleId")
-          IFS=',' read -ra LOCALES <<< "${{ inputs.locales }}"
-          for LOCALE in "${LOCALES[@]}"; do
-            OUT="store/screenshots/$LOCALE/${{ matrix.device.displayType }}"
-            mkdir -p "$OUT"
-            # Force the app's language so the captures match the listing locale.
-            xcrun simctl spawn "${{ steps.sim.outputs.udid }}" defaults write \
-              -g AppleLanguages -array "${LOCALE%%-*}"
-            maestro --device "${{ steps.sim.outputs.udid }}" test \
-              .maestro/screenshots.yaml \
-              --env "APP_ID=$BUNDLE" --env "LOCALE=$LOCALE" \
-              --format junit --output "$RUNNER_TEMP/maestro-$LOCALE.xml"
-            # Maestro writes captures to the working directory; move them into the
-            # store tree using the slot name baked into each takeScreenshot step.
-            find . -maxdepth 1 -name '*.png' -newer .maestro/screenshots.yaml \
-              -exec mv {} "$OUT/" \;
-          done
+          # The layout `ship shots validate` and `ship shots upload` expect.
+          OUT="$GITHUB_WORKSPACE/store/screenshots/$LOCALE/$DISPLAY_TYPE"
+          # Maestro writes captures to its working directory; give the flow a
+          # scratch cwd instead of sweeping the repo root by mtime, which used to
+          # drag any stray PNG in the checkout into the store tree.
+          SCRATCH="$RUNNER_TEMP/shots"
+          mkdir -p "$OUT" "$SCRATCH"
+          (cd "$SCRATCH" && maestro --device "$UDID" test \
+            "$GITHUB_WORKSPACE/.maestro/screenshots.yaml" \
+            --env "APP_ID=$BUNDLE" --env "LOCALE=$LOCALE" \
+            --format junit --output "$RUNNER_TEMP/maestro-$LOCALE.xml")
+          COUNT=$(find "$SCRATCH" -name '*.png' | wc -l | tr -d ' ')
+          test "$COUNT" -gt 0 || { echo "::error::flow captured no screenshots for $LOCALE"; exit 1; }
+          find "$SCRATCH" -name '*.png' -exec mv {} "$OUT/" \;
+          echo "$LOCALE/$DISPLAY_TYPE: $COUNT captures" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Validate against Apple's required dimensions
         run: ship shots plan && ship shots validate
 
       - uses: actions/upload-artifact@v4
+        # Also on failure: the images are the only way to see why a flow drifted.
+        if: always()
         with:
-          name: screenshots-${{ matrix.device.displayType }}
-          path: store/screenshots/
+          name: screenshots-${{ matrix.locale }}-${{ matrix.device.displayType }}
+          path: |
+            store/screenshots/
+            ${{ runner.temp }}/maestro-*.xml
+          if-no-files-found: warn
 
       - name: Upload to App Store Connect
         if: ${{ inputs.upload }}
-        run: ship shots upload --display-type ${{ matrix.device.displayType }}
+        # Scoped to this job's pair: the checkout only holds what this job
+        # captured, and saying so keeps a re-run from touching another locale.
+        run: ship shots upload --locale "$LOCALE" --display-type "$DISPLAY_TYPE"
 
       - name: Tear down simulator
         if: always()

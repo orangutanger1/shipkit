@@ -23,15 +23,25 @@ export const COMMANDS = {
 		summary: 'Scaffold a new Expo iOS app already wired to the full pipeline',
 		load: () => import('./commands/new.mjs'),
 	},
+	scout: {
+		group: 'Discover',
+		summary: 'Idea front door before a repo exists: terms · brief · new',
+		load: () => import('./commands/scout.mjs'),
+	},
 	aso: {
 		group: 'Discover',
-		summary: 'Keyword research: harvest · score · suggest · apply · competitors · audit',
+		summary: 'Keyword research: harvest · volume · score · suggest · apply · competitors · audit',
 		load: () => import('./commands/aso.mjs'),
 	},
 	meta: {
 		group: 'Ship',
-		summary: 'Store listings: lint · stage · pull · apply · migrate · keywords',
+		summary: 'Store listings: lint · stage · pull · apply · migrate · keywords · cpp',
 		load: () => import('./commands/meta.mjs'),
+	},
+	loc: {
+		group: 'Ship',
+		summary: 'Localization: seed · draft · review · lock · status',
+		load: () => import('./commands/loc.mjs'),
 	},
 	shots: {
 		group: 'Ship',
@@ -70,13 +80,28 @@ export const COMMANDS = {
 	},
 	ads: {
 		group: 'Grow',
-		summary: 'Apple Search Ads: status · plan · sync · report',
+		summary: 'Apple Search Ads: status · plan · sync · mine · report',
 		load: () => import('./commands/ads.mjs'),
 	},
 	status: {
 		group: 'Grow',
 		summary: 'One dashboard: review state, builds, revenue, ad spend',
 		load: () => import('./commands/status.mjs'),
+	},
+	analytics: {
+		group: 'Grow',
+		summary: 'App Store analytics: pull · terms · funnel',
+		load: () => import('./commands/analytics.mjs'),
+	},
+	price: {
+		group: 'Grow',
+		summary: 'Territory pricing: show · plan · apply',
+		load: () => import('./commands/price.mjs'),
+	},
+	portfolio: {
+		group: 'Grow',
+		summary: 'Every app at once: revenue, spend, staleness, sunset candidates',
+		load: () => import('./commands/portfolio.mjs'),
 	},
 };
 
@@ -154,7 +179,9 @@ export async function main(argv = process.argv.slice(2)) {
 			return 0;
 		}
 		usage();
-		return name ? 0 : 1;
+		// Asking for help is a successful request; being given no command at all is
+		// a usage error. `ship --help` used to exit 1 and fail any CI step running it.
+		return flags.help || flags.h ? 0 : 1;
 	}
 
 	const spec = COMMANDS[name];
