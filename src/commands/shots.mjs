@@ -17,7 +17,7 @@
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { asc } from '../exec.mjs';
+import { asc, ascMutate } from '../exec.mjs';
 import { loadConfig, requireAppId, resolveVersion } from '../config.mjs';
 import { Report, ShipError, c, heading, info, note, step, table, warn } from '../log.mjs';
 
@@ -33,8 +33,8 @@ ${c.dim('usage:')} ship shots [subcommand] [flags]
 
 ${c.bold('Flags')}
   ${c.cyan('--all')}             ${c.dim('sizes')} every display type, including tv/vision/desktop
-  ${c.cyan('--locale <l>')}      ${c.dim('upload')} only this locale
-  ${c.cyan('--display-type <t>')} ${c.dim('upload')} only this display type (e.g. IPHONE_65)
+  ${c.cyan('--locale <l,…>')}    ${c.dim('validate, upload')} only these locales ${c.dim('(comma-separated)')}
+  ${c.cyan('--display-type <t,…>')} ${c.dim('validate, upload')} only these display types ${c.dim('(e.g. IPHONE_65,IPHONE_67)')}
   ${c.cyan('--version <v>')}     ${c.dim('upload')} target version (default: app.json)
   ${c.cyan('--force')}           ${c.dim('upload')} upload even though validate failed
   ${c.cyan('--replace')}         ${c.dim('upload')} clear the existing set first (default: skip by checksum)
@@ -106,18 +106,28 @@ export function readImageSize(buffer) {
 /**
  * Directory names are human-written; asc device types are not. Fold both onto
  * one key so `iphone-6.5`, `IPHONE_65` and asc's `APP_IPHONE_65` all meet.
+ *
+ * The prefix has to go before the separators do: stripping `APP` from a
+ * flattened `APPLETV` leaves `LETV`, so an `APPLE_TV` directory could never
+ * match asc's own `APP_APPLE_TV`. Anchor on the separator instead.
  */
 const typeKey = (s) =>
 	String(s)
 		.toUpperCase()
-		.replace(/[^A-Z0-9]/g, '')
-		.replace(/^(APP|IMESSAGEAPP)/, '');
+		.replace(/^(?:APP|IMESSAGE_APP)[_-]/, '')
+		.replace(/[^A-Z0-9]/g, '');
 
 /** The directory name an operator writes for an asc display type: APP_IPHONE_65 → IPHONE_65. */
 const dirNameOf = (displayType) => String(displayType).replace(/^(?:APP|IMESSAGE_APP)_/, '');
 
-/** `asc screenshots sizes` → [{displayType, family, dimensions:[{width,height}]}]. */
+/**
+ * `asc screenshots sizes` → [{displayType, family, dimensions:[{width,height}]}].
+ * Memoized: `upload` gates on `validate`, and asking Apple the same question
+ * twice in one process is a round-trip that can also rate-limit.
+ */
+const SIZE_ROWS = new Map();
 async function fetchSizes({ all = true } = {}) {
+	if (SIZE_ROWS.has(all)) return SIZE_ROWS.get(all);
 	const args = ['screenshots', 'sizes'];
 	if (all) args.push('--all');
 	const data = await asc(args, { fallback: null });
@@ -126,6 +136,7 @@ async function fetchSizes({ all = true } = {}) {
 		throw new ShipError('asc screenshots sizes returned nothing', {
 			hint: 'is the asc CLI on PATH and up to date?',
 		});
+	SIZE_ROWS.set(all, rows);
 	return rows;
 }
 
@@ -186,8 +197,65 @@ async function scan(cfg) {
 	return { root, locales };
 }
 
-const flatGroups = (plan) =>
-	plan.locales.flatMap((l) => l.groups.map((g) => ({ ...g, locale: l.locale })));
+/**
+ * Requested scope. Both flags take a comma-separated list, so one invocation
+ * covers several locales and several display types; absent means "everything on
+ * disk". Display types are folded through `typeKey` so `iphone-6.5` matches
+ * `IPHONE_65`.
+ */
+export function scopeOf(flags) {
+	const list = (v) =>
+		typeof v === 'string'
+			? v.split(',').map((s) => s.trim()).filter(Boolean)
+			: [];
+	const locales = list(flags.locale);
+	const types = list(flags['display-type']);
+	return {
+		locales: locales.length ? new Set(locales) : null,
+		types: types.length ? new Set(types.map(typeKey)) : null,
+	};
+}
+
+const scopeLabel = (scope) =>
+	[
+		scope.locales ? [...scope.locales].join(',') : null,
+		scope.types ? [...scope.types].join(',') : null,
+	]
+		.filter(Boolean)
+		.join(' · ');
+
+/**
+ * Every group on disk, flattened, narrowed to `scope`. Unknown names are not
+ * silently dropped: the caller reports an empty match as an error.
+ */
+const flatGroups = (plan, scope = { locales: null, types: null }) =>
+	plan.locales
+		.filter((l) => !scope.locales || scope.locales.has(l.locale))
+		.flatMap((l) =>
+			l.groups
+				.filter((g) => !scope.types || scope.types.has(typeKey(g.displayType)))
+				.map((g) => ({ ...g, locale: l.locale })),
+		);
+
+/**
+ * Names the operator asked for that no directory answers — a typo, not an empty
+ * store. Kind-tagged, because a missing locale and a missing display type are
+ * different mistakes, and checked as pairs once both axes exist: `--locale a,b
+ * --display-type X,Y` asks for four groups, and three of them being on disk is
+ * still an incomplete upload. An entirely absent axis is reported alone, since
+ * it already explains every pair it breaks.
+ */
+export function unmatched(groups, scope) {
+	const has = (locale, type) =>
+		groups.some((g) => (!locale || g.locale === locale) && (!type || typeKey(g.displayType) === type));
+	const miss = [];
+	for (const l of scope.locales ?? []) if (!has(l, null)) miss.push(`locale ${l}`);
+	for (const t of scope.types ?? []) if (!has(null, t)) miss.push(`display type ${t}`);
+	if (miss.length || !scope.locales || !scope.types) return miss;
+	for (const l of scope.locales)
+		for (const t of scope.types) if (!has(l, t)) miss.push(`${l}/${t}`);
+	return miss;
+}
 
 async function sizes({ flags }) {
 	const rows = await fetchSizes({ all: !!flags.all });
@@ -259,14 +327,25 @@ async function plan({ flags }) {
  * Offline gate. Everything here fails a submission at Apple, so it fails here
  * first: wrong pixel size, an empty group, or more than ten images.
  * `asc screenshots validate` runs per group on top, and its findings fold in.
+ *
+ * `--locale`/`--display-type` narrow it to the same groups `upload` would push,
+ * so a broken locale nobody is uploading cannot block the ones that are.
+ *
+ * `pre` lets `upload` hand over the config and inventory it already read, so
+ * gating an upload does not walk the tree and measure every file twice.
  */
-async function validate({ flags }) {
-	const cfg = await loadConfig();
-	const [found, sizeRows] = await Promise.all([scan(cfg), fetchSizes({ all: true })]);
+async function validate({ flags }, pre = {}) {
+	const cfg = pre.cfg ?? (await loadConfig());
+	const scope = scopeOf(flags);
+	const [found, sizeRows] = await Promise.all([pre.found ?? scan(cfg), fetchSizes({ all: true })]);
 	const accepted = new Map(sizeRows.map((r) => [typeKey(r.displayType), dimsOf(r)]));
+	const scoped = flatGroups(found, scope);
+	const label0 = scopeLabel(scope);
 
-	const report = new Report(`Screenshots — ${cfg.name}`);
-	for (const g of flatGroups(found)) {
+	const report = new Report(`Screenshots — ${cfg.name}${label0 ? ` ${c.dim(`(${label0})`)}` : ''}`);
+	for (const name of unmatched(scoped, scope))
+		report.fail(name, 'no screenshot directory on disk — see `ship shots plan`');
+	for (const g of scoped) {
 		const label = `${g.locale}/${g.displayType}`;
 		const dims = accepted.get(typeKey(g.displayType));
 		if (!dims) {
@@ -332,21 +411,37 @@ function ascFindings(res) {
 }
 
 /**
+ * appStoreVersion id for this app+version, resolved once per process. An upload
+ * across N locales asked ASC the same question N times, and ASC answers a burst
+ * with 429s.
+ */
+const VERSION_IDS = new Map();
+async function versionId(appId, version) {
+	const key = `${appId}\u0000${version}`;
+	if (!VERSION_IDS.has(key)) {
+		const versions = await asc(
+			['versions', 'list', '--app', appId, '--version', version, '--platform', 'IOS'],
+			{ fallback: null, allowFail: true },
+		);
+		const id = versions?.data?.[0]?.id;
+		if (id) VERSION_IDS.set(key, id);
+		else return null;
+	}
+	return VERSION_IDS.get(key);
+}
+
+/**
  * Resolve the appStoreVersionLocalization id. It is the only handle asc accepts
  * for a single-locale upload: app-scoped fan-out demands that the immediate
  * children of --path be locale directories, so it cannot be narrowed to one.
  */
 export async function localizationId(appId, version, locale) {
-	const versions = await asc(
-		['versions', 'list', '--app', appId, '--version', version, '--platform', 'IOS'],
-		{ fallback: null, allowFail: true },
-	);
-	const versionId = versions?.data?.[0]?.id;
-	if (!versionId)
+	const vid = await versionId(appId, version);
+	if (!vid)
 		throw new ShipError(`app ${appId} has no ${version} version`, {
 			hint: 'create the version in ASC first (`ship meta stage` then `ship meta apply`)',
 		});
-	const locs = await asc(['localizations', 'list', '--version', versionId, '--locale', locale], {
+	const locs = await asc(['localizations', 'list', '--version', vid, '--locale', locale], {
 		fallback: null,
 		allowFail: true,
 	});
@@ -358,25 +453,38 @@ export async function localizationId(appId, version, locale) {
 	return id;
 }
 
+/**
+ * How an upload row names itself. The per-locale path owns one pair; the
+ * app-scoped path is one call covering every locale on disk, so name the
+ * display type and count them rather than concatenating fifteen tags.
+ */
+const uploadLabel = (r) =>
+	r.locale
+		? `${r.locale}/${r.displayType}`
+		: `${r.displayType} (${(r.locales ?? []).length} locale${(r.locales ?? []).length === 1 ? '' : 's'})`;
+
 async function upload({ flags }) {
+	const cfg = await loadConfig();
+	const found = await scan(cfg);
+
 	if (!flags.force) {
-		const code = await validate({ flags: { ...flags, json: false } });
+		const code = await validate({ flags: { ...flags, json: false } }, { cfg, found });
 		if (code !== 0)
 			throw new ShipError('screenshots failed validation — refusing to upload', {
 				hint: 'fix the failures above, or re-run with --force',
 			});
 	}
 
-	const cfg = await loadConfig();
 	const appId = requireAppId(cfg);
 	const version = await resolveVersion(cfg, flags.version);
-	const found = await scan(cfg);
 
-	const wantLocale = flags.locale ? String(flags.locale) : null;
-	const wantType = flags['display-type'] ? typeKey(flags['display-type']) : null;
-	const groups = flatGroups(found).filter(
-		(g) => (!wantLocale || g.locale === wantLocale) && (!wantType || typeKey(g.displayType) === wantType),
-	);
+	const scope = scopeOf(flags);
+	const groups = flatGroups(found, scope);
+	const missing = unmatched(groups, scope);
+	if (missing.length)
+		throw new ShipError(`no screenshots on disk for ${missing.join(', ')}`, {
+			hint: 'run `ship shots plan` to see which locales and display types exist on disk',
+		});
 	if (!groups.length)
 		throw new ShipError('no screenshot groups match the requested scope', {
 			hint: 'run `ship shots plan` to see which locales and display types exist on disk',
@@ -388,15 +496,20 @@ async function upload({ flags }) {
 	const mode = flags.replace ? ['--replace'] : ['--skip-existing'];
 	const results = [];
 
-	if (wantLocale) {
-		const vlid = await localizationId(appId, version, wantLocale);
-		for (const g of groups) {
-			step(`upload ${g.locale}/${g.displayType} ${c.dim(`${g.count} file${g.count === 1 ? '' : 's'}`)}`);
-			const result = await asc(
-				['screenshots', 'upload', '--version-localization', vlid, '--path', g.dir, '--device-type', g.displayType, ...mode],
-				{ mutating: true, fallback: null, allowFail: true },
-			);
-			results.push({ locale: g.locale, displayType: g.displayType, count: g.count, result });
+	if (scope.locales) {
+		// A named locale set cannot use asc's app-scoped fan-out — that walks
+		// every locale directory under --path. One localization id per locale,
+		// resolved once and reused across its display types.
+		for (const locale of new Set(groups.map((g) => g.locale))) {
+			const vlid = await localizationId(appId, version, locale);
+			for (const g of groups.filter((x) => x.locale === locale)) {
+				step(`upload ${g.locale}/${g.displayType} ${c.dim(`${g.count} file${g.count === 1 ? '' : 's'}`)}`);
+				const res = await ascMutate(
+					['screenshots', 'upload', '--version-localization', vlid, '--path', g.dir, '--device-type', g.displayType, ...mode],
+				);
+				if (!res.ok) warn(`${g.locale}/${g.displayType}: ${res.stderr || `asc exited ${res.code}`}`);
+				results.push({ locale: g.locale, displayType: g.displayType, count: g.count, ok: res.ok, result: res.data });
+			}
 		}
 	} else {
 		// One call per display type: asc fans out across the locale directories
@@ -407,33 +520,42 @@ async function upload({ flags }) {
 			const mine = groups.filter((g) => g.displayType === displayType);
 			const count = mine.reduce((n, g) => n + g.count, 0);
 			step(`upload ${displayType} ${c.dim(`${mine.length} locale${mine.length === 1 ? '' : 's'}, ${count} file${count === 1 ? '' : 's'}`)}`);
-			const result = await asc(
-				[
-					'screenshots',
-					'upload',
-					'--app',
-					appId,
-					'--version',
-					version,
-					'--platform',
-					cfg.asc.platform ?? 'IOS',
-					'--path',
-					root,
-					'--device-type',
-					displayType,
-					...mode,
-				],
-				{ mutating: true, fallback: null, allowFail: true },
-			);
-			results.push({ locales: mine.map((g) => g.locale), displayType, count, result });
+			const res = await ascMutate([
+				'screenshots',
+				'upload',
+				'--app',
+				appId,
+				'--version',
+				version,
+				'--platform',
+				cfg.asc.platform ?? 'IOS',
+				'--path',
+				root,
+				'--device-type',
+				displayType,
+				...mode,
+			]);
+			if (!res.ok) warn(`${displayType}: ${res.stderr || `asc exited ${res.code}`}`);
+			results.push({ locales: mine.map((g) => g.locale), displayType, count, ok: res.ok, result: res.data });
 		}
 	}
 
+	// An upload that asc refused must not read as a success: nothing downstream
+	// re-checks, `ship preflight` only samples the primary locale, and CI gates
+	// on the exit code. Report every attempt, then fail on any rejection.
+	const failed = results.filter((r) => !r.ok);
 	if (flags.json) {
-		process.stdout.write(`${JSON.stringify({ app: appId, version, uploads: results }, null, 2)}\n`);
-		return 0;
+		process.stdout.write(
+			`${JSON.stringify({ app: appId, version, ok: !failed.length, uploads: results }, null, 2)}\n`,
+		);
+		return failed.length ? 1 : 0;
 	}
-	info(`${results.length} upload${results.length === 1 ? '' : 's'} → app ${appId} version ${version}`);
+	const done = results.length - failed.length;
+	info(`${done}/${results.length} upload${results.length === 1 ? '' : 's'} → app ${appId} version ${version}`);
+	if (failed.length)
+		throw new ShipError(`${failed.length} upload${failed.length === 1 ? '' : 's'} rejected by asc`, {
+			hint: `failed: ${failed.map(uploadLabel).join(', ')}`,
+		});
 	note('verify with `asc screenshots list --version-localization <id>` or in ASC');
 	return 0;
 }

@@ -66,6 +66,29 @@ export function run(cmd, args = [], opts = {}) {
 	});
 }
 
+/**
+ * Parse JSON, salvaging output that asc occasionally prefixes with a warning
+ * line. `undefined` means unparseable — distinct from a valid `null` body.
+ */
+function parseJSON(text) {
+	const t = String(text).trim();
+	if (!t) return undefined;
+	try {
+		return JSON.parse(t);
+	} catch {
+		/* fall through to salvage */
+	}
+	const start = t.search(/[[{]/);
+	if (start >= 0) {
+		try {
+			return JSON.parse(t.slice(start));
+		} catch {
+			/* unparseable */
+		}
+	}
+	return undefined;
+}
+
 /** Run a command whose stdout is JSON. Returns `fallback` on empty/unparseable output. */
 export async function runJSON(cmd, args, opts = {}) {
 	const { fallback, ...rest } = opts;
@@ -76,21 +99,10 @@ export async function runJSON(cmd, args, opts = {}) {
 		if (fallback !== undefined) return fallback;
 		throw new ShipError(`${cmd} produced no JSON output`, { hint: res.stderr.trim() });
 	}
-	try {
-		return JSON.parse(text);
-	} catch {
-		// asc occasionally prefixes warnings; salvage the first balanced JSON value.
-		const start = text.search(/[[{]/);
-		if (start >= 0) {
-			try {
-				return JSON.parse(text.slice(start));
-			} catch {
-				/* fall through */
-			}
-		}
-		if (fallback !== undefined) return fallback;
-		throw new ShipError(`${cmd} returned non-JSON output`, { hint: text.slice(0, 400) });
-	}
+	const value = parseJSON(text);
+	if (value !== undefined) return value;
+	if (fallback !== undefined) return fallback;
+	throw new ShipError(`${cmd} returned non-JSON output`, { hint: text.slice(0, 400) });
 }
 
 export const ASC = process.env.SHIP_ASC_BIN || 'asc';
@@ -99,6 +111,32 @@ export const ASC = process.env.SHIP_ASC_BIN || 'asc';
 export function asc(args, opts = {}) {
 	return runJSON(ASC, [...args, '--output', 'json'], opts);
 }
+
+/**
+ * `asc` for a write, surfacing the exit status the JSON body cannot carry.
+ * `asc(…, {fallback: null, allowFail: true})` returns `null` for a rejected
+ * call, a skipped dry-run and a quiet success alike, so a caller that sees only
+ * the parsed value cannot tell an upload that happened from one that was
+ * refused. Never throws on a non-zero exit — the caller decides whether one
+ * failure among N aborts the batch.
+ * @returns {Promise<{ok:boolean, skipped:boolean, code:number, data:unknown, stderr:string}>}
+ */
+export async function ascMutate(args, opts = {}) {
+	const res = await run(ASC, [...args, '--output', 'json'], {
+		...opts,
+		mutating: true,
+		allowFail: true,
+	});
+	if (res.skipped) return { ok: true, skipped: true, code: 0, data: null, stderr: '' };
+	return {
+		ok: res.code === 0,
+		skipped: false,
+		code: res.code,
+		data: parseJSON(res.stdout) ?? null,
+		stderr: (res.stderr || res.stdout).trim(),
+	};
+}
+
 /** `asc` with human output streamed to the terminal. */
 export function ascRaw(args, opts = {}) {
 	return run(ASC, args, { inherit: true, capture: false, ...opts });

@@ -2,7 +2,7 @@
 // shape — the three places where a wrong answer is silent.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readImageSize } from '../src/commands/shots.mjs';
+import { readImageSize, scopeOf, unmatched } from '../src/commands/shots.mjs';
 import { isNativeDep } from '../src/lib/native.mjs';
 import { bundleOf } from '../src/lib/revenuecat.mjs';
 
@@ -68,4 +68,56 @@ test('bundleOf reads the nested v2 shape, the flat shape, and neither', () => {
 	assert.equal(bundleOf({ type: 'app_store', bundle_id: 'com.b' }), 'com.b');
 	assert.equal(bundleOf({ type: 'test_store' }), '');
 	assert.equal(bundleOf(undefined), '');
+});
+
+// ─── upload scoping ──────────────────────────────────────────────────────────
+// `--locale`/`--display-type` decide what gets pushed to Apple. A name silently
+// dropped is a locale that ships the primary language's frames.
+
+const GROUPS = [
+	{ locale: 'en-US', displayType: 'IPHONE_65' },
+	{ locale: 'de-DE', displayType: 'IPHONE_65' },
+	{ locale: 'de-DE', displayType: 'IPAD_13' },
+];
+
+test('both scope flags take a comma-separated list', () => {
+	const scope = scopeOf({ locale: 'de-DE, fr-FR', 'display-type': 'IPHONE_65,iphone-6.7' });
+	assert.deepEqual([...scope.locales], ['de-DE', 'fr-FR']);
+	// Display types fold onto one key, so operator spelling cannot miss a match.
+	assert.deepEqual([...scope.types], ['IPHONE65', 'IPHONE67']);
+});
+
+test('an absent flag scopes to everything on disk, not to nothing', () => {
+	const scope = scopeOf({});
+	assert.equal(scope.locales, null);
+	assert.equal(scope.types, null);
+	assert.deepEqual(unmatched(GROUPS, scope), []);
+});
+
+test('a name no directory answers is reported, and says which kind it was', () => {
+	assert.deepEqual(unmatched([], scopeOf({ locale: 'xx-YY' })), ['locale xx-YY']);
+	assert.deepEqual(unmatched(GROUPS, scopeOf({ 'display-type': 'APPLE_TV' })), ['display type APPLETV']);
+});
+
+test('a pair missing from a full cross-product is not a silent partial upload', () => {
+	// en-US has no iPad set: both axes exist, so only the hole is named.
+	assert.deepEqual(unmatched(GROUPS, scopeOf({ locale: 'en-US,de-DE', 'display-type': 'IPHONE_65,IPAD_13' })), [
+		'en-US/IPAD13',
+	]);
+});
+
+test('an entirely absent axis is reported once, not once per pair it breaks', () => {
+	assert.deepEqual(unmatched(GROUPS, scopeOf({ locale: 'en-US,de-DE', 'display-type': 'APPLE_TV' })), [
+		'display type APPLETV',
+	]);
+});
+
+test('a tvOS directory folds onto the same key asc uses for it', () => {
+	// Flattening first and then stripping `APP` turned APPLE_TV into LETV, so an
+	// operator's APPLE_TV/ could never match asc's APP_APPLE_TV.
+	const dir = scopeOf({ 'display-type': 'APPLE_TV' });
+	const fromAsc = scopeOf({ 'display-type': 'APP_APPLE_TV' });
+	assert.deepEqual([...dir.types], [...fromAsc.types]);
+	assert.deepEqual([...dir.types], ['APPLETV']);
+	assert.deepEqual([...scopeOf({ 'display-type': 'IMESSAGE_APP_IPHONE_65' }).types], ['IPHONE65']);
 });
