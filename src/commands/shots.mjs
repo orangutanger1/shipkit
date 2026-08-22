@@ -454,6 +454,57 @@ export async function localizationId(appId, version, locale) {
 }
 
 /**
+ * What App Store Connect already has attached, per display type. The local tree
+ * cannot see this, and it is the half of the arithmetic Apple's cap is applied
+ * to — uploads happen from other machines, and an earlier run of this command
+ * counts too.
+ * @returns {Promise<Map<string, {n:number, dims:Set<string>}>>}
+ */
+async function remoteSets(appId, version, locale) {
+	const vlid = await localizationId(appId, version, locale);
+	const res = await asc(['screenshots', 'list', '--version-localization', vlid], {
+		fallback: null,
+		allowFail: true,
+	});
+	const byType = new Map();
+	for (const s of Array.isArray(res?.sets) ? res.sets : []) {
+		const key = typeKey(s.set?.attributes?.screenshotDisplayType ?? '');
+		if (!key) continue;
+		const shots = Array.isArray(s.screenshots) ? s.screenshots : [];
+		const entry = byType.get(key) ?? { n: 0, dims: new Set() };
+		entry.n += shots.length;
+		for (const shot of shots) {
+			const a = shot.attributes?.imageAsset;
+			if (a?.width && a?.height) entry.dims.add(`${a.width}x${a.height}`);
+		}
+		byType.set(key, entry);
+	}
+	return byType;
+}
+
+/**
+ * Whether pushing `local` files into a set that already holds `remote` is safe.
+ *
+ * `--skip-existing` dedupes on bytes, not filenames, so a re-render is new
+ * content even at identical dimensions: it lands *beside* the old set rather
+ * than replacing it. Two ways that hurts, in order of how quietly it happens:
+ * a set over Apple's cap is rejected at submission, and a set holding two
+ * generations of the same frame is a listing nobody proofread. `--replace`
+ * clears first, so it is exempt from both.
+ *
+ * The cap arithmetic is deliberately pessimistic: identical bytes really are
+ * skipped, but nothing here knows the remote checksums, and guessing low turns
+ * a caught error into a rejection.
+ * @returns {{over:boolean, total:number, appending:boolean, mixed:string[]}}
+ */
+export function capVerdict({ remote = 0, local, remoteDims = [], localDims = [], replace = false } = {}) {
+	if (replace) return { over: false, total: local, appending: false, mixed: [] };
+	const total = remote + local;
+	const mixed = remote > 0 ? remoteDims.filter((d) => !localDims.includes(d)) : [];
+	return { over: total > MAX_PER_GROUP, total, appending: remote > 0, mixed };
+}
+
+/**
  * How an upload row names itself. The per-locale path owns one pair; the
  * app-scoped path is one call covering every locale on disk, so name the
  * display type and count them rather than concatenating fifteen tags.
@@ -494,6 +545,38 @@ async function upload({ flags }) {
 	// silently grown past 10 is rejected at submission. Skip by checksum by
 	// default; --replace clears the set first.
 	const mode = flags.replace ? ['--replace'] : ['--skip-existing'];
+
+	// Ask Apple what is attached before adding to it. Skipped when --replace
+	// clears the set anyway, and when --force says the operator has decided.
+	if (!flags.replace && !flags.force) {
+		const blockers = [];
+		for (const locale of new Set(groups.map((g) => g.locale))) {
+			const remote = await remoteSets(appId, version, locale);
+			for (const g of groups.filter((x) => x.locale === locale)) {
+				const at = remote.get(typeKey(g.displayType)) ?? { n: 0, dims: new Set() };
+				const localDims = [...new Set(g.files.map((f) => `${f.width}x${f.height}`))];
+				const v = capVerdict({
+					remote: at.n,
+					local: g.count,
+					remoteDims: [...at.dims],
+					localDims,
+					replace: false,
+				});
+				const label = `${locale}/${g.displayType}`;
+				if (v.over)
+					blockers.push(`${label}: ${at.n} attached + ${g.count} local = ${v.total}, Apple accepts ${MAX_PER_GROUP}`);
+				else if (v.mixed.length)
+					blockers.push(`${label}: attached set is ${v.mixed.join(', ')}, these are ${localDims.join(', ')}`);
+				else if (v.appending)
+					warn(`${label}: ${at.n} already attached — identical bytes are skipped, anything re-rendered is added beside them`);
+			}
+		}
+		if (blockers.length)
+			throw new ShipError(`refusing to append to ${blockers.length} set${blockers.length === 1 ? '' : 's'}`, {
+				hint: `${blockers.join('\n')}\n--replace swaps each set for what is on disk; --force appends anyway`,
+			});
+	}
+
 	const results = [];
 
 	if (scope.locales) {

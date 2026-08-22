@@ -2,7 +2,7 @@
 // shape — the three places where a wrong answer is silent.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readImageSize, scopeOf, unmatched } from '../src/commands/shots.mjs';
+import { readImageSize, scopeOf, unmatched, capVerdict } from '../src/commands/shots.mjs';
 import { isNativeDep } from '../src/lib/native.mjs';
 import { bundleOf } from '../src/lib/revenuecat.mjs';
 
@@ -120,4 +120,57 @@ test('a tvOS directory folds onto the same key asc uses for it', () => {
 	assert.deepEqual([...dir.types], [...fromAsc.types]);
 	assert.deepEqual([...dir.types], ['APPLETV']);
 	assert.deepEqual([...scopeOf({ 'display-type': 'IMESSAGE_APP_IPHONE_65' }).types], ['IPHONE65']);
+});
+
+// ─── appending to a set Apple already holds ──────────────────────────────────
+// The local tree cannot see the attached set, and --skip-existing dedupes on
+// bytes rather than filenames, so a re-render is new content.
+
+test('a re-render beside an existing set is flagged, not silently doubled', () => {
+	// The real case: five attached at 1242x2688, five re-rendered to the same
+	// size under different filenames. Within the cap, so it uploads — but the
+	// operator has to be told it lands beside the old five, not over them.
+	const v = capVerdict({
+		remote: 5,
+		local: 5,
+		remoteDims: ['1242x2688'],
+		localDims: ['1242x2688'],
+	});
+	assert.equal(v.appending, true);
+	assert.equal(v.total, 10);
+	assert.equal(v.over, false);
+	assert.deepEqual(v.mixed, []);
+});
+
+test('a set that would pass the cap is refused before Apple rejects it', () => {
+	const v = capVerdict({ remote: 8, local: 5 });
+	assert.equal(v.over, true);
+	assert.equal(v.total, 13);
+});
+
+test('appending a different pixel size to an existing set is called out', () => {
+	// Both sizes are valid APP_IPHONE_65, so neither validate nor Apple objects;
+	// the result is just a listing with two generations of the same frame.
+	const v = capVerdict({
+		remote: 5,
+		local: 5,
+		remoteDims: ['1284x2778'],
+		localDims: ['1242x2688'],
+	});
+	assert.deepEqual(v.mixed, ['1284x2778']);
+});
+
+test('--replace is exempt: the set is cleared, so nothing accumulates', () => {
+	const v = capVerdict({ remote: 9, local: 5, remoteDims: ['1284x2778'], localDims: ['1242x2688'], replace: true });
+	assert.equal(v.over, false);
+	assert.equal(v.appending, false);
+	assert.deepEqual(v.mixed, []);
+	assert.equal(v.total, 5);
+});
+
+test('an empty remote set is a plain first upload', () => {
+	const v = capVerdict({ remote: 0, local: 10, localDims: ['1242x2688'] });
+	assert.equal(v.appending, false);
+	assert.equal(v.over, false);
+	assert.deepEqual(v.mixed, []);
 });
