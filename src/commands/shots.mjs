@@ -1,11 +1,18 @@
-// Screenshots — file-driven, because this host cannot make one.
+// Screenshots — measured, rendered, uploaded.
 //
-// There is no macOS, no Xcode, no simulator here: capture is IMPOSSIBLE on Linux
-// and this command will never pretend otherwise. Every subcommand reads PNG/JPEG
-// files that already exist on disk, measures them by parsing their own headers,
-// and hands them to `asc`. Capture happens elsewhere (a Mac, a device, a
-// designer's export); shipkit's job is to prove the pixels are legal and upload
-// them.
+// There is still no macOS, no Xcode and no simulator here, and nothing below
+// pretends otherwise. `plan`, `validate` and `upload` read PNG/JPEG files that
+// already exist on disk, measure them by parsing their own headers, and hand
+// them to `asc`. That is the whole contract for a repo that brings finished
+// images from a Mac, a device, or a designer's export.
+//
+// A repo may also commit a design spec (store/figma-geometry.json), and then
+// `capture` + `render` build those images here: the app's own web build driven
+// headless at device pixel size, composited into the design's mockup — or, when
+// the web build is not a faithful stand-in for the device UI, the finished
+// composites Apple already serves with only their caption band repainted.
+// Neither is a simulator shot, both are real pixels, and `verify` is what
+// proves it against the design's own reference render.
 //
 // Directory names carry the display type, and getting that wrong is the common
 // failure: /home/myen/tour's 13 captures at docs/ad-assets/slides-src/*.png are
@@ -20,6 +27,10 @@ import { join, relative } from 'node:path';
 import { asc, ascMutate } from '../exec.mjs';
 import { loadConfig, requireAppId, resolveVersion } from '../config.mjs';
 import { Report, ShipError, c, heading, info, note, step, table, warn } from '../log.mjs';
+import { loadCaptions, loadSpec, localesFor } from '../lib/shots-spec.mjs';
+import { renderLocales, verify as verifyRender } from '../lib/shots-render.mjs';
+import { captureWeb, fetchLiveComposites } from '../lib/shots-capture.mjs';
+import { downloadImages, driftOf, fileMeta, figmaToken, renderNodes } from '../lib/figma.mjs';
 
 export const help = `
 ${c.bold('ship shots')} ${c.dim('— App Store screenshots, from files on disk')}
@@ -27,24 +38,33 @@ ${c.bold('ship shots')} ${c.dim('— App Store screenshots, from files on disk')
 ${c.dim('usage:')} ship shots [subcommand] [flags]
 
   ${c.cyan('sizes')}     ${c.dim('default')} display types and pixel dimensions Apple accepts (live from asc)
+  ${c.cyan('capture')}   ${c.dim('spec')} take the raw inputs: web-build screens, or the live App Store composites
+  ${c.cyan('render')}    ${c.dim('spec')} composite raw + captions into store/screenshots/<locale>/
+  ${c.cyan('verify')}    ${c.dim('spec')} calibration + safety report against the design reference
+  ${c.cyan('figma')}     ${c.dim('spec')} has the design moved? ${c.dim('(cheap; --export spends the render quota)')}
   ${c.cyan('plan')}      scan store/screenshots, measure every image, write .asc/screenshots.json
   ${c.cyan('validate')}  gate — wrong pixel size, empty group, or >10 images per group exits 1
   ${c.cyan('upload')}    push each locale/displayType group to a version localisation
 
 ${c.bold('Flags')}
   ${c.cyan('--all')}             ${c.dim('sizes')} every display type, including tv/vision/desktop
-  ${c.cyan('--locale <l,…>')}    ${c.dim('validate, upload')} only these locales ${c.dim('(comma-separated)')}
+  ${c.cyan('--locale <l,…>')}    ${c.dim('all')} only these locales ${c.dim('(comma-separated; render/verify also take bare locale args)')}
   ${c.cyan('--display-type <t,…>')} ${c.dim('validate, upload')} only these display types ${c.dim('(e.g. IPHONE_65,IPHONE_67)')}
   ${c.cyan('--version <v>')}     ${c.dim('upload')} target version (default: app.json)
-  ${c.cyan('--force')}           ${c.dim('upload')} upload even though validate failed
+  ${c.cyan('--render')}          ${c.dim('upload')} re-render the in-scope locales first, then validate and push
+  ${c.cyan('--force')}           ${c.dim('upload')} upload even though validate failed ${c.dim('· capture: re-download existing bases')}
   ${c.cyan('--replace')}         ${c.dim('upload')} clear the existing set first (default: skip by checksum)
+  ${c.cyan('--pin')}             ${c.dim('figma')} record the live file version as the committed-export baseline
+  ${c.cyan('--export <ids>')}    ${c.dim('figma')} re-export node images ${c.dim('(quota-limited; 429 keeps the committed copies)')}
   ${c.cyan('--json')}            machine-readable output
   ${c.cyan('--dry-run')}         ${c.dim('upload')} print the asc calls, change nothing
 
 ${c.bold('Layout')} ${c.dim('store/screenshots/<locale>/<displayType>/*.png')}
 ${c.dim('  e.g. store/screenshots/en-US/IPHONE_65/01-home.png')}
 
-${c.dim('Capture is not possible on Linux — no simulator. Bring the images yourself.')}
+${c.dim('Capture is not a simulator: with a design spec, `capture` drives the app\'s own')}
+${c.dim('web build headless, or downloads the composites Apple already serves. Without')}
+${c.dim('one, bring the images yourself — shipkit will not invent pixels.')}
 `;
 
 const IMAGE_RE = /\.(png|jpe?g)$/i;
@@ -272,6 +292,182 @@ async function sizes({ flags }) {
 	note(`${rows.length} display type${rows.length === 1 ? '' : 's'} — source: asc screenshots sizes`);
 	note('directory name for `ship shots plan` = display type without the APP_ prefix, e.g. IPHONE_65');
 	return 0;
+}
+
+// ------------------------------------------------------------ render pipeline
+//
+// Everything above this line is file-driven and dependency-free: it measures
+// PNGs and hands them to asc. Everything below *makes* those PNGs, and only
+// runs in a repo that committed a design spec (store/figma-geometry.json). The
+// heavy libraries are resolved out of the app repo at call time, so a repo that
+// only uploads finished images never pays for them.
+
+/** cfg + spec + caption copy + the locale list, the four things every render subcommand needs. */
+async function renderContext({ args, flags }, { required = true } = {}) {
+	const cfg = await loadConfig();
+	const spec = await loadSpec(cfg, { required });
+	if (!spec) return { cfg, spec: null };
+	const captions = await loadCaptions(spec);
+	const scope = scopeOf(flags);
+	const requested = args.length ? args : scope.locales ? [...scope.locales] : [];
+	const locales = localesFor(cfg, captions, requested);
+	if (!locales.length) throw new ShipError('no locales to render');
+	return { cfg, spec, captions, locales };
+}
+
+/**
+ * Acquire the raw inputs. What that means depends on the mode, and the split is
+ * the whole reason both modes exist — see src/lib/shots-capture.mjs.
+ */
+async function capture({ args, flags }) {
+	const { cfg, spec, locales } = await renderContext({ args, flags });
+
+	if (spec.mode === 'caption-band') {
+		heading(`Base composites ${c.dim(`${cfg.name} · live App Store images`)}`);
+		const files = await fetchLiveComposites(cfg, spec, { force: !!flags.force });
+		info(`${files.length} base image${files.length === 1 ? '' : 's'} in ${relative(cfg.root, spec.paths.base)}`);
+		return files.length ? 0 : 1;
+	}
+
+	heading(`Capture ${c.dim(`${locales.length} locale${locales.length === 1 ? '' : 's'} · ${spec.capture?.url ?? ''}`)}`);
+	const shot = await captureWeb(cfg, spec, locales, {
+		onFrame: ({ locale, frame }) => step(`${locale}/${frame}`),
+	});
+	info(`${shot.length} capture${shot.length === 1 ? '' : 's'} → ${relative(cfg.root, spec.paths.raw)}`);
+	note('these are inputs, not deliverables — run `ship shots render` to composite them');
+	return 0;
+}
+
+/** Composite raw captures + caption copy into the tree `upload` reads. */
+async function render({ args, flags }) {
+	const { cfg, spec, captions, locales } = await renderContext({ args, flags });
+	heading(`Render ${c.dim(`${spec.mode} · ${locales.length} locale${locales.length === 1 ? '' : 's'} · ${spec.displayType}`)}`);
+
+	const rows = await renderLocales(cfg, spec, captions, locales, {
+		onFrame: (r) =>
+			flags.json
+				? null
+				: note(
+						`${r.locale}/${r.frame} ${r.lines.length}L${r.size === spec.type.size ? '' : ` [${r.size}px]`} ${r.lines.join(' / ')}`,
+					),
+	});
+
+	if (flags.json) {
+		process.stdout.write(
+			`${JSON.stringify({ mode: spec.mode, displayType: spec.displayType, frames: rows.map((r) => ({ ...r, file: relative(cfg.root, r.file) })) }, null, 2)}\n`,
+		);
+		return 0;
+	}
+	// A caption that had to shrink is the early warning for a locale whose copy
+	// is too long — it renders correctly and reads differently from the rest.
+	const shrunk = rows.filter((r) => r.size !== spec.type.size);
+	info(`${rows.length} image${rows.length === 1 ? '' : 's'} → ${relative(cfg.root, spec.paths.out)}`);
+	if (shrunk.length)
+		warn(`${shrunk.length} caption${shrunk.length === 1 ? '' : 's'} shrunk below ${spec.type.size}px: ${[...new Set(shrunk.map((r) => r.locale))].join(', ')}`);
+	note('run `ship shots validate` next, then `ship shots upload`');
+	return 0;
+}
+
+/**
+ * Calibration + safety. This is the evidence that the renderer still reproduces
+ * the design, and it is worth running after every geometry or type change.
+ */
+async function verifyShots({ args, flags }) {
+	const { cfg, spec, captions, locales } = await renderContext({ args, flags });
+	const res = await verifyRender(cfg, spec, captions, locales);
+
+	if (flags.json) {
+		process.stdout.write(`${JSON.stringify(res, null, 2)}\n`);
+	} else if (res.mode === 'device-frame') {
+		heading(`Calibration ${c.dim('re-render of the source locale vs the design tool\'s own export')}`);
+		table(res.calibration, [
+			{ header: 'FRAME', get: (r) => r.frame },
+			{ header: 'REFERENCE', get: (r) => r.ref ?? c.yellow('none') },
+			{ header: 'BG+BEZEL DIFFERING', get: (r) => (r.differing == null ? '' : `${(r.differing * 100).toFixed(2)}%`) },
+			{ header: 'MAX Δ', get: (r) => (r.max == null ? '' : r.max) },
+		]);
+		note('the glass and the caption are excluded: the reference shows placeholder screens, and two rasterisers never agree on antialiased 128px type');
+	} else {
+		heading(`Calibration ${c.dim('re-render of the source locale vs the live App Store images')}`);
+		table(res.calibration, [
+			{ header: 'FRAME', get: (r) => r.frame },
+			{ header: 'BAND FLAT', get: (r) => `${(r.flat * 100).toFixed(1)}%` },
+			{ header: 'PT', get: (r) => r.size },
+			{ header: 'Δ INK WIDTH', get: (r) => (r.changed ? c.dim(`${r.inkDelta}px (copy changed)`) : `${r.inkDelta > 0 ? '+' : ''}${r.inkDelta}px`) },
+			{ header: 'LINES', get: (r) => r.lines.join(' / ') },
+		]);
+		heading('Safety — pixels changed outside the caption band');
+		table(res.safety, [
+			{ header: 'LOCALE', get: (r) => r.locale },
+			{ header: 'MAX Δ OUTSIDE BAND', get: (r) => r.maxOutsideBand },
+		]);
+	}
+
+	// Thresholds, not vibes. Ink width that far off means the wrap algorithm is
+	// not reproducing the designer's line breaks; any pixel changed outside the
+	// band means the band bounds are wrong and artwork is being destroyed.
+	const fails = [];
+	if (res.mode === 'caption-band') {
+		const drift = res.calibration.filter((r) => !r.changed && Math.abs(r.inkDelta) > (flags['ink-tolerance'] ?? 2));
+		if (drift.length) fails.push(`ink width drifted on ${drift.map((r) => r.frame).join(', ')}`);
+		const bled = res.safety.filter((r) => r.maxOutsideBand > 0);
+		if (bled.length) fails.push(`pixels changed outside the band for ${bled.map((r) => r.locale).join(', ')}`);
+	} else {
+		const off = res.calibration.filter((r) => (r.differing ?? 1) > (flags['pixel-tolerance'] ?? 0.03));
+		if (off.length) fails.push(`reference mismatch on ${off.map((r) => r.frame).join(', ')}`);
+	}
+	if (fails.length && !flags.json) for (const f of fails) warn(f);
+	return fails.length ? 1 : 0;
+}
+
+/**
+ * Figma, which is a quota and not a service you call. Default is the cheap
+ * drift check; refetching exports is explicit and spends the day's budget.
+ */
+async function figma({ args, flags }) {
+	const { cfg, spec } = await renderContext({ args, flags });
+	const token = await figmaToken();
+	if (!token)
+		throw new ShipError('no Figma token', { hint: 'export FIGMA_API_KEY, or put it in ~/.omp/figma.key' });
+	const fileKey = spec.source?.figmaFile;
+	if (!fileKey) throw new ShipError(`${spec.file}: source.figmaFile is not set`);
+
+	heading(`Figma ${c.dim(fileKey)}`);
+	const meta = await fileMeta(fileKey, token);
+	const drift = driftOf(spec, meta);
+	info(`${meta.name} · version ${meta.version} · edited ${meta.lastModified}`);
+	if (drift.drifted === null) note('spec records no version — run with --pin to record this one as the baseline');
+	else if (drift.drifted) warn(`design has moved since the committed exports (spec ${drift.known} → live ${drift.live})`);
+	else info('committed exports match the live file');
+
+	if (flags.pin) {
+		const raw = JSON.parse(await readFile(spec.file, 'utf8'));
+		raw.source = { ...(raw.source ?? {}), version: meta.version, lastModified: meta.lastModified, checkedAt: new Date().toISOString() };
+		await writeFile(spec.file, `${JSON.stringify(raw, null, '\t')}\n`);
+		note(`pinned ${relative(cfg.root, spec.file)} to version ${meta.version}`);
+	}
+
+	// Only now do we touch the endpoint that runs out. Refusing by default is
+	// the point: the committed exports are build inputs, and re-exporting them
+	// on a whim is how a repo ends up unable to render for the rest of the day.
+	if (flags.export) {
+		const ids = flags.export === true ? Object.values(spec.source.frameIds ?? {}) : String(flags.export).split(',');
+		if (!ids.length) throw new ShipError('nothing to export — pass --export <nodeId,…> or set source.frameIds');
+		const dir = join(spec.paths.ref ?? spec.paths.parts);
+		try {
+			const images = await renderNodes(fileKey, ids, token, { scale: flags.scale ? Number(flags.scale) : 1 });
+			const files = await downloadImages(images, dir);
+			info(`exported ${files.length} node${files.length === 1 ? '' : 's'} → ${relative(cfg.root, dir)}`);
+			note('commit these — they are build inputs, and the quota will not serve them again today');
+		} catch (err) {
+			if (!err.quota) throw err;
+			// The committed copies are exactly the fallback this design bought.
+			warn('Figma render quota exhausted (429) — keeping the committed exports');
+			note('this is survivable by design; re-run tomorrow if you actually need new artwork');
+			return existsSync(dir) ? 0 : 1;
+		}
+	}
+	return drift.drifted ? 1 : 0;
 }
 
 async function plan({ flags }) {
@@ -514,8 +710,28 @@ const uploadLabel = (r) =>
 		? `${r.locale}/${r.displayType}`
 		: `${r.displayType} (${(r.locales ?? []).length} locale${(r.locales ?? []).length === 1 ? '' : 's'})`;
 
-async function upload({ flags }) {
+async function upload({ args = [], flags }) {
 	const cfg = await loadConfig();
+
+	// `--render` closes the gap between "the design changed" and "the store
+	// shows it": render, then measure what was just written, in one command.
+	//
+	// Scope has to agree across both halves or the upload is incoherent. With
+	// --locale, render narrows to those locales and upload takes the per-locale
+	// path, so only they move. Without it, upload is asc's app-scoped fan-out
+	// across every locale directory on disk — so render must cover every
+	// configured locale too, otherwise a stale locale rides along with the fresh
+	// ones. That is why render runs over the same scope resolution, not a
+	// separate list.
+	if (flags.render) {
+		const code = await render({ args, flags });
+		if (code !== 0) return code;
+		// Re-rendered bytes are new bytes, so --skip-existing will not skip them:
+		// they append beside the attached set unless it is replaced.
+		if (!flags.replace)
+			note('re-rendered images differ byte-wise from what is attached — `--replace` swaps the set instead of appending');
+	}
+
 	const found = await scan(cfg);
 
 	if (!flags.force) {
@@ -643,7 +859,7 @@ async function upload({ flags }) {
 	return 0;
 }
 
-const SUB = { sizes, plan, validate, upload };
+const SUB = { sizes, capture, render, verify: verifyShots, figma, plan, validate, upload };
 
 export async function run({ args, flags }) {
 	const [sub = 'sizes', ...rest] = args;

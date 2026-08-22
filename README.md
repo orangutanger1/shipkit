@@ -16,7 +16,7 @@ ship scout       before a repo exists: terms · brief · new
 ship aso         keyword research: harvest · volume · score · suggest · apply · competitors · audit
 ship loc         localization: seed · draft · review · lock · status
 ship meta        store listings: lint · stage · pull · apply · migrate · keywords · cpp
-ship shots       screenshots: sizes · plan · validate · upload
+ship shots       screenshots: sizes · capture · render · verify · figma · plan · validate · upload
 ship preflight   pre-submission readiness gate
 
 ship build       EAS production build (records the OTA baseline)
@@ -124,6 +124,10 @@ someone had to remember:
 - **`ship shots validate`** measures every PNG/JPEG header against the live
   `asc screenshots sizes` matrix and, when a capture fits a *different* display
   type, names the directory it belongs in — most rejections here are a `mv`.
+- **`ship shots render`** refuses to typeset a caption it cannot fit, instead of
+  shipping a clipped one, and `ship shots verify` refuses a caption-band render
+  that changed a single pixel outside the band — the property that made the mode
+  legal in the first place.
 - **`ship scout brief`** refuses an idea, with the number that killed it: a top-3
   review median over 50,000 with a free tier present, demand under the floor, or
   more than 6 of the top 10 carrying the term in their title. The brief is
@@ -145,6 +149,83 @@ someone had to remember:
 - **`ship portfolio`** names sunset candidates by rule — under $10/mo, older than
   90 days, no release in 60 — so an app cannot quietly consume attention because
   you forgot it exists.
+
+## Screenshots, without a Mac
+
+`ship shots plan|validate|upload` is the file-driven half: it measures the PNGs
+in `store/screenshots/<locale>/<displayType>/`, gates them against the live
+`asc screenshots sizes` matrix, and uploads them. A repo that brings finished
+images from a Mac or a designer needs nothing else, and nothing below runs.
+
+A repo may instead commit a **design spec** — `store/figma-geometry.json`,
+transcribed once from the Figma node tree — and then build those images here.
+There is still no simulator; there are two honest substitutes, and which one an
+app can use is a property of the app, not a preference:
+
+| | `device-frame` | `caption-band` |
+| --- | --- | --- |
+| where the app pixels come from | the app's own web build, driven headless at device pixel size | the finished composites Apple is already serving |
+| what gets rebuilt | the whole frame: mockup layers + capture + caption | the caption band, nothing else |
+| needs | a UI that React Native Web renders faithfully | a design whose caption sits on flat background |
+| localizes the app UI | yes — strings come from the app's own i18n bundle | no — captions only |
+
+```sh
+ship shots capture               # raw inputs: web-build screens, or the live composites
+ship shots render de-DE fr-FR    # composite raw + captions into store/screenshots/
+ship shots verify                # calibration + safety, against the design's own reference
+ship shots upload --render --replace
+```
+
+`--render` runs both halves over one scope resolution, which is the only way
+they stay coherent: with `--locale`, render narrows and upload takes the
+per-locale path; without it, render covers every configured locale because
+upload is asc's app-scoped fan-out across every locale directory on disk. Render
+half of them and the fan-out ships the stale half beside the fresh one.
+
+### Figma is a quota, not a service
+
+`GET /v1/images` serves a handful of exports a day on the starter plan and then
+429s. So every design input — mockup layer PNGs, the reference render, the node
+geometry — is fetched **once** and committed under `store/`. They are build
+inputs in git, not a cache: losing them blocks rendering until the quota resets.
+
+The cost of that trade is staleness, and `ship shots figma` is what pays it
+down. The default is a drift check against the file's `version`, which is a
+*different* endpoint and costs nothing — so a design edit is detectable on a day
+when exports are exhausted. `--export` is the only thing that spends quota, it
+is never implicit, and a 429 keeps the committed copies and says so.
+
+### What the numbers mean
+
+`ship shots verify` is the evidence, per mode:
+
+- **device-frame** re-renders the source locale and diffs it against the design
+  tool's own export, excluding the glass (the reference holds placeholder
+  screens) and the caption (two rasterisers never agree on antialiased 128px
+  type). What is left is background and bezel placement: **1.7–2.3%** of pixels
+  on stallbook, essentially all of it the phone body's one-pixel rim.
+- **caption-band** re-renders the source locale and compares caption ink width
+  with the live image — **0px** on five of glovebox's six frames, the sixth
+  exempted in the spec because its copy deliberately changed — then asserts
+  that every rendered locale differs from the base **nowhere outside the band**:
+  0, across 16 locales.
+
+### Two things that are not obvious
+
+**Wrapping.** Figma wraps greedily inside each frame's own text box. A balanced
+wrap reads better and breaks lines where the designer did not — it split
+glovebox's frame 2 as `Log a service / in 15 seconds.` where Figma had `Log a
+service in 15 / seconds.`. `type.wrap` picks one; match the source of truth, not
+the prettier algorithm.
+
+**The face, not the weight.** Captions are rendered as glyph outlines from an
+explicit font file, never as text handed to a rasteriser, because a family-name
+lookup resolves differently on a CI runner and substitutes silently. And the
+file matters: variable Oswald at `wght=600` is not the static SemiBold — its
+wider space advance drifted caption widths ~14px against the reference. A
+variable face used deliberately needs its instance named
+(`{"file": …, "variation": {"wght": 700}}`), or it opens on Regular and every
+caption comes out light and narrow.
 
 ## Keyword → app → locale → ads → back
 
@@ -297,6 +378,12 @@ src/lib/cpp.mjs           custom product pages: model, lint, stage, ad-group bin
 src/lib/appstore.mjs      autocomplete harvest, demand × competition scoring, keyword packing
 src/lib/revenuecat.mjs    v2 REST client + paywall audit
 src/lib/native.mjs        OTA-vs-build decision
+src/lib/shots-spec.mjs    the committed design spec: modes, geometry, type, validation
+src/lib/shots-type.mjs    caption wrapping (greedy vs balanced), size fitting, glyph outlines
+src/lib/shots-render.mjs  compositing both modes, plus calibration and safety diffs
+src/lib/shots-capture.mjs headless web capture and live-composite download
+src/lib/figma.mjs         quota-aware Figma client: cheap drift check, explicit export
+src/lib/appdeps.mjs       sharp/fontkit/puppeteer resolved from the app repo, not shipkit
 src/commands/*.mjs        one module per command
 mcp/servers.json          canonical MCP definitions merged into each repo
 skills/shipping-ios/      the skill agents load before touching a release

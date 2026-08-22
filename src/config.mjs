@@ -23,6 +23,10 @@ const DEFAULTS = {
 	asc: { appId: null, profile: null, primaryLocale: 'en-US', platform: 'IOS' },
 	eas: { profile: 'production', platform: 'ios', channel: 'production' },
 	store: { dir: 'store', locales: [] },
+	// `spec` is relative to store.dir and is absent in most repos: a repo that
+	// only uploads finished PNGs never loads it. Its presence is what turns on
+	// `ship shots capture/render/verify`.
+	shots: { spec: 'figma-geometry.json' },
 	revenuecat: { projectId: null, appId: null, entitlement: null, keyEnv: null },
 	ads: { orgId: null, dir: 'aso/asa', targetCpi: null, subPrice: null },
 	aso: { dir: 'aso', seeds: [], seedsByLocale: {}, minVolume: 0 },

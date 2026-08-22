@@ -1,0 +1,698 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://github.com/mayfield/shipkit/schema/screenshot-spec.schema.json",
+	"title": "screenshot design spec",
+	"description": "The committed screenshot design spec, at store/<shots.spec> (default store/figma-geometry.json). Transcribed from the Figma node tree so `ship shots capture|render|verify` can rebuild every localized store screenshot from data instead of from a quota-limited render endpoint. Loaded and filled by src/lib/shots-spec.mjs; a repo that only uploads finished PNGs has no such file.",
+	"type": "object",
+	"required": [
+		"mode",
+		"canvas",
+		"fonts",
+		"frames"
+	],
+	"additionalProperties": false,
+	"patternProperties": {
+		"^_": {
+			"description": "Annotation kept beside the data it explains — why this geometry is what it is. Ignored by every loader."
+		}
+	},
+	"properties": {
+		"$schema": {
+			"type": "string"
+		},
+		"mode": {
+			"enum": [
+				"device-frame",
+				"caption-band"
+			],
+			"description": "Which composition strategy renders this set. device-frame rebuilds the iPhone mockup from committed Figma layer exports each run and masks a fresh app capture into the screen cutout. caption-band leaves the finished composite Apple already serves untouched and repaints only the flat caption band, which is the only honest option when the app's web build is not a faithful stand-in for its device UI."
+		},
+		"displayType": {
+			"type": "string",
+			"default": "IPHONE_65",
+			"description": "ASC screenshot display type these frames satisfy. Also the directory level under the raw and output trees, so one repo can hold several sizes side by side."
+		},
+		"canvas": {
+			"type": "object",
+			"required": [
+				"w",
+				"h"
+			],
+			"additionalProperties": false,
+			"properties": {
+				"w": {
+					"type": "number",
+					"description": "Delivered screenshot width in pixels, as Apple requires it for this display type. Every other number in the spec is in this coordinate space."
+				},
+				"h": {
+					"type": "number",
+					"description": "Delivered screenshot height in pixels. caption-band also asks the App Store for base composites at exactly this size."
+				}
+			}
+		},
+		"source": {
+			"type": "object",
+			"additionalProperties": false,
+			"patternProperties": {
+				"^_": {
+					"description": "Annotation recording how this geometry was extracted and what could not be re-extracted."
+				}
+			},
+			"properties": {
+				"figmaFile": {
+					"type": "string",
+					"description": "Figma file key `ship shots figma` reads: drift-checks the committed geometry against the live file version, and exports nodes with --export."
+				},
+				"frameIds": {
+					"type": "object",
+					"additionalProperties": {
+						"type": "string"
+					},
+					"description": "Frame key to Figma node id. What `ship shots figma --export` re-exports when given no explicit ids, so a frame missing here has to be named by hand."
+				},
+				"page": {
+					"type": "string",
+					"description": "Figma page the frames live on. Provenance for whoever re-transcribes the geometry; no command resolves it."
+				},
+				"instance": {
+					"type": "string",
+					"description": "Figma device-mockup component instance the layer exports came from. Provenance only, but it is what makes a bezel edit reproducible."
+				},
+				"note": {
+					"type": "string",
+					"description": "Why the geometry is committed rather than fetched, and which exports are build inputs that the quota will not serve again."
+				}
+			},
+			"description": "Where this geometry came from in Figma. Only figmaFile and frameIds are acted on; the rest is the paper trail that makes a re-transcription possible."
+		},
+		"raw": {
+			"type": "string",
+			"default": "screenshots-raw",
+			"description": "Directory holding the render inputs, relative to store.dir: app captures under <raw>/<locale>/<displayType>/ for device-frame, downloaded live composites for caption-band. Build inputs, not a cache."
+		},
+		"captions": {
+			"type": "string",
+			"default": "screenshot-captions.json",
+			"description": "Caption copy file, relative to store.dir. Accepts either `{ locale: { frameKey: text } }` or `{ locales: { locale: { captions: {…} } } }`; the locales found there are the locales a render can produce."
+		},
+		"ref": {
+			"type": "string",
+			"description": "Directory of Figma's own render of the source-locale frames, relative to store.dir. `ship shots verify` diffs a fresh device-frame render against it, which is what stops a geometry edit from quietly moving the bezel. Required to verify device-frame."
+		},
+		"base": {
+			"type": "object",
+			"additionalProperties": false,
+			"patternProperties": {
+				"^_": {
+					"description": "Annotation about where the base composites come from."
+				}
+			},
+			"properties": {
+				"sourceLocale": {
+					"type": "string",
+					"description": "Locale whose composites are the base every other locale repaints, and the calibration reference for caption ink width. Defaults to asc.primaryLocale."
+				},
+				"country": {
+					"type": "string",
+					"description": "App Store storefront to download the live composites from. Defaults to the region of asc.primaryLocale."
+				},
+				"dir": {
+					"type": "string",
+					"description": "Where the base composites already live, relative to store.dir. Set it when they are not the downloaded set under <raw>/<sourceLocale>/<displayType>/."
+				}
+			},
+			"description": "caption-band only: which finished images are repainted, and where they come from."
+		},
+		"fonts": {
+			"type": "object",
+			"required": [
+				"default"
+			],
+			"additionalProperties": false,
+			"patternProperties": {
+				"^_": {
+					"description": "Annotation about face choice — usually why a substitute is not interchangeable."
+				}
+			},
+			"properties": {
+				"default": {
+					"$ref": "#/$defs/fontEntry",
+					"description": "The face captions are set in. Must be the same file the design uses: a substitute with a different space advance drifts every caption width against the reference."
+				},
+				"byLocale": {
+					"type": "object",
+					"additionalProperties": {
+						"$ref": "#/$defs/fontEntry"
+					},
+					"description": "Per-locale overrides, for locales the default face has no coverage for — a caption in an uncovered script renders as blanks, not as a fallback."
+				}
+			},
+			"description": "Font files, relative to store.dir."
+		},
+		"type": {
+			"type": "object",
+			"additionalProperties": false,
+			"patternProperties": {
+				"^_": {
+					"description": "Annotation about the typesetting choices, especially a wrap that disagrees with the prettier option."
+				}
+			},
+			"properties": {
+				"size": {
+					"type": "number",
+					"default": 128,
+					"description": "Caption size the design was drawn at, in canvas pixels. The fitter starts here and only ever shrinks."
+				},
+				"lineHeight": {
+					"type": "number",
+					"default": 160,
+					"description": "Line height at the design size. Scaled with the size as the fitter shrinks, so the block keeps its proportions."
+				},
+				"colour": {
+					"type": "string",
+					"pattern": "^#?[0-9a-fA-F]{6}$",
+					"default": "#FFFFFF",
+					"description": "Caption ink colour, as #rrggbb."
+				},
+				"wrap": {
+					"enum": [
+						"balanced",
+						"greedy"
+					],
+					"default": "balanced",
+					"description": "Which line-breaking to reproduce. greedy is what Figma itself does; balanced minimises squared slack so no line holds an orphan word. They disagree, so match the source of truth for the frames being reproduced rather than the prettier algorithm."
+				},
+				"targetMinSize": {
+					"type": "number",
+					"default": 96,
+					"description": "Shrink floor while the fitter is still trying to hold the source locale's line count. Below this it gives up on the line count instead of on legibility."
+				},
+				"minSize": {
+					"type": "number",
+					"default": 56,
+					"description": "Absolute shrink floor. A caption that still does not fit here is a copy problem, not a layout problem."
+				},
+				"step": {
+					"type": "number",
+					"default": 2,
+					"description": "Size decrement per shrink attempt. Coarser steps keep localized sets to fewer distinct sizes, which reads as deliberate."
+				},
+				"gap": {
+					"type": "number",
+					"default": 24,
+					"description": "Vertical breathing room kept between the caption block and the mockup. It is what bounds how tall a wrapped caption may grow before it must shrink."
+				},
+				"extraLines": {
+					"type": "integer",
+					"default": 0,
+					"description": "Lines a localized caption may take beyond the source locale's count before shrinking starts. 0 holds the design's rhythm exactly; 1 suits captions that some languages simply cannot say in the source line count at full size."
+				},
+				"margin": {
+					"type": [
+						"number",
+						"null"
+					],
+					"default": null,
+					"description": "Side margin every caption box is widened to, centre preserved. Set it when the designer varied box widths per frame about one shared centre, so a narrow box does not shrink a long localized caption for no design reason. Null wraps inside each frame's own box width."
+				},
+				"perCharacterLocales": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"default": [
+						"ja",
+						"ko",
+						"zh-Hans",
+						"zh-Hant",
+						"th"
+					],
+					"description": "Locales whose captions must break between characters, having no spaces to break at."
+				}
+			},
+			"description": "Caption typesetting. Shared by both modes, so a locale added to one set is added the same way to the other."
+		},
+		"band": {
+			"type": "object",
+			"additionalProperties": false,
+			"patternProperties": {
+				"^_": {
+					"description": "Annotation recording the measurement that licenses repainting this band."
+				}
+			},
+			"properties": {
+				"inkTolerance": {
+					"type": "number",
+					"default": 26,
+					"description": "Per-channel distance from the band background that counts as glyph ink. It decides both where the live caption ends and how wide `ship shots verify` measures it to be."
+				},
+				"flatMin": {
+					"type": "number",
+					"default": 0.85,
+					"description": "Minimum share of the band that must be one flat colour. Below it the band holds artwork and repainting would destroy pixels the design needs, so the render stops — this is the whole licence for the mode, expressed as a gate rather than a promise."
+				},
+				"pad": {
+					"type": "number",
+					"default": 8,
+					"description": "How far inside the band the redrawn caption block is kept, so a repaint never touches the band edge."
+				},
+				"clearance": {
+					"type": "number",
+					"default": 4,
+					"description": "Clearance left between the band edge and the mockup, so the band that gets erased and repainted cannot clip the device."
+				}
+			},
+			"description": "caption-band only: how the band is found, gated and repainted."
+		},
+		"device": {
+			"type": "object",
+			"required": [
+				"w",
+				"h",
+				"screenIndex",
+				"layers",
+				"screenGroup",
+				"artboard"
+			],
+			"additionalProperties": false,
+			"patternProperties": {
+				"^_": {
+					"description": "Annotation about the layer exports and how their declared geometry relates to the exported pixels."
+				}
+			},
+			"properties": {
+				"w": {
+					"type": "number",
+					"description": "Mockup width in canvas pixels, as Figma reports it for the device instance."
+				},
+				"h": {
+					"type": "number",
+					"description": "Mockup height in canvas pixels."
+				},
+				"parts": {
+					"type": "string",
+					"default": "figma-export/parts",
+					"description": "Directory of the committed Figma layer exports, relative to store.dir. These are build inputs in git: losing them blocks rendering until the Figma quota resets."
+				},
+				"screenIndex": {
+					"type": "integer",
+					"description": "Z-order position the masked app capture is inserted at, counted in layers[]. It is what puts the capture behind the glass and in front of the body."
+				},
+				"screenMask": {
+					"type": "string",
+					"default": "screen-shape.png",
+					"description": "Layer export whose alpha is the real screen cutout — rounded corners and notch — that the capture is masked with, relative to parts."
+				},
+				"layers": {
+					"type": "array",
+					"minItems": 1,
+					"items": {
+						"type": "object",
+						"required": [
+							"file",
+							"x",
+							"y",
+							"w",
+							"h"
+						],
+						"additionalProperties": false,
+						"properties": {
+							"file": {
+								"type": "string",
+								"description": "Layer export filename, relative to parts."
+							},
+							"x": {
+								"type": "number",
+								"description": "Declared left edge in Figma, in mockup coordinates."
+							},
+							"y": {
+								"type": "number",
+								"description": "Declared top edge in Figma, in mockup coordinates."
+							},
+							"w": {
+								"type": "number",
+								"description": "Declared width in Figma. With x it fixes the centre the export is placed on, which is what survives Figma rounding the PNG to the vector's visible ink box."
+							},
+							"h": {
+								"type": "number",
+								"description": "Declared height in Figma. With y it fixes the vertical centre the export is placed on."
+							}
+						}
+					},
+					"description": "The mockup's layer stack in Figma z-order, bottom first. The mockup is never redrawn from these numbers alone: each export is pasted on its declared centre, because Figma trims the PNG to visible ink."
+				},
+				"screenGroup": {
+					"$ref": "#/$defs/rect",
+					"description": "The screen group's rect within the mockup: where the masked capture is pasted, and the window extracted out of the artboard-sized placement."
+				},
+				"artboard": {
+					"$ref": "#/$defs/rect",
+					"description": "The capture's own image rect, larger than the screen group and negatively offset, exactly as Figma's image transform sees it. The capture is placed at this size and then the group window is extracted, so content lands where the design put it instead of being resized into the cutout."
+				}
+			},
+			"description": "device-frame only: the iPhone mockup, rebuilt from committed Figma layer exports."
+		},
+		"capture": {
+			"type": "object",
+			"additionalProperties": false,
+			"patternProperties": {
+				"^_": {
+					"description": "Annotation about the capture setup — the pixel arithmetic behind the viewport, or app behaviour a seeded run depends on."
+				}
+			},
+			"properties": {
+				"url": {
+					"type": "string",
+					"description": "Origin of the app's running web build. `ship shots capture` drives it in headless Chromium, so the screens are rendered by real code with the app's own bundled faces and translated by its own i18n bundle."
+				},
+				"viewport": {
+					"type": "object",
+					"additionalProperties": false,
+					"properties": {
+						"width": {
+							"type": "number",
+							"default": 428,
+							"description": "CSS viewport width. With deviceScaleFactor it must multiply out to a pixel size Apple accepts for this display type."
+						},
+						"height": {
+							"type": "number",
+							"default": 926,
+							"description": "CSS viewport height, the device's own logical height so layout breaks where iOS breaks it."
+						},
+						"deviceScaleFactor": {
+							"type": "number",
+							"default": 3,
+							"description": "Device pixel ratio to capture at, so the shot carries the retina detail the store shows."
+						}
+					},
+					"description": "The device the browser pretends to be."
+				},
+				"hideScrollbars": {
+					"type": "boolean",
+					"default": true,
+					"description": "Inject CSS killing webkit scrollbars before each shot. A scrollbar down the right edge is the one thing in these frames that could not exist on an iPhone, and it is what a reviewer notices."
+				},
+				"settleMs": {
+					"type": "number",
+					"default": 600,
+					"description": "Pause after load before shooting, to let animations and late layout settle. Raise it for a screen that visibly finishes drawing after network idle."
+				},
+				"timeoutMs": {
+					"type": "number",
+					"default": 30000,
+					"description": "Per-navigation and per-selector timeout for the capture browser."
+				},
+				"localeParam": {
+					"type": [
+						"string",
+						"null"
+					],
+					"default": null,
+					"description": "Query parameter the app reads its locale from. Set it for an app that does not honour the Accept-Language header the capture already sends."
+				},
+				"storage": {
+					"type": "object",
+					"additionalProperties": false,
+					"properties": {
+						"seed": {
+							"type": "string",
+							"description": "File holding the seed, relative to store.dir. Same shape as this block minus this key: default plus byLocale."
+						},
+						"default": {
+							"type": "object",
+							"description": "localStorage entries written for every locale, keyed by storage key. Non-string values are JSON-stringified."
+						},
+						"byLocale": {
+							"type": "object",
+							"additionalProperties": {
+								"type": "object"
+							},
+							"description": "Per-locale overlay on default, keyed by locale. Every pass writes the full merged set, because the browser profile is reused and a later locale would otherwise inherit the previous locale's data."
+						}
+					},
+					"description": "localStorage the app is seeded with, so captures show a populated app rather than an empty state. Either point `seed` at a file or inline the payload here."
+				},
+				"screens": {
+					"type": "array",
+					"minItems": 1,
+					"items": {
+						"type": "object",
+						"required": [
+							"frame"
+						],
+						"additionalProperties": false,
+						"properties": {
+							"frame": {
+								"type": "string",
+								"description": "Frame key this route is the capture for. Must name a frame in frames[]; the capture is written under that frame's src."
+							},
+							"path": {
+								"type": "string",
+								"default": "/",
+								"description": "Route to shoot, resolved against capture.url."
+							},
+							"waitFor": {
+								"type": "string",
+								"description": "Selector that must appear before the shot. Use it for a screen whose content arrives after network idle, so the frame is never captured half-empty."
+							},
+							"evaluate": {
+								"type": "string",
+								"description": "JavaScript run in the page before the shot, for state no URL or seed can reach — dismissing a prompt, scrolling to a section."
+							}
+						}
+					},
+					"description": "The app routes to shoot, once per locale. Ordering is free; each entry names the frame it feeds."
+				}
+			},
+			"description": "device-frame only: how `ship shots capture` drives the app's web build to produce the raw captures."
+		},
+		"frames": {
+			"type": "array",
+			"minItems": 1,
+			"items": {
+				"type": "object",
+				"required": [
+					"key"
+				],
+				"additionalProperties": false,
+				"patternProperties": {
+					"^_": {
+						"description": "Annotation about this frame."
+					}
+				},
+				"properties": {
+					"key": {
+						"type": "string",
+						"description": "Frame identity: the caption file key, the capture target, and the reference-render match. Everything about one screenshot is joined on it."
+					},
+					"src": {
+						"type": "string",
+						"description": "Raw capture filename under <raw>/<locale>/<displayType>/. Written by capture, read by render, and the delivered filename unless `out` overrides it. Required in device-frame mode."
+					},
+					"out": {
+						"type": "string",
+						"description": "Delivered filename override. Without it device-frame reuses src and caption-band writes <ordinal>-<key>.png, which is the order Apple shows them in."
+					},
+					"node": {
+						"type": "string",
+						"description": "Figma node id for this frame, recorded beside the geometry it was transcribed from. Exports resolve ids through source.frameIds, so this is provenance."
+					},
+					"bg": {
+						"type": "string",
+						"pattern": "^#?[0-9a-fA-F]{6}$",
+						"description": "Canvas background behind the mockup, as #rrggbb. device-frame paints it rather than exporting a background layer, so it is the one colour a render cannot recover from the parts."
+					},
+					"phone": {
+						"type": "object",
+						"required": [
+							"x",
+							"y"
+						],
+						"additionalProperties": false,
+						"properties": {
+							"x": {
+								"type": "number",
+								"description": "Mockup left edge on the canvas."
+							},
+							"y": {
+								"type": "number",
+								"description": "Mockup top edge on the canvas. Negative pushes the device off the top, which is also what tells the caption fitter the caption sits below."
+							}
+						},
+						"description": "device-frame only: where the mockup sits on the canvas. It bounds the caption's vertical room, and locates the glass region verify excludes from its diff."
+					},
+					"caption": {
+						"type": "object",
+						"additionalProperties": false,
+						"properties": {
+							"x": {
+								"type": "number",
+								"description": "Caption box left edge, as the designer drew it. With w it fixes the centre the block stays on when it is widened or shrunk."
+							},
+							"y": {
+								"type": "number",
+								"description": "Caption box top edge. Whether it is above or below the mockup decides which direction the block has room to grow."
+							},
+							"w": {
+								"type": "number",
+								"description": "Caption box width the wrap must respect, unless type.margin widens it."
+							}
+						},
+						"description": "The caption box from Figma. Omitted, the caption is centred on the canvas at full width."
+					},
+					"crop": {
+						"type": "array",
+						"minItems": 2,
+						"maxItems": 2,
+						"items": {
+							"type": "array",
+							"minItems": 3,
+							"maxItems": 3,
+							"items": {
+								"type": "number"
+							}
+						},
+						"description": "Figma's own image transform for this frame, as its two 3-wide matrix rows. Reproduced rather than approximated with a resize, because a resize shifts the content: the transform's scale and offset are what put the captured pixels where the design shows them, with edge rows replicated where it samples outside the source."
+					},
+					"cover": {
+						"type": "boolean",
+						"description": "Fill the screen rect and centre-crop the overflow, Figma's FILL scale mode. Use it instead of `crop` for a frame the designer scaled that way."
+					},
+					"base": {
+						"type": "string",
+						"default": "<key>.png",
+						"description": "caption-band only: the finished composite this frame repaints, under the base directory. Also the filename the live download is written to, in App Store order."
+					},
+					"mockTop": {
+						"type": "number",
+						"description": "caption-band only: top edge of the mockup inside the existing composite. Its sign picks which side of the mockup the band is on — positive means the band is above it, negative means the mockup runs off the top and the band is below. Required in caption-band mode."
+					},
+					"mockH": {
+						"type": "number",
+						"description": "caption-band only: mockup height inside the existing composite, so a band below it starts past its bottom edge. Required in caption-band mode."
+					},
+					"captionChanged": {
+						"type": "string",
+						"description": "caption-band only: why this frame's copy deliberately differs from the live image, which exempts it from ink-width calibration. A frame whose text changed is supposed to measure differently, and naming the reason keeps that an exemption with a paper trail instead of a threshold quietly raised until it passes."
+					}
+				}
+			},
+			"description": "The screenshots, in delivery order. One entry per store screenshot; every entry needs caption copy under its key."
+		}
+	},
+	"allOf": [
+		{
+			"if": {
+				"properties": {
+					"mode": {
+						"const": "device-frame"
+					}
+				},
+				"required": [
+					"mode"
+				]
+			},
+			"then": {
+				"required": [
+					"device"
+				],
+				"properties": {
+					"frames": {
+						"items": {
+							"required": [
+								"src"
+							]
+						}
+					}
+				}
+			}
+		},
+		{
+			"if": {
+				"properties": {
+					"mode": {
+						"const": "caption-band"
+					}
+				},
+				"required": [
+					"mode"
+				]
+			},
+			"then": {
+				"properties": {
+					"frames": {
+						"items": {
+							"required": [
+								"mockTop",
+								"mockH"
+							]
+						}
+					}
+				}
+			}
+		}
+	],
+	"$defs": {
+		"rect": {
+			"type": "object",
+			"required": [
+				"x",
+				"y",
+				"w",
+				"h"
+			],
+			"additionalProperties": false,
+			"properties": {
+				"x": {
+					"type": "number",
+					"description": "Left edge in mockup coordinates; negative where Figma offsets the rect outside the mockup."
+				},
+				"y": {
+					"type": "number",
+					"description": "Top edge in mockup coordinates."
+				},
+				"w": {
+					"type": "number",
+					"description": "Width in mockup coordinates."
+				},
+				"h": {
+					"type": "number",
+					"description": "Height in mockup coordinates."
+				}
+			}
+		},
+		"fontEntry": {
+			"oneOf": [
+				{
+					"type": "string",
+					"description": "Font file, relative to store.dir. Use this form for a static face, which needs no instance selected."
+				},
+				{
+					"type": "object",
+					"required": [
+						"file"
+					],
+					"additionalProperties": false,
+					"patternProperties": {
+						"^_": {
+							"description": "Annotation about this face."
+						}
+					},
+					"properties": {
+						"file": {
+							"type": "string",
+							"description": "Font file, relative to store.dir."
+						},
+						"variation": {
+							"type": "object",
+							"additionalProperties": {
+								"type": "number"
+							},
+							"description": "Variation axis values to instantiate a variable face at, keyed by axis tag. Not decoration: a variable file opens on its default instance, so a design calling for Bold silently renders Regular and every caption comes out lighter and narrower than the reference."
+						}
+					}
+				}
+			]
+		}
+	}
+}

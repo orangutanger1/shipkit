@@ -123,6 +123,17 @@
 				}
 			}
 		},
+		"shots": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"spec": {
+					"type": "string",
+					"default": "figma-geometry.json",
+					"description": "Screenshot design spec, relative to store.dir. Its presence is what turns on `ship shots capture/render/verify`; a repo that only uploads finished PNGs has no such file. See schema/screenshot-spec.schema.json."
+				}
+			}
+		},
 		"revenuecat": {
 			"type": "object",
 			"additionalProperties": false,

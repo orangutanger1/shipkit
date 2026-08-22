@@ -21,8 +21,12 @@ ruby, no fastlane.
   `precheck` → `ship preflight`, `match` → EAS-managed credentials, `gym` → EAS Build.
   The one lane fastlane uniquely owns is `snapshot` (simulator screenshots), which
   needs a Mac; that lives in `ci/screenshots.yml` on a GitHub macOS runner.
-- **Screenshots cannot be captured here.** `ship shots` validates and uploads
-  files that already exist on disk. Do not pretend otherwise.
+- **No simulator screenshots here.** `ship shots plan|validate|upload` works on
+  files that already exist. With a committed design spec
+  (`store/figma-geometry.json`), `ship shots capture` + `render` build those
+  files two other ways — the app's own web build driven headless, or Apple's
+  live composites with the caption band repainted. Both are real pixels; neither
+  is a simulator. See "Screenshots" below.
 
 ## First move in any app repo
 
@@ -153,6 +157,48 @@ ship aso competitors --locale en-US
 
 Research first, listing second, ads third. Ads bid on terms the listing already
 ranks for; bidding on terms your metadata ignores pays Apple to fix your ASO.
+
+## Screenshots
+
+```bash
+ship shots plan       # measure every image on disk, write .asc/screenshots.json
+ship shots validate   # gate: wrong pixel size, empty group, >10 per group
+ship shots upload     # one asc call per display type, fanning out across locales
+```
+
+`--locale` and `--display-type` take comma-separated lists and narrow `validate`
+and `upload` identically, so a broken locale nobody is pushing cannot block the
+ones that are. With no `--locale`, upload is asc's app-scoped fan-out over every
+locale directory under `store/screenshots`; naming locales switches to the
+per-locale path.
+
+A repo with `store/figma-geometry.json` also renders those images:
+
+```bash
+ship shots capture               # web build headless, or Apple's live composites
+ship shots render de-DE fr-FR    # composite raw + store/screenshot-captions.json
+ship shots verify                # calibration + safety; run after any spec change
+ship shots figma                 # has the design moved? (cheap — not the render endpoint)
+ship shots upload --render --replace
+```
+
+Three things to know before touching this:
+
+1. **`--render` and scope travel together.** Rendering one locale and then
+   letting the app-scoped fan-out upload everything ships a stale locale beside
+   a fresh one. `--render` runs both halves over one scope resolution; keep it
+   that way.
+2. **Re-rendered bytes are new bytes.** `--skip-existing` cannot skip them, so
+   they append beside the attached set. Use `--replace` unless you mean to add.
+3. **Figma's render endpoint is a daily quota.** The committed exports under
+   `store/figma-export/` are build inputs in git, not a cache. `ship shots
+   figma` checks for drift without spending quota; `--export` is the only thing
+   that does, and a 429 keeps the committed copies.
+
+`ship shots render` fails on a caption it cannot fit rather than clipping it,
+and `ship shots verify` fails a caption-band render that touched a single pixel
+outside the caption band. Read its numbers; do not assert the set is right
+because the command exited 0 somewhere else.
 
 ## Building and updating
 
