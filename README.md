@@ -25,9 +25,9 @@ ship submit      upload + submit for review
 ship release     preflight → meta → build → submit, gated at every step
 
 ship rc          RevenueCat: status · offerings · products · entitlements · audit
-ship ads         Apple Search Ads: status · plan · sync · mine · report
-ship analytics   App Store analytics: pull · terms · funnel
-ship price       territory pricing: show · plan · apply
+ship ads         Apple Search Ads: status · plan · snapshot · sync · mine · report
+ship analytics   App Store analytics: pull · terms · funnel · onboarding
+ship price       territory pricing: show · plan · apply · audit
 ship status      one dashboard: review state, builds, revenue, ad spend, OTA safety
 ship portfolio   every app at once: revenue, spend, staleness, sunset candidates
 ```
@@ -71,7 +71,7 @@ binaries, and `ship doctor` tells you which one is missing.
   "eas":        { "projectId": "…", "profile": "production", "channel": "production" },
   "store":      { "dir": "store", "locales": ["en-US", "de-DE", …] },
   "revenuecat": { "projectId": "projf0d996da", "entitlement": "pro", "keyEnv": "EXPO_PUBLIC_RC_IOS_KEY" },
-  "ads":        { "orgId": null, "dir": "aso/asa", "targetCpi": 1.50, "subPrice": 4.99 },
+  "ads":        { "orgId": null, "dir": "aso/asa", "targetCpi": 1.50, "subPrice": 4.99, "retentionMonths": 1, "seedBid": 0.60, "baselineInstallRate": 0.4, "retain": 12 },
   "aso":        { "dir": "aso", "seeds": [], "seedsByLocale": { "de-DE": ["kfz scheckheft"] }, "minVolume": 10 },
   "loc":        { "sourceLocale": null, "glossary": "store/glossary.json" },
   "analytics":  { "dir": ".asc/analytics" },
@@ -289,6 +289,70 @@ filters keep them out of your own listing, all of them evidence-based:
 
 Branded terms are not discarded — `ship ads plan` routes them into the Competitor
 campaign, where bidding on a rival's name is a decision you can see and price.
+
+## Paid acquisition: two files, one identity, one threshold
+
+`ship ads` spends real money, so three properties are structural rather than
+advisory. Each one is here because its absence cost a live account its delivery
+in a single command.
+
+**Desired state and observed state are different files.** `aso/asa/campaign-plan.json`
+is what you want; `aso/asa/snapshot.json` (`ship ads snapshot`) is what Apple has,
+including ids, statuses, bids, negatives and per-object performance. `ship ads sync`
+reconciles them and prints every transition — create, update, adopt, preserve,
+pause, orphan — *before* issuing any of it, so `--dry-run` and a real run print the
+same list by construction.
+
+**Objects are matched by Apple's id, not by name.** Ids are recorded back into the
+plan under `apple` after each sync. A name is a label a human edits: matching by
+name means renaming your scheme orphans every object you have already paid to
+learn about, and the previous ones look "unplanned" and get paused. Nothing is
+paused without `--prune`; nothing that changed outside `ship` is overwritten
+without `--force` (the plan wins) or `--adopt` (the account wins). Either way the
+divergent objects are named and the default is to refuse and exit non-zero.
+
+**A bid is a price in an auction, not a share of a budget.** Bids start from the
+account's own realised cost-per-tap where there is one, else `ads.seedBid`
+(default $0.60 — deliberately not Apple's $0.30 floor, which loses every
+auction), scaled by demand and clamped. A plan in which *every* bid hit the clamp
+is refused rather than written: that is a single price wearing an opportunity
+model. `--bid` / `--min-bid` / `--max-bid` set it by hand.
+
+**Apple Search Ads has no ad-group budget.** `dailyBudgetAmount` exists on the
+campaign and nowhere else, so no ad group in a plan carries one. One ad group per
+keyword is justified on *creative* control — an ad group is the smallest object
+that can carry its own Custom Product Page and its own bid — and never on budget
+isolation, which the platform cannot provide.
+
+**One kill threshold, resolved once and stamped into every artifact.** `ads.targetCpi`
+is the only source; `ads.subPrice` sets breakeven and is never a fallback for a
+missing target. Negation needs a sample size as well as a bill: zero installs over
+three taps is noise, not a verdict, so `ship ads mine` withholds a negation until
+the tap count at which a keyword converting at `ads.baselineInstallRate` would
+have converted with 95% probability — 6 taps at the 0.4 default — and prints what
+it is waiting for. `--apply` requires `--confirm`, after printing the evidence.
+
+**A CPI target means nothing without an LTV.** `ship ads plan` and `ship ads sync`
+read the configured RevenueCat project and refuse to be quiet about a zero: with
+0 subscriptions and $0 revenue, every threshold is labelled a *research cap*
+rather than a target, and `ship ads report` prints install→paid beside CPI so the
+whole funnel is one command. Silence there is how $10/day survives a review.
+
+```
+ship ads plan --budget 10 --bid 0.55   # offline apart from the CPT and LTV reads
+ship ads snapshot                      # observed state, with ids
+ship ads sync --dry-run                # the mutation set, exactly
+ship ads report --level ad-group       # where a bid regression is visible
+ship ads mine --apply --confirm        # negatives + promotions, with evidence
+```
+
+**Migrating a plan written before ids were recorded.** Nothing to do by hand: a
+plan with no `apple` block is adopted by name on the next sync, which records the
+ids. Where such a plan's values differ from the live account, sync refuses and
+names each object, because a plan that has never been pushed cannot tell its own
+intent apart from somebody's manual fix — resolve it once with `--adopt` (keep the
+live bids, usually right) or `--force` (push the plan), and every later run
+reconciles by id.
 
 ## MCP servers
 

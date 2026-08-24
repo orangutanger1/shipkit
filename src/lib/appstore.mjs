@@ -365,6 +365,135 @@ export function ageInDays(iso, now = Date.now()) {
 }
 
 /**
+ * Nouns that name the *artifact* rather than the subject: the half of a title
+ * that says what kind of app this is. Two apps sharing one of these and a
+ * subject word are the same product in different vocabulary, which is the
+ * distinction `titleMatch` cannot make — "Aquarium Manager: Tank Log" does not
+ * contain the string "aquarium water log", and is that app exactly.
+ *
+ * Both families are here on purpose. A list of storage nouns alone scores 0%
+ * on every computational category, because "Concrete Calculator" records
+ * nothing — which would hand back exactly the false pass this function was
+ * written to remove, one term shape over.
+ */
+const ARTIFACT_NOUNS = [
+	// Stores something.
+	'logbook', 'log', 'logs', 'logger', 'journal', 'diary', 'tracker', 'tracking',
+	'track', 'manager', 'monitor', 'record', 'records', 'reminder', 'reminders',
+	'planner', 'notebook', 'keeper', 'checklist', 'inspection', 'maintenance',
+	'service', 'history', 'inventory', 'book',
+	// Computes something.
+	'calculator', 'calc', 'calculators', 'converter', 'conversion', 'estimator',
+	'estimate', 'sizer', 'solver', 'timer', 'counter',
+];
+const ARTIFACT_RE = new RegExp(`\\b(${ARTIFACT_NOUNS.join('|')})\\b`, 'i');
+
+/**
+ * Split camel and digit runs so a word-boundary match can see inside a brand
+ * word. "DiverLog+" → "diver log+", "AquaLens" → "aqua lens": the storefront's
+ * convention is to jam the category noun onto the brand, and a plain `\blog\b`
+ * never fires on it. Splitting first also keeps "Catalog" and "Biology" out,
+ * which a bare substring test would wrongly count.
+ */
+const camelSplit = (s) =>
+	String(s ?? '')
+		.replace(/([a-z])([A-Z])/g, '$1 $2')
+		.replace(/([A-Za-z])([0-9])/g, '$1 $2')
+		.toLocaleLowerCase();
+
+/**
+ * Whether a title names the same subject as one of the term's subject words.
+ * Compounds are why this is not equality: "beehive" has to match both "Bee
+ * Plus" and "HiveLog", so a title word counts when it is a prefix or a suffix
+ * of the subject word, or the subject starts with it. Three characters is the
+ * floor — below it ("ac", "rv") a prefix match is noise, so those compare whole.
+ */
+function subjectHit(titleWords, subject) {
+	for (const w of titleWords) {
+		if (w.length < 3 || subject.length < 3) {
+			if (w === subject) return true;
+			continue;
+		}
+		if (w.startsWith(subject) || subject.startsWith(w) || subject.endsWith(w)) return true;
+	}
+	return false;
+}
+
+/**
+ * Share of a top-10 that is *the same product* the term describes, at any age
+ * and any rating count.
+ *
+ * This is the number `clones` was mistaken for. `clones` asks a narrower
+ * question — did somebody run this exact pipeline last year and ship the query
+ * as a title — and answers it with a literal substring of the whole phrase. So
+ * it reports 0 for "aquarium water log", whose top 10 is Aquarium Manager,
+ * AquaLens, Aquarium Log, Tank Snap, ReefDrift and AquaLog: every one of them
+ * the app the brief would have drafted, not one containing the phrase.
+ * Permuted tokens are the naming convention in every `<subject> log` category,
+ * so the gate was blind exactly where it was load-bearing.
+ *
+ * Deliberately separate from {@link saturation}'s `score`. That score is a
+ * stampede meter and its age window is intentional: weak *and old* is a real
+ * gap. Commodity is the orthogonal question — how many people have already
+ * built this, ever — and a term dies to either. Read together they name which:
+ * high commodity with ratings is a served market (no room), high commodity
+ * without them is a race (no payoff).
+ * @param {object[]} results live top-10 from {@link topResults}
+ * @param {{term?:string, locale?:string, tractionFloor?:number}} [opts]
+ */
+export function commodity(results, { term = '', locale = 'en', tractionFloor = 25 } = {}) {
+	if (!results?.length) return null;
+	const stop = stopwordsFor(locale);
+	const termWords = words(camelSplit(term), locale);
+	const subjects = termWords.filter((w) => !stop.has(w) && !ARTIFACT_NOUNS.includes(w));
+	// What the *term* is shaped like decides the rule, not what the titles are
+	// shaped like. Getting this backwards is how the same false pass appeared
+	// three times in three different term shapes.
+	//
+	// A term that names an artifact ("car maintenance log", "concrete
+	// calculator") is a subject plus a kind of app, so a title has to show
+	// both — any artifact noun, not the term's own, because "Tank Manager" and
+	// "water log" are one product. Insisting on the term's noun is the original
+	// bug: it made `clones` read 0 on a page of nothing but clones.
+	//
+	// A term that names no artifact is itself the product's name, and its
+	// incumbents feel no need to add a noun saying so: the top 10 for "sudoku"
+	// is eight sudoku games, none of which is a "sudoku tracker", and the top
+	// 10 for "feeds and speeds calculator" is Walter Feeds & Speeds and Feeds n
+	// Speeds. Both scored 0% while being wholly solved. For those, covering
+	// every subject word is the match.
+	const termNamesArtifact = termWords.some((w) => ARTIFACT_NOUNS.includes(w));
+	const rows = results.map((r) => {
+		const split = camelSplit(r.trackName);
+		const titleWords = words(split, locale);
+		const covered = subjects.filter((s) => subjectHit(titleWords, s)).length;
+		const all = covered === subjects.length;
+		// The multi-subject clause survives for artifact-naming terms too: a
+		// title carrying every subject word is that product whether or not it
+		// admits to a category noun.
+		const match =
+			subjects.length > 0 &&
+			(termNamesArtifact
+				? (ARTIFACT_RE.test(split) && covered > 0) || (all && subjects.length >= 2)
+				: all);
+		return { name: r.trackName ?? null, ratings: r.userRatingCount ?? 0, match };
+	});
+	const hits = rows.filter((r) => r.match);
+	const proven = hits.filter((r) => r.ratings >= tractionFloor);
+	return {
+		results: rows.length,
+		matches: hits.length,
+		share: Math.round((100 * hits.length) / rows.length),
+		// Both halves are reported rather than a verdict: the two diagnoses have
+		// different remedies, and only the caller knows which it is asking about.
+		proven: proven.length,
+		unproven: hits.length - proven.length,
+		subjects,
+		apps: hits.map((r) => ({ name: r.name, ratings: r.ratings })),
+	};
+}
+
+/**
  * Release-date flood detection for one keyword's live top-10.
  *
  * Competition scoring reads review counts, and by that measure a keyword whose
@@ -433,7 +562,11 @@ export function saturation(results, { term = '', now = Date.now(), freshDays = 3
 		cloneTitles: clones.length,
 		clones: pipelineClones.length,
 		cloneApps: pipelineClones.map((r) => r.name),
-		medianAgeDays: median(dated.map((r) => r.ageDays)),
+		// null, not 0: with no dated rows the median is unknown, and 0 would
+		// print "median age 0d" — i.e. "the whole page shipped today" — which is
+		// the opposite of what a lookup gap means. `youngestDays` already says
+		// null here for the same reason.
+		medianAgeDays: dated.length ? median(dated.map((r) => r.ageDays)) : null,
 		youngestDays: dated.length ? Math.min(...dated.map((r) => r.ageDays)) : null,
 		distinctSellers: new Set(rows.map((r) => r.seller).filter(Boolean)).size,
 		// Fresh entrants dominate; fresh-and-traction-less weigh more because that
@@ -475,6 +608,7 @@ export function score(term, results, { demand: demandScore = 100, now = Date.now
 	const competition = Math.round(100 * (0.4 * weakness + 0.35 * moat + 0.25 * crowding));
 	const demandValue = clamp100(demandScore);
 	const flood = saturation(results, { term, now });
+	const same = commodity(results, { term });
 	const opportunity = Math.round((demandValue / 100) * competition);
 
 	return {
@@ -490,10 +624,13 @@ export function score(term, results, { demand: demandScore = 100, now = Date.now
 		opportunity,
 		saturation: flood.score,
 		clones: flood.clones,
+		commodity: same.share,
+		commodityMatches: same.matches,
+		commodityProven: same.proven,
 		newEntrants: flood.newEntrants,
 		freshUnproven: flood.freshUnproven,
 		medianAgeDays: flood.medianAgeDays,
-		viability: Math.round(opportunity * (1 - flood.score / 100)),
+		viability: Math.round(opportunity * (1 - flood.score / 100) * (1 - same.share / 100)),
 		top3: results.slice(0, 3).map((r) => ({
 			name: r.trackName,
 			id: r.trackId,

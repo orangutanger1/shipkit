@@ -22,6 +22,7 @@ import {
 	LOCALE_MARKETS,
 	StorefrontWall,
 	brandCollisions,
+	commodity as commodityOf,
 	demandTable,
 	demand as demandOf,
 	harvest,
@@ -58,6 +59,7 @@ ${c.bold('Flags')}
   ${c.cyan('--min-volume <n>')}  demand floor, 0-100 ${c.dim('(default 10)')}
   ${c.cyan('--max-saturation <n>')} flood cap, 0-100 ${c.dim('(default 40)')}
   ${c.cyan('--max-clones <n>')}  top-10 apps already named after the term ${c.dim('(default 2)')}
+  ${c.cyan('--max-commodity <n>')} % of the top-10 that is already this product, any age ${c.dim('(default 25)')}
   ${c.cyan('--fresh-days <n>')}  how new counts as a new entrant ${c.dim('(default 365)')}
   ${c.cyan('--sub-price <n>')}   monthly subscription price → the ASA CPI band you can afford
   ${c.cyan('--strict')}          a NO-GO verdict exits 1 ${c.dim('(default: prints and exits 0)')}
@@ -79,7 +81,17 @@ ${c.dim('Order: terms → brief → names → new')}
  * decade-old incumbents in the same top-10 are enough to keep any blended score
  * respectable while page one fills up with apps named after the query.
  */
-export const GATES = { moat: 50_000, minVolume: 10, exactTitleMatches: 6, saturation: 40, clones: 2 };
+export const GATES = {
+	moat: 50_000,
+	minVolume: 10,
+	exactTitleMatches: 6,
+	saturation: 40,
+	clones: 2,
+	// Three of ten is where a category stops having a gap and starts having a
+	// convention. Under it the matches are adjacent products; at it and above,
+	// the storefront page for the term is a column of the same app.
+	commodity: 25,
+};
 
 const NUM = new Intl.NumberFormat('en-US');
 const fmt = (n) => NUM.format(Math.round(Number(n) || 0));
@@ -178,6 +190,7 @@ export function verdict(
 		exactCap = GATES.exactTitleMatches,
 		saturationCap = GATES.saturation,
 		cloneCap = GATES.clones,
+		commodityCap = GATES.commodity,
 	} = {},
 ) {
 	const reasons = [];
@@ -231,6 +244,24 @@ export function verdict(
 			value: m.clones,
 			threshold: cloneCap,
 			message: `${m.clones} of the top ${top} are already this app — titled after "${m.term}", shipped inside ${m.freshDays ?? 365} days, still under 25 ratings${m.cloneApps?.length ? ` (${m.cloneApps.slice(0, 4).join(', ')})` : ''} — over the ${cloneCap} cap. The pipeline that handed you this term handed it to them first; building it again competes with your own idea`,
+		});
+
+	// The commodity gate: is this app already the category? `clones` only sees a
+	// literal substring of the whole query, so it reads 0 on a page of Aquarium
+	// Manager / AquaLens / Tank Log — permuted tokens are the naming convention
+	// in every `<subject> log` category, and that is where the term is deadest.
+	// Traction decides which sentence gets printed, because the two failures
+	// have opposite shapes and only one of them is survivable by shipping early.
+	if ((m.commodity ?? 0) > commodityCap)
+		reasons.push({
+			gate: 'commodity',
+			value: m.commodity,
+			threshold: commodityCap,
+			message:
+				`${m.commodityMatches ?? 0} of the top ${top} are already this product — a subject word plus a logging noun, in any order, at any age (${m.commodityApps?.slice(0, 4).join(', ') ?? ''}) — ${m.commodity}% of the page, over the ${commodityCap}% cap. ` +
+				((m.commodityProven ?? 0) > 0
+					? `${m.commodityProven} of them carry real ratings, so this is a served market, not a gap: the category is solved and you would be the next identical entry on a page that already converts`
+					: `none of them has traction, so the category is a race nobody has won — the demand that was supposed to justify it has not paid anyone yet`),
 		});
 
 	return { go: reasons.length === 0, reasons };
@@ -302,6 +333,66 @@ export function categoryVocabulary(results, locale) {
 		.map(([w]) => w);
 }
 
+
+/** Separators Apple's autocomplete uses between an app's name and its category phrase. */
+const NAME_SEPARATOR = /\s*(?:::|:|—|–|-|\||·)\s*/;
+
+/**
+ * Brand tokens visible only in the harvest, not in the top-10.
+ *
+ * The hints endpoint does not return queries; it returns *rows*, and a row is
+ * as often a product name as a search. For "car maintenance log" the live row
+ * is `autoteca: car maintenance log`, `glovebox: car maintenance log`,
+ * `car maintenance log :: autolog`, `carbook: car maintenance log` — nine of
+ * ten entries are somebody's App Store title wrapped around the phrase.
+ *
+ * `brandTokens` cannot see these: it reads publisher and app names off the
+ * top-10, and none of these apps is in the top-10 for the term. So the drafted
+ * keyword field came out `autolog,glovebox` — a hundred characters of
+ * indexable space, and the first two spent naming competitors.
+ *
+ * The tell is structural rather than lexical. When a row splits on a separator
+ * and one side is exactly the term, the other side is the product's name. A
+ * token is only judged a brand when *every* one of its appearances is on that
+ * name side: `car` sits left of the separator in `car cave - car maintenance
+ * log` and is still a category word, because it also appears in a row that is
+ * a plain query. `cave` never does.
+ *
+ * Returned rather than filtered here, so `keywordPool`'s existing brand floor
+ * still applies: a "brand" the market types often enough is a category word,
+ * whatever its origin, and that judgement belongs in one place.
+ *
+ * Limit, by construction: this reads structure, so a product name with no
+ * separator is invisible to it. `valvoline instant oil change` and
+ * `take 5 oil change` are chains, not queries, and they look exactly like
+ * `car oil change tracker` to a splitter. Those are caught — when they are
+ * caught — by `brandTokens` off the publisher names, and otherwise by the
+ * keyword-coverage warning in `meta lint`. Two narrow detectors that each say
+ * why they fired beat one that guesses at brand-ness from text alone.
+ */
+export function harvestBrands(suggestions, term, locale = 'en-US') {
+	const needle = String(term ?? '').trim().toLocaleLowerCase();
+	if (!needle) return new Set();
+	const nameSide = new Set();
+	const querySide = new Set();
+	for (const row of suggestions ?? []) {
+		const text = String(row ?? '').toLocaleLowerCase();
+		const parts = text.split(NAME_SEPARATOR).filter(Boolean);
+		// A row with no separator, or one that is only the term, is a query.
+		// Everything in it is vocabulary the market actually typed.
+		const isName = parts.length > 1 && parts.some((p) => p.trim() === needle);
+		if (!isName) {
+			for (const w of words(text, locale)) querySide.add(w);
+			continue;
+		}
+		for (const part of parts) {
+			const target = part.trim() === needle ? querySide : nameSide;
+			for (const w of words(part, locale)) target.add(w);
+		}
+	}
+	for (const w of querySide) nameSide.delete(w);
+	return nameSide;
+}
 
 /**
  * The keyword pool: harvested tokens, best-supported first, minus the brands.
@@ -437,6 +528,10 @@ export function listingFromBrief(brief, { locale = 'en-US' } = {}) {
 				competition: brief.competition ?? null,
 				opportunity: brief.opportunity ?? null,
 				saturation: brief.saturation?.score ?? null,
+				// The number that decides most verdicts belongs in the record that
+				// survives: six weeks on, "why did we not build this" is answered
+				// by the share, not by the fact that a gate fired.
+				commodity: brief.commodity?.share ?? null,
 				viability: brief.viability ?? null,
 			},
 			evidence: {
@@ -768,6 +863,20 @@ function printBrief(b) {
 			`${s.clones} of the top ${s.results} are the app this brief would produce, over the ${b.gates.clones} cap — read their listings before writing a line of code`,
 		);
 
+	step('Same-product check');
+	const cm = b.commodity;
+	info(
+		`${cm.matches}/${cm.results} of the top ${cm.results} are this product — a subject word (${cm.subjects.join('/')}) plus a logging noun, any order, any age — ${c.bold(`${cm.share}%`)} of the page${cm.apps.length ? `: ${cm.apps.map((a) => `${a.name} (${fmt(a.ratings)})`).join(', ')}` : ''}`,
+	);
+	if (cm.matches)
+		info(
+			`${cm.proven} of them have real traction, ${cm.unproven} do not — ${cm.proven > cm.unproven ? 'a solved category with paying users, which is the harder of the two' : 'a race that has not paid anyone yet'}`,
+		);
+	if (cm.share > b.gates.commodity)
+		warn(
+			`commodity ${cm.share}% over the ${b.gates.commodity}% cap — the storefront page for "${b.term}" is a column of the same app. This is the number "clones" cannot see: it matches vocabulary, not word order`,
+		);
+
 	step('Positioning already taken');
 	if (!b.claims.claims.length) info('no recognised claim appears in these listings — verify by reading two of them');
 	else {
@@ -815,6 +924,7 @@ async function brief({ args, flags }) {
 	const exactCap = num(flags['max-exact'] ?? flags.exactCap, GATES.exactTitleMatches);
 	const saturationCap = num(flags['max-saturation'] ?? flags.saturationCap, GATES.saturation);
 	const cloneCap = num(flags['max-clones'] ?? flags.cloneCap, GATES.clones);
+	const commodityCap = num(flags['max-commodity'] ?? flags.commodityCap, GATES.commodity);
 	const freshDays = num(flags['fresh-days'] ?? flags.freshDays, 365);
 	const subPrice = flags['sub-price'] ?? flags.subPrice;
 
@@ -833,13 +943,21 @@ async function brief({ args, flags }) {
 	// Scored neighbours from the sweep outrank raw autocomplete: they already
 	// carry demand × competition, and packKeywords takes the pool in order.
 	const pool = [...new Set([...(prior?.cohort ?? []), ...suggestions])];
-	const brands = brandTokens(
-		[...results.map((r) => ({ name: r.trackName, seller: r.sellerName })), ...(prior?.apps ?? [])],
-		'en-US',
-	);
+	// Two sources, because they see different competitors: the top-10 names the
+	// apps that rank, the harvest names the apps Apple autocompletes. An app can
+	// be in the second and not the first, and those were the brands the drafted
+	// keyword field was spending characters on.
+	const brands = new Set([
+		...brandTokens(
+			[...results.map((r) => ({ name: r.trackName, seller: r.sellerName })), ...(prior?.apps ?? [])],
+			'en-US',
+		),
+		...harvestBrands(pool, term, 'en-US'),
+	]);
 
 	const scored = score(term, results, { demand });
 	const flood = saturationOf(results, { term, freshDays });
+	const same = commodityOf(results, { term });
 	const ratings = results.map((r) => r.userRatingCount ?? 0);
 	const incumbents = await incumbentsOf(results, market);
 	const claims = await claimsAudit(results, market);
@@ -862,6 +980,10 @@ async function brief({ args, flags }) {
 		clones: flood.clones,
 		cloneApps: flood.cloneApps,
 		freshDays: flood.freshDays,
+		commodity: same.share,
+		commodityMatches: same.matches,
+		commodityProven: same.proven,
+		commodityApps: same.apps.map((a) => a.name),
 	};
 
 	const artifact = {
@@ -876,7 +998,12 @@ async function brief({ args, flags }) {
 		competition: scored.competition,
 		opportunity: scored.opportunity,
 		saturation: flood,
-		viability: Math.round(scored.opportunity * (1 - flood.score / 100)),
+		commodity: same,
+		// Both discounts apply because they are different failures: a stampede
+		// prices in who else is racing, commodity prices in that the product
+		// already exists whether or not anyone is racing. A term can be quiet
+		// and still be solved, which is the case the old number scored highest.
+		viability: Math.round(scored.opportunity * (1 - flood.score / 100) * (1 - same.share / 100)),
 		claims,
 		metrics,
 		reviewMoat: {
@@ -888,8 +1015,15 @@ async function brief({ args, flags }) {
 		related: suggestions.slice(0, 25),
 		listing: draftListing({ term, suggestions: pool, results, brands }),
 		asa: subPrice === undefined ? null : cpiBand(Math.max(0.01, num(subPrice, 4.99))),
-		gates: { moat, minVolume, exactTitleMatches: exactCap, saturation: saturationCap, clones: cloneCap },
-		verdict: verdict(metrics, { moat, minVolume, exactCap, saturationCap, cloneCap }),
+		gates: {
+			moat,
+			minVolume,
+			exactTitleMatches: exactCap,
+			saturation: saturationCap,
+			clones: cloneCap,
+			commodity: commodityCap,
+		},
+		verdict: verdict(metrics, { moat, minVolume, exactCap, saturationCap, cloneCap, commodityCap }),
 	};
 
 	const file = await writeArtifact(artifactFile(flags, market, artifact.slug, 'brief'), artifact);
@@ -910,7 +1044,20 @@ async function brief({ args, flags }) {
 		note(`then: ship scout new ${slugify(term)} --from ${file}`);
 	} else {
 		note(`next: a different term — ${c.dim(`ship scout terms "<seeds from something you actually know>" --market ${market.country.toLowerCase()}`)}`);
-		note(`to build it anyway you need an answer to the tripped gate, not a rerun: --max-clones / --max-saturation override the threshold, they do not change the storefront`);
+		// Name the flags for the gates that actually tripped. A generic hint sends
+		// you looking for a threshold that was never the one in the way.
+		const overrides = {
+			moat: '--moat',
+			demand: '--min-volume',
+			crowding: '--max-exact',
+			saturation: '--max-saturation',
+			clones: '--max-clones',
+			commodity: '--max-commodity',
+		};
+		const flagsFor = [...new Set(artifact.verdict.reasons.map((r) => overrides[r.gate]).filter(Boolean))];
+		note(
+			`to build it anyway you need an answer to the tripped gate, not a rerun: ${flagsFor.join(' / ')} override the threshold, they do not change the storefront`,
+		);
 	}
 	return flags.strict && !artifact.verdict.go ? 1 : 0;
 }

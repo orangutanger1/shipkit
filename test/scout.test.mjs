@@ -17,13 +17,16 @@ import {
 	GATES,
 	categoryVocabulary,
 	draftListing,
+	harvestBrands,
 	keywordPool,
 	listingFromBrief,
 	supportedPhrases,
 	verdict,
 } from '../src/commands/scout.mjs';
+import { commodity, saturation, score } from '../src/lib/appstore.mjs';
 import { lintListing } from '../src/lib/locales.mjs';
 import { brandTokens, charCount, tokenSupport } from '../src/lib/text.mjs';
+import { CAPTURED_AT, HINTS, page, pages, top } from './fixtures/storefront.mjs';
 
 // ─── gates ───────────────────────────────────────────────────────────────────
 
@@ -42,6 +45,10 @@ const metrics = (over = {}) => ({
 	clones: 0,
 	cloneApps: [],
 	freshDays: 365,
+	commodity: 10,
+	commodityMatches: 1,
+	commodityProven: 0,
+	commodityApps: [],
 	...over,
 });
 
@@ -135,64 +142,217 @@ test('three apps already named after the term is a NO-GO the blended score misse
 });
 
 test('every tripped gate is reported, not just the first', () => {
-	const v = verdict(metrics({ top3MedianRatings: 90_000, demand: 1, exactTitleMatches: 9, saturation: 80, clones: 5 }));
+	const v = verdict(
+		metrics({
+			top3MedianRatings: 90_000,
+			demand: 1,
+			exactTitleMatches: 9,
+			saturation: 80,
+			clones: 5,
+			commodity: 90,
+		}),
+	);
 	assert.deepEqual(
 		v.reasons.map((r) => r.gate).sort(),
-		['clones', 'crowding', 'demand', 'moat', 'saturation'],
+		['clones', 'commodity', 'crowding', 'demand', 'moat', 'saturation'],
 	);
+});
+
+// ─── the gates against real storefront pages ─────────────────────────────────
+//
+// The tests above move one number at a time, which is how a threshold should be
+// tested and also how a gate can pass every unit test while failing on every
+// real page. These run the whole verdict over pages the storefront actually
+// served, in categories nobody chose to flatter the gates.
+
+/** Metrics as `brief` assembles them, from a captured page. */
+const metricsFor = (term) => {
+	const p = page(term);
+	const scored = score(term, p.apps, { demand: 50, now: CAPTURED_AT });
+	const flood = saturation(p.apps, { term, now: CAPTURED_AT });
+	const same = commodity(p.apps, { term, locale: p.locale });
+	return {
+		term,
+		results: p.apps.length,
+		demand: scored.demand,
+		exactTitleMatches: scored.exactTitleMatches,
+		top3MedianRatings: p.apps
+			.slice(0, 3)
+			.map((a) => a.userRatingCount)
+			.sort((a, b) => a - b)[1],
+		freeTop10: p.apps.filter((a) => !(a.price > 0)).length,
+		saturation: flood.score,
+		newEntrants: flood.newEntrants,
+		freshUnproven: flood.freshUnproven,
+		cloneTitles: flood.cloneTitles,
+		clones: flood.clones,
+		cloneApps: flood.cloneApps,
+		freshDays: flood.freshDays,
+		commodity: same.share,
+		commodityMatches: same.matches,
+		commodityProven: same.proven,
+		commodityApps: same.apps.map((a) => a.name),
+	};
+};
+
+test('the gates agree with what the storefront looks like, across categories', () => {
+	// One row per captured page, annotated with the evidence that makes each
+	// gate fire, so a future reader can check the row against the fixture
+	// instead of trusting it. My first draft of this table was wrong on eight
+	// rows — it under-predicted `crowding` and `moat` — which is the argument
+	// for having it.
+	const expected = {
+		// Entrenched, and named after the query. All three gates.
+		'period tracker': ['commodity', 'crowding', 'moat'], // 7 exact, top-3 median 172,869
+		'calorie counter': ['commodity', 'crowding', 'moat'], // 8 exact, 162,657
+		'invoice maker': ['commodity', 'crowding', 'moat'], // 8 exact, 100,063
+		'habit tracker': ['commodity', 'crowding', 'moat'], // 7 exact, 145,700
+		sudoku: ['commodity', 'crowding', 'moat'], // 8 exact, 659,288
+		'flight tracker': ['commodity', 'crowding', 'moat'], // 8 exact, 381,810
+		家計簿: ['commodity', 'crowding', 'moat'], // 9 exact, 456,499
+		// Entrenched without the naming convention: under the 6-exact cap.
+		'toddler games': ['commodity', 'moat'], // 3 exact, 287,295
+		'photo editor': ['commodity', 'moat'], // 6 exact — the cap, not over it
+		'reading tracker': ['commodity', 'moat'], // 3 exact, 78,471
+		'hurricane tracker': ['commodity', 'moat'], // 4 exact, 67,241
+		'recipe manager': ['commodity', 'moat'], // 5 exact, 53,522
+		'plant identifier': ['commodity', 'moat'], // 6 exact, 227,762
+		'baby feeding log': ['commodity', 'moat'], // 1 exact, 71,818
+		// Named after the query but under the 50,000 moat.
+		flashcards: ['commodity', 'crowding'], // 8 exact, top-3 median 18,159
+		metronome: ['commodity', 'crowding'], // 10 of 10 exact, 36,917
+		// Solved, but by nobody big and with no naming convention.
+		'unit converter': ['commodity'], // 6 exact, 48,131 — just under the moat
+		'golf gps': ['commodity'], // 33,674
+		'dog training': ['commodity'], // 27,148
+		'mortgage calculator': ['commodity'], // 4,697
+		'expense tracker': ['commodity'], // 44% of the page, 15,525
+		'beehive inspection log': ['commodity'], // 872
+		'dive log': ['commodity'], // 111 — the term this whole gate came from
+		'aquarium water log': ['commodity'], // 185
+		'wire size calculator': ['commodity'], // 69
+		'iv drip rate calculator': ['commodity'], // 3
+		'feeds and speeds calculator': ['commodity'], // 9
+		// Both failure modes at once, and the incident each gate was written for.
+		'car maintenance log': ['clones', 'commodity'], // 3 clones, 80% commodity
+		'boat maintenance log': ['clones', 'commodity', 'saturation'], // 4, 78%, sat 64
+		// Same category, adjacent terms: no stampede, but the product exists.
+		'car maintenance reminder': ['commodity'], // 80%, top-3 median only 172
+		'oil change': ['commodity'], // 30% — a retail-chain page, not an app category
+		// The one page commodity cannot see: nine German car-maintenance apps
+		// using none of the term's words. Saturation catches it instead, which is
+		// the argument for two numbers reading different evidence.
+		'kfz scheckheft': ['saturation'],
+	};
+
+	const actual = {};
+	for (const p of pages()) {
+		actual[p.term] = verdict(metricsFor(p.term))
+			.reasons.map((r) => r.gate)
+			.sort();
+	}
+	assert.deepEqual(actual, expected);
+});
+
+test('the commodity gate fires on almost every real head term, and that is the finding', () => {
+	// 29 of 30 captured pages trip it. That is not a miscalibrated cap; it is
+	// the corpus telling you that a term people actually search is a term
+	// somebody already built. A cap loose enough to pass these pages would have
+	// to sit above 50%, i.e. would only object once *most* of page one is your
+	// app — by which point the answer was never in doubt.
+	//
+	// The consequence for anyone reading a brief: the boolean is nearly
+	// constant, so the information is in `share` and in the proven/unproven
+	// split. Pinned here so a future change that makes the gate discriminating
+	// again has to argue with the data rather than with the threshold.
+	const shares = pages()
+		.map((p) => metricsFor(p.term).commodity)
+		.sort((a, b) => a - b);
+	const tripped = shares.filter((s) => s > GATES.commodity).length;
+	assert.equal(tripped, 31);
+	assert.equal(shares[0], 0, 'the one page it is blind to');
+	assert.equal(shares[1], 30, 'the least-solved term in the corpus is still 30% built');
+	assert.ok(shares[Math.floor(shares.length / 2)] >= 70, 'the median real page is mostly this product');
+});
+
+test('a real NO-GO names the apps that caused it, not just the count', () => {
+	// The complaint the message format exists to answer: "too competitive" is
+	// unactionable, "these four are already your app" is a reading list.
+	const v = verdict(metricsFor('boat maintenance log'));
+	assert.equal(v.go, false);
+	const clones = v.reasons.find((r) => r.gate === 'clones');
+	assert.match(clones.message, /HullBook: Boat Maintenance Log/);
+	assert.match(clones.message, /Skipper: Boat Maintenance Log/);
+
+	const cm = v.reasons.find((r) => r.gate === 'commodity');
+	assert.match(cm.message, /7 of the top 9 are already this product/);
+	assert.match(cm.message, /none of them has traction/, 'a race, not a served market');
+
+	// The same gate, opposite diagnosis, on a page where the incumbents are real.
+	const served = verdict(metricsFor('calorie counter')).reasons.find((r) => r.gate === 'commodity');
+	assert.match(served.message, /9 of them carry real ratings/);
+	assert.match(served.message, /served market/);
 });
 
 // ─── brief → staged listing ──────────────────────────────────────────────────
 
-const results = [
-	{ trackName: 'Fuelio: Gas Log & Costs', primaryGenreName: 'Productivity', userRatingCount: 18_400, price: 0 },
-	{ trackName: 'Drivvo: Vehicle Management', primaryGenreName: 'Productivity', userRatingCount: 9_200, price: 0 },
-	{ trackName: 'Simply Auto: Mileage Log', primaryGenreName: 'Productivity', userRatingCount: 4_100, price: 2.99 },
-	{ trackName: 'AUTOsist Vehicle Maintenance', primaryGenreName: 'Productivity', userRatingCount: 2_600, price: 0 },
-	{ trackName: 'Car Minder Plus', primaryGenreName: 'Productivity', userRatingCount: 1_900, price: 4.99 },
-	{ trackName: 'Road Trip MPG', primaryGenreName: 'Travel', userRatingCount: 1_500, price: 0 },
-	{ trackName: 'My Cars: Fuel Economy', primaryGenreName: 'Utilities', userRatingCount: 900, price: 0 },
-	{ trackName: 'Service Reminder Pro', primaryGenreName: 'Productivity', userRatingCount: 420, price: 0 },
-	{ trackName: 'Garage Log', primaryGenreName: 'Utilities', userRatingCount: 180, price: 0 },
-	{ trackName: 'Mileage Tracker Free', primaryGenreName: 'Finance', userRatingCount: 60, price: 0 },
-];
+// The real top-10 and the real autocomplete rows for the term, exactly what
+// `brief` hands `draftListing`. The invented versions of these two arrays were
+// tidy in a way the storefront never is: five clean category phrases instead of
+// a harvest that is nine-tenths competitors' product names, which is why a
+// keyword draft that spent its first two slots on "autolog,glovebox" passed
+// tests for as long as it did.
+const results = top('car maintenance log');
 
+// `pool` as `brief` builds it: the term's own row plus the neighbours a sweep
+// scored, deduped, in that order.
 const suggestions = [
-	'car maintenance log',
-	'oil change reminder',
-	'vehicle mileage tracker',
-	'service history record',
-	'fuel economy diary',
+	...new Set([...HINTS['car maintenance log'], ...HINTS['maintenance log'], ...HINTS['car maintenance']]),
 ];
 
-/** A brief shaped exactly as `ship scout brief` writes it, for the one term. */
-const briefFor = (term) => ({
-	generatedAt: '2026-08-01T09:00:00.000Z',
-	term,
-	market: { country: 'US', lang: 'en-US' },
-	seeds: ['car maintenance', 'service log'],
-	demand: 42,
-	competition: 71,
-	opportunity: 29.8,
-	saturation: { score: 12, newEntrants: 1, freshUnproven: 0, cloneTitles: 0, freshDays: 180 },
-	viability: 26,
-	claims: {
-		corpus: 10,
-		claims: [
-			{ claim: 'reminders', apps: 8, share: 80, holders: ['Fuelio: Gas Log & Costs'] },
-			{ claim: 'privacy / on-device', apps: 5, share: 50, holders: ['Drivvo: Vehicle Management'] },
-			{ claim: 'ai', apps: 2, share: 20, holders: ['Garage Log'] },
-		],
-	},
-	metrics: metrics({ term }),
-	incumbents: [
-		{ name: 'Fuelio: Gas Log & Costs', ratings: 18_400 },
-		{ name: 'Drivvo: Vehicle Management', ratings: 9_200 },
-	],
-	listing: draftListing({ term, suggestions, results }),
-	verdict: verdict(metrics({ term })),
-	file: '/tmp/scout/us/car-maintenance-log-brief.json',
-});
+/**
+ * A brief shaped exactly as `ship scout brief` writes it, with every number
+ * computed from the real page rather than chosen. A fixture whose scores are
+ * typed in by hand can hold a combination the scorer cannot produce.
+ */
+const REAL_BRANDS = new Set([
+	...brandTokens(
+		results.map((r) => ({ name: r.trackName, seller: r.sellerName })),
+		'en-US',
+	),
+	...harvestBrands(suggestions, 'car maintenance log', 'en-US'),
+]);
+
+const briefFor = (term) => {
+	const scored = score(term, results, { demand: 42, now: CAPTURED_AT });
+	const flood = saturation(results, { term, now: CAPTURED_AT });
+	const same = commodity(results, { term });
+	return {
+		generatedAt: '2026-08-01T09:00:00.000Z',
+		term,
+		market: { country: 'US', lang: 'en-US' },
+		seeds: ['car maintenance', 'maintenance log'],
+		demand: scored.demand,
+		competition: scored.competition,
+		opportunity: scored.opportunity,
+		saturation: flood,
+		commodity: same,
+		viability: scored.viability,
+		claims: {
+			corpus: 10,
+			claims: [
+				{ claim: 'reminders', apps: 8, share: 80, holders: ['Car Maintenance Reminders'] },
+				{ claim: 'privacy / on-device', apps: 5, share: 50, holders: ['Car Cave - Car Maintenance Log'] },
+				{ claim: 'ai', apps: 2, share: 20, holders: ['MyAutoLog: Car Maintenance Log'] },
+			],
+		},
+		metrics: metrics({ term }),
+		incumbents: results.slice(0, 3).map((r) => ({ name: r.trackName, ratings: r.userRatingCount })),
+		listing: draftListing({ term, suggestions, results, brands: REAL_BRANDS }),
+		verdict: verdict(metrics({ term })),
+		file: '/tmp/scout/us/car-maintenance-log-brief.json',
+	};
+};
 
 const failures = (listing) =>
 	lintListing({ locale: 'en-US', file: '/tmp/store/staged/en-US.json', data: listing }).filter(
@@ -227,7 +387,17 @@ test('the staged listing records the term, its scores and the brief that chose i
 	const { notes } = listingFromBrief(brief);
 	assert.equal(notes.term, 'car maintenance log');
 	assert.equal(notes.brief, brief.file);
-	assert.deepEqual(notes.scores, { demand: 42, competition: 71, opportunity: 29.8, saturation: 12, viability: 26 });
+	// The real page's own numbers: weak-looking incumbents (median 53 ratings),
+	// three apps titled after the query, and 8 of 10 already this product — so
+	// an opportunity of 23 collapses to a viability of 3.
+	assert.deepEqual(notes.scores, {
+		demand: 42,
+		competition: 55,
+		opportunity: 23,
+		saturation: 36,
+		commodity: 80,
+		viability: 3,
+	});
 	assert.equal(notes.evidence.exactTitleMatches, 1);
 	assert.equal(notes.verdict, 'GO');
 });
@@ -288,36 +458,28 @@ test('a non-latin term with no slug is asked for, not guessed', () => {
 
 // ── evidence filters ─────────────────────────────────────────────────────────
 //
-// Every case below is a real draft this pipeline produced against the live US
-// storefront for "car maintenance reminder", before the filter that fixes it.
-
-/** The sweep that produced `carfax,cariq,valvoline,servicenow` as a keyword field. */
+/**
+ * The real harvest for the auto category: the term's own autocomplete row plus
+ * the neighbours a sweep would have scored, deduped exactly as `brief` does it.
+ *
+ * The invented version of this array was seventeen tidy category phrases. The
+ * real one is 24 rows of which nine are somebody's App Store title wrapped
+ * around the query — `autoteca: car maintenance log`, `glovebox: car
+ * maintenance log`, `carbook: car maintenance log` — and that difference is
+ * why the drafted keyword field used to read `autolog,glovebox`.
+ */
 const SWEEP = [
-	'car maintenance reminder',
-	'car maintenance tracker',
-	'car maintenance log',
-	'car oil change tracker',
-	'oil change reminder',
-	'oil change log',
-	'oil change tracker',
-	'oil change',
-	'vehicle mileage tracker',
-	'vehicle mile tracker',
-	'valvoline oil change',
-	'valvoline instant oil change',
-	'servicenow',
-	'service titan',
-	'car service log',
-	'car service reminder',
-	'service log app',
+	...new Set([...HINTS['car maintenance log'], ...HINTS['maintenance log'], ...HINTS['car maintenance']]),
 ];
 
-const APPS = [
-	{ name: 'Valvoline Instant Oil Change', seller: 'Valvoline LLC' },
-	{ name: 'ServiceNow Mobile', seller: 'ServiceNow, Inc.' },
-	{ name: 'Car Maintenance Tracker', seller: 'Jan Kazimierz' },
-	{ name: 'Oil Change Log', seller: 'Express Oil Change Service Company LLC' },
-];
+/** Real publishers, from the pages these terms actually return. */
+const APPS = [...top('oil change'), ...top('car maintenance reminder')].map((a) => ({
+	name: a.trackName,
+	seller: a.sellerName,
+}));
+
+/** The oil-change harvest, where the brand rows carry no separator at all. */
+const OIL_SWEEP = [...new Set([...HINTS['oil change'], ...HINTS['car maintenance']])];
 
 test('tokenSupport counts distinct queries, not occurrences', () => {
 	const s = tokenSupport(['oil change', 'oil change log', 'oil oil oil']);
@@ -327,36 +489,87 @@ test('tokenSupport counts distinct queries, not occurrences', () => {
 
 test('brandTokens takes publisher names and nothing else', () => {
 	const brands = brandTokens(APPS);
-	assert.ok(brands.has('valvoline'));
-	assert.ok(brands.has('servicenow'));
+	assert.ok(brands.has('valvoline'), 'Valvoline, LLC publishes the top result for "oil change"');
+	assert.ok(brands.has('carfax'), 'CARFAX, Inc.');
 	// A publisher is a legal entity: banning every word of its name once banned
-	// the category itself.
-	assert.ok(brands.has('express'));
+	// the category itself. These are real company words from real sellerNames.
+	assert.ok(brands.has('retail') && brands.has('operations'), 'Bridgestone Retail Operations');
 	assert.ok(!brands.has('tracker'), 'title-only tokens are not brands');
+	assert.ok(!brands.has('maintenance'));
+});
+
+test('harvestBrands catches the product names Apple autocompletes', () => {
+	// `brandTokens` reads the top-10 and cannot see these: not one of Autoteca,
+	// Glovebox, Carbook or Pitto ranks in the top 10 for the term, yet Apple
+	// suggests all of them, and the keyword draft was bidding on two.
+	const brands = harvestBrands(SWEEP, 'car maintenance log', 'en-US');
+	assert.deepEqual(
+		[...brands].sort(),
+		['autolog', 'autoteca', 'carbook', 'cave', 'glovebox', 'pitto', 'service'],
+	);
+
+	// `car` sits on the name side of "car cave - car maintenance log" and is
+	// still a category word, because a plain-query row uses it too. `cave` does
+	// not appear in any query.
+	assert.ok(!brands.has('car'));
+	assert.ok(!brands.has('maintenance'));
+	assert.ok(!brands.has('log'));
+
+	const top10 = brandTokens(
+		top('car maintenance log').map((a) => ({ name: a.trackName, seller: a.sellerName })),
+		'en-US',
+	);
+	for (const missed of ['autoteca', 'glovebox', 'carbook', 'pitto']) {
+		assert.ok(!top10.has(missed), `${missed} is invisible to the top-10 detector`);
+	}
+});
+
+test('harvestBrands cannot see a product name with no separator, by construction', () => {
+	// The documented limit, on the page that shows it: "valvoline instant oil
+	// change" and "take 5 oil change" are chains, and to a splitter they look
+	// exactly like "car oil change tracker".
+	const brands = harvestBrands(OIL_SWEEP, 'oil change', 'en-US');
+	assert.ok(!brands.has('valvoline'), 'no separator, so this detector is blind to it');
+	assert.ok(!brands.has('take'));
+
+	// Which is why it is unioned with the publisher detector rather than
+	// replacing it: Valvoline, LLC publishes the app, so that path catches it.
+	assert.ok(brandTokens(APPS).has('valvoline'));
+
+	// `take` is caught by neither — the chain has no app on this page. It is a
+	// 2-query token, so it survives into the pool, and the honest answer is that
+	// this is what the keyword-coverage warning and a human reading the draft
+	// are for. Asserted so nobody mistakes it for a solved problem.
+	const pool = keywordPool(OIL_SWEEP, { brands: new Set([...brandTokens(APPS), ...brands]) });
+	assert.ok(pool.includes('take'), 'known leak, deliberately visible');
 });
 
 test('keywordPool drops brands the market does not type, keeps the ones it does', () => {
-	const pool = keywordPool(SWEEP, { brands: brandTokens(APPS) });
-	assert.ok(!pool.includes('valvoline'), 'a 2-query publisher name is not a keyword');
-	assert.ok(!pool.includes('servicenow'));
-	assert.ok(pool.includes('oil'));
+	const brands = new Set([...brandTokens(APPS), ...harvestBrands(SWEEP, 'car maintenance log', 'en-US')]);
+	const before = keywordPool(SWEEP, { brands: new Set() });
+	assert.ok(before.includes('autolog') && before.includes('glovebox'), 'the bug, still reproducible');
+
+	const pool = keywordPool(SWEEP, { brands });
+	assert.ok(!pool.includes('autolog'));
+	assert.ok(!pool.includes('glovebox'));
+	assert.ok(pool.includes('maintenance'));
 	assert.ok(pool.includes('tracker'));
-	// `service` is a publisher token AND the category's own word: support saves it.
-	assert.ok(pool.includes('service'));
+	assert.ok(pool.includes('car'), 'a name-side token with query support is a category word');
 });
 
 test('keywordPool is token-level, so a rare neighbour cannot take a good word down', () => {
-	// `mileage` appears once; filtering whole phrases lost `vehicle` with it.
+	// `motorcycle` appears in exactly one row ("apps for motorcycle maintenance
+	// logs"); filtering whole phrases would have lost `maintenance` with it.
 	const pool = keywordPool(SWEEP, { brands: new Set() });
-	assert.ok(pool.includes('vehicle'));
-	assert.ok(!pool.includes('mileage'), 'a single-query token carries no evidence');
+	assert.ok(pool.includes('maintenance'));
+	assert.ok(!pool.includes('motorcycle'), 'a single-query token carries no evidence');
 });
 
 test('keywordPool orders by support and drops stop words', () => {
 	const pool = keywordPool(SWEEP, { brands: new Set() });
-	assert.deepEqual(pool.slice(0, 2).sort(), ['change', 'oil'], 'the most-typed tokens lead the pack');
-	assert.ok(pool.indexOf('vehicle') > pool.indexOf('oil'), 'a 2-query token ranks below a 7-query one');
-	assert.ok(!pool.includes('the'));
+	assert.deepEqual(pool.slice(0, 2), ['maintenance', 'car'], 'the most-typed tokens lead the pack');
+	assert.ok(pool.indexOf('tracker') > pool.indexOf('log'), 'a 5-query token ranks below a 10-query one');
+	assert.ok(!pool.includes('for'));
 	assert.ok(!pool.includes('app'), 'Apple indexes "app" for free');
 });
 
@@ -366,33 +579,38 @@ test('a thin sweep is reported thin, not filtered into silence', () => {
 });
 
 test('supportedPhrases keeps the subtitle away from company names', () => {
-	const brands = brandTokens(APPS);
+	const brands = new Set([...brandTokens(APPS), ...harvestBrands(SWEEP, 'car maintenance log', 'en-US')]);
 	const strict = supportedPhrases(SWEEP, 'en-US', { brands, min: 3 });
-	assert.ok(!strict.includes('service titan'), 'a company won the subtitle slot at min 2');
-	assert.ok(strict.includes('oil change log'));
+	for (const phrase of strict) {
+		for (const brand of ['autoteca', 'glovebox', 'carbook', 'pitto', 'loggy', 'myautolog']) {
+			assert.ok(!phrase.includes(brand), `"${phrase}" carries a competitor's name`);
+		}
+	}
+	assert.ok(strict.includes('car maintenance tracker'), 'a phrase the market types survives');
 });
 
 test('categoryVocabulary needs two titles and ignores the genre shelf', () => {
-	const results = [
-		{ trackName: 'Car Maintenance Tracker', primaryGenreName: 'Utilities', sellerName: 'A' },
-		{ trackName: 'Vehicle Maintenance Log', primaryGenreName: 'Utilities', sellerName: 'B' },
-		{ trackName: 'Carfax Car Care', primaryGenreName: 'Lifestyle', sellerName: 'Carfax' },
-	];
-	const vocab = categoryVocabulary(results, 'en-US');
-	assert.ok(vocab.includes('maintenance'), 'two titles share it');
+	// The real page: eight of ten titles share "car", "maintenance" and "log".
+	const vocab = categoryVocabulary(top('car maintenance log'), 'en-US');
+	assert.ok(vocab.includes('maintenance'), 'nine titles share it');
+	assert.ok(vocab.includes('car'));
 	assert.ok(!vocab.includes('utilities'), 'nobody searches the genre name');
 	assert.ok(!vocab.includes('carfax'), 'one title, and its own publisher');
 });
 
 test('the drafted listing spends no character on a competitor', () => {
+	const brands = new Set([...brandTokens(APPS), ...harvestBrands(SWEEP, 'car maintenance log', 'en-US')]);
 	const draft = draftListing({
-		term: 'car maintenance reminder',
+		term: 'car maintenance log',
 		suggestions: SWEEP,
-		results: APPS.map((a) => ({ trackName: a.name, sellerName: a.seller, userRatingCount: 40, price: 0 })),
+		results: top('car maintenance log'),
+		brands,
 	});
 	const field = draft.keywords.toLowerCase();
-	for (const brand of ['valvoline', 'servicenow']) assert.ok(!field.includes(brand), `${brand} in the keyword field`);
-	assert.ok(!draft.subtitle.toLowerCase().includes('servicenow'));
+	for (const brand of ['autolog', 'glovebox', 'autoteca', 'carbook', 'pitto', 'valvoline']) {
+		assert.ok(!field.includes(brand), `${brand} in the keyword field`);
+	}
+	assert.ok(!draft.subtitle.toLowerCase().includes('glovebox'));
 	assert.ok(charCount(draft.keywords) <= LIMITS.keywords);
 	assert.ok(!draft.keywords.includes(', '), 'a space after the comma wastes an indexed character');
 });

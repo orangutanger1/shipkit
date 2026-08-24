@@ -80,7 +80,7 @@ export const COMMANDS = {
 	},
 	ads: {
 		group: 'Grow',
-		summary: 'Apple Search Ads: status · plan · sync · mine · report',
+		summary: 'Apple Search Ads: status · plan · snapshot · sync · mine · report',
 		load: () => import('./commands/ads.mjs'),
 	},
 	status: {

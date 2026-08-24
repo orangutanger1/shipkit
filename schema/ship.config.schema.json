@@ -196,14 +196,43 @@
 						"number",
 						"null"
 					],
-					"description": "Target cost per install in USD. `ship ads mine` negates any search term whose CPI exceeds 2x this."
+					"description": "Target cost per install in USD, and the single source of the kill rule: `ship ads mine` negates a search term only once it is past 2x this AND has enough taps to make zero installs evidence. Must not exceed subPrice x retentionMonths."
 				},
 				"subPrice": {
 					"type": [
 						"number",
 						"null"
 					],
-					"description": "Monthly subscription price in USD, the denominator of the payback rule."
+					"description": "Monthly subscription price in USD, the denominator of the payback rule. Validated against targetCpi at load time."
+				},
+				"retentionMonths": {
+					"type": "number",
+					"default": 1,
+					"description": "Months of subscription revenue a paid install is underwritten against. Raise it only if retention data justifies it: it is what makes a targetCpi above one month's price legal."
+				},
+				"seedBid": {
+					"type": [
+						"number",
+						"null"
+					],
+					"description": "Starting bid in USD for keywords with no realised cost-per-tap yet (default 0.60). Deliberately above Apple's 0.30 minimum, which loses every auction. Once the account has spend, `ship ads plan` prefers the realised CPT over this."
+				},
+				"baselineInstallRate": {
+					"type": "number",
+					"default": 0.4,
+					"description": "Tap to install rate a keyword is presumed capable of. Sets the minimum taps before zero installs is treated as evidence: at 0.4 that is 6 taps."
+				},
+				"minTaps": {
+					"type": [
+						"number",
+						"null"
+					],
+					"description": "Override the derived minimum tap count before `ship ads mine` may negate a keyword."
+				},
+				"retain": {
+					"type": "number",
+					"default": 12,
+					"description": "How many dated artifacts (mining, snapshot) to keep in ads.dir. Older ones are pruned and every kept one is listed in index.json."
 				}
 			}
 		},

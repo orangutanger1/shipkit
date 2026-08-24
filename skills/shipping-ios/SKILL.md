@@ -93,7 +93,7 @@ Three concrete rules follow, all enforced by the tool:
    word on its own — a category sweep never surfaces a collision that lives in
    somebody's title suffix.
 
-Two rules the tool cannot enforce, so they are yours:
+Four rules the tool cannot enforce, so they are yours:
 
 - **Seed the sweep from something a model would not say.** Seeds decide
   everything downstream, and a model asked for "app ideas in a category" emits
@@ -105,6 +105,19 @@ Two rules the tool cannot enforce, so they are yours:
   clear every gate and still be a category nobody pays for. `ship scout brief`
   reads whether the leaders sell in-app for exactly that reason and says so when
   no evidence of a payer exists.
+- **Sell into a core human desire.** Health, addiction, appearance, faith,
+  mental health, money, food, intimacy, learning — the categories where the
+  outcome is worth handing a card to a stranger. `ship scout brief` can prove
+  that the leaders sell in-app; it cannot prove anyone wants the outcome badly
+  enough to buy. A term that clears every gate in a category nobody aches about
+  is a term you will fund with ads forever.
+- **iOS only until there is traction, and keep shipping after launch.** A second
+  platform before the first one converts is marketing effort spent on
+  engineering instead. Launch is where the work starts, because retention is
+  revenue and the friction that costs retention is inside the app, not in the
+  funnel — instrument both (see "The post-install funnel"). `ship portfolio`
+  prices the alternative: under $10/mo, older than 90 days, no release in 60 is
+  a sunset candidate, and an app that stopped shipping arrives there on its own.
 
 ## Store listings
 
@@ -128,6 +141,24 @@ Two rules the linter enforces because they silently cost ranking:
 - No space after commas in `keywords`. `"a, b"` wastes one indexed character per term.
 - Terms already in `name` or `subtitle` are indexed anyway; repeating them in
   `keywords` burns slots for nothing.
+
+**What converts, in descending order of weight: screenshots, reviews, name and
+subtitle, icon.** That ordering is where the day goes. Screenshots carry the
+install decision and get their own section below. Reviews are a threshold rather
+than a gradient — having none is not a negative signal, a rating under about
+four stars is, and once a version sits under four the honest fix is a rating
+reset in the next update, not more prompts stacked on the old average. The icon
+matters least early; a day spent on the icon is a day not spent on frame 1.
+
+Name and subtitle are the exception that looks like a contradiction: almost
+nobody reads them, and they are still the substrate everything else ranks on.
+Apple indexes the two as one pool, which is why `ship meta lint` warns on any
+keyword already covered by `name` or `subtitle` — and why the same word must not
+appear in both halves of that pool either. Repetition inside it buys nothing.
+`ship meta keywords <locale>` prices every term in characters so the trade is
+visible before it ships, and `ship aso competitors --locale en-US` shows what
+the category leaders actually index: the same handful of generic words, each
+spent exactly once.
 
 `ship meta apply` runs `asc metadata apply` **twice** on purpose. The first pass
 creates empty localizations and reports "entity with locale already exists"; the
@@ -159,6 +190,17 @@ Research first, listing second, ads third. Ads bid on terms the listing already
 ranks for; bidding on terms your metadata ignores pays Apple to fix your ASO.
 
 ## Screenshots
+
+Screenshots carry more of the install decision than the rest of the page
+combined, and the binding constraint is that the first image is often the only
+one seen — it has to communicate the whole app alone, before a thumb moves.
+Depth is what stops the scroll: a chip, a slider, a dialog lifted out past the
+phone frame reads as a product rather than a slide, and colour that survives a
+thumbnail beats a faithful capture of a white screen. `ship shots plan` measures
+what is on disk, `ship shots validate` gates pixel sizes, and `ship shots
+render` typesets the caption you wrote; none of the three has an opinion about
+whether frame 1 says anything, so that judgement is yours and it is the
+expensive one.
 
 ```bash
 ship shots plan       # measure every image on disk, write .asc/screenshots.json
@@ -221,11 +263,50 @@ For `tour` specifically, backend deploys must land **before** the OTA
 (`supabase db push` → `supabase functions deploy …` → `ship ota`), because old
 clients treat new response shapes as errors.
 
+## The post-install funnel
+
+Everything above stops at the install. `ship analytics funnel` ends at
+impressions → page views → installs, which is where the money starts, not where
+it lands. The stage after it has its own numbers, and they live in
+`src/lib/paywall.mjs` as code rather than prose because they are contested
+business rules: `ONBOARDING`, `CONVERSION`, `LADDER`.
+
+```bash
+ship analytics onboarding --file export.csv        # a PostHog-style funnel export
+ship analytics onboarding --locale en-US           # or .asc/analytics/en-US-onboarding.json
+ship analytics onboarding --installs 4200 --paid 190
+```
+
+Onboarding does exactly two jobs: convince the user they have a problem, then
+convince them this app solves it. Anything on those screens doing neither is
+drop-off you paid for. Sell the outcome, never the product — a feature tour
+before the paywall is a paywall fewer people reach.
+
+`ONBOARDING.minScreens`/`maxScreens` is a 10-15 band and deliberately not a
+target. More screens qualify harder: fewer users arrive at the paywall, and the
+ones who do arrive with higher intent. Fewer screens convert worse. So the count
+is a trade you measure, and the finding worth acting on is an uninstrumented
+funnel, which cannot be tuned in either direction.
+
+`ONBOARDING.paywallReach` is the one hard gate at 75% — under that, the
+onboarding has already capped total conversion at whatever fraction reaches the
+paywall, times whatever the paywall can do. `ship analytics onboarding` prints
+that as a failure row and names the single step losing the most users, which is
+the screen to cut or rewrite first. `ONBOARDING.maxQuizScreens` caps the quiz at
+four: a quiz feels productive to build and is the most common place a funnel
+dies quietly. Images over text, social proof only where it is real, and every
+screen defends its place in the reach number or it goes.
+
+Do not clone a competitor's onboarding screen for screen. Apple rejects clones,
+and an onboarding is the one part of a shipped app anyone can read in full for
+free — which makes it the easiest thing in the category to beat rather than copy.
+
 ## Monetization
 
 ```bash
 ship rc status
 ship rc audit          # the paywall-breakage gate
+ship price audit       # the paywall-shape gate
 ```
 
 `ship rc audit` catches the four failures that ship a dead paywall: no offering
@@ -233,25 +314,92 @@ marked current, a current offering with zero packages, a RevenueCat bundle id
 that disagrees with the build, and a missing entitlement. It runs inside
 `ship preflight`.
 
+That gate proves the paywall *renders*. It says nothing about whether the
+paywall's shape can convert, which is a separate audit: `ship price audit`
+checks the ladder against the edges that cost money regardless of storefront —
+an annual tier exists, a weekly or monthly tier exists beside it, the yearly is
+at or under `LADDER.annualUsd` ($49.99), the trial sits on the yearly and not on
+the weekly, and a win-back offering exists without being marked current. It
+consumes `auditLadder` from `src/lib/paywall.mjs` rather than restating those
+thresholds, so there is one place to argue with them.
+
+$49.99 is a ceiling, not a suggestion. In the EU the 14-day right of withdrawal
+makes a refund essentially automatic for anything that is not usage-based, so a
+yearly above it converts once and reverses later with the acquisition cost
+already spent. `LADDER.monthlyUsd` ($14.99) and `LADDER.weeklyUsd` ($7.99) catch
+the users who will not commit for a year; the standard shape is a seven-day
+trial on the yearly and no trial on the weekly, because a trial on the weekly
+cannibalises the yearly it should be qualifying for. At those prices the
+per-territory table is not a rounding error — `ship price show|plan|apply` owns
+it, and `apply` refuses to move any territory by more than 50% without
+`--force`, because price changes are visible to existing subscribers and are not
+casually reversible.
+
+Paywall order, top to bottom: social proof, a headline about the outcome and not
+the feature, a features block phrased as outcomes, price last. The number that
+judges all of it is install → paid, scored by `CONVERSION`: 3% is the floor —
+below it no amount of ASO or `ads.targetCpi` tuning pays for itself — ~5% is a
+working app, 10%+ is a tuned one. `ship analytics onboarding --installs <n>
+--paid <n>` prints which tier you are in and what that tier means to fix.
+
 Use the `revenuecat` MCP server for anything conversational or mutating —
 creating products, entitlements, offerings, paywalls. Use the CLI for gates.
+
+Ship the paywall through RevenueCat's **remote** paywalls, so pricing, layout
+and A/B tests move without an app review cycle; the queue is the reason a
+paywall experiment otherwise costs a week per iteration. That is not licence to
+serve a non-compliant one — remote or not, it is the screen Apple reads hardest.
+
+The exit offer is the other half of the ladder, and it is a sequence rather than
+a button. In-app "manage subscription" asks why first (preset reasons plus free
+text — the only honest churn data you will ever get), then presents a discounted
+save at around `LADDER.winbackUsd` ($24.99/year, optionally a lifetime, noting a
+lifetime tier is awkward to explain in an acquisition), and only falls through to
+the App Store subscription page on a no. Show the discount exclusively to
+subscribers who are **not** already on the yearly; offered to a yearly
+subscriber it is a giveaway, not a save. `ship price audit` fails a win-back
+offering that is marked current, which is the same giveaway served to everyone.
+
+Notifications follow the same asymmetry: they go to engaged users, keyed off
+activity metadata, not to a list on a schedule. Waking a lapsed weekly
+subscriber is work nobody pays you for.
 
 ## Acquisition
 
 ```bash
 ship ads status                       # also prints the exact login line when unconfigured
-ship ads plan --locale en-US --top 15 --budget 10
-ship ads sync                         # idempotent: matches campaigns by name
-ship ads report --from 2026-08-01
+ship ads plan --locale en-US --top 15 --budget 10 --bid 0.55
+ship ads snapshot                     # observed state: ids, statuses, bids, per-object spend
+ship ads sync --dry-run               # the exact mutation set; nothing runs
+ship ads report --level ad-group --from 2026-08-01
+ship ads mine --apply --confirm       # negatives + promotions, evidence printed first
 ```
 
-Apple Ads credentials are **separate** from App Store Connect credentials and
-are not configured on this machine yet. `ship ads plan` works offline from
-`aso/<locale>/scored.json`, so a campaign plan can be prepared before any
-credential exists.
+Apple Ads credentials are **separate** from App Store Connect credentials.
+`ship ads plan` needs none of them: it works from `aso/<locale>/scored.json`, so a
+campaign plan can be prepared before any credential exists.
 
-The kill rule encoded in the plan: pause any keyword whose 7-day spend exceeds
-one month of subscription revenue with zero conversions.
+Four rules to know before touching a live account:
+
+- **The plan is intent, the snapshot is state.** `sync` reconciles them by Apple's
+  object ids, which it records into the plan. It refuses — and exits non-zero —
+  rather than pause anything without `--prune`, or overwrite a value changed
+  outside `ship` without `--force` (plan wins) or `--adopt` (account wins). Read
+  the printed diff; it is the whole mutation set.
+- **Budgets are campaign-level only.** Apple has no ad-group budget, so no ad group
+  in a plan has one. One ad group per keyword buys creative control (its own Custom
+  Product Page and bid), not budget isolation.
+- **Bids come from the market.** The account's realised cost-per-tap, else
+  `ads.seedBid`. Apple's $0.30 minimum loses every auction; `--bid` sets a
+  market-clearing price without editing generated JSON.
+- **The kill rule needs a sample, not just a bill.** `ship ads mine` negates only
+  past `2 × ads.targetCpi` *and* past the tap count at which a keyword converting at
+  `ads.baselineInstallRate` would have converted (6 taps by default). It prints the
+  terms it is holding and why, and `--apply` requires `--confirm`.
+
+`plan` and `sync` read the configured RevenueCat project. With no subscriptions and
+no revenue they say so in the real numbers and label every threshold a research
+cap: buying installs worth $0.00 is a decision, not a default.
 
 ## Before claiming a release is done
 
@@ -260,3 +408,20 @@ one month of subscription revenue with zero conversions.
 App Store Connect for the primary locale, Apple's own `validate` plan, RevenueCat
 wiring, reachable legal URLs, and OTA compatibility. Run it and read the output;
 do not assert readiness from the absence of errors elsewhere.
+
+Preflight owns the mechanical blockers. The review itself is a person, and three
+rules survive every submission that went badly:
+
+- **Attach a video of what changed.** A reviewer who has to hunt for the new
+  behaviour finds something else instead.
+- **Be relentlessly literal about what the app does**, in the review notes and
+  in the listing, with no gap between the two. Never mislead — the rejections
+  that cost a week started as copy that was technically true.
+- **Do not argue with a reviewer.** Fix, resubmit, and when the circumstances
+  genuinely warrant it — a factual misreading, a committed launch date — request
+  a call or an expedited review instead of a longer reply.
+
+Apple is answering one question: does the user end up happy. Every rule above is
+downstream of that one, and so is the funnel — a release that clears preflight
+into an onboarding nobody measured is done only in the mechanical sense. Run
+`ship analytics onboarding` before you call it shipped.

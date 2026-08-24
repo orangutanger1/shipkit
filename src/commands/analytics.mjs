@@ -17,35 +17,44 @@
 //     columns are read opportunistically (if Apple ships them, we use them)
 //     and `--file` imports a manual export as a first-class path, not a
 //     fallback. `terms` and `funnel` never touch the network at all.
+//  4. Apple's funnel ends at the install, and the install is not the money.
+//     `onboarding` continues it — onboarding step → paywall reach → paid — from
+//     a PostHog-style export, because no Apple report carries a step a user took
+//     inside the app. It is offline for the same reason `terms` is: the numbers
+//     that decide what to cut must be readable without a credential.
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { loadConfig, requireAppId } from '../config.mjs';
 import { ASC, isDryRun, run as exec } from '../exec.mjs';
-import { ShipError, c, good, heading, info, note, step, table, warn } from '../log.mjs';
+import { Report, ShipError, c, good, heading, info, note, step, table, warn } from '../log.mjs';
 import { readStaged } from '../lib/locales.mjs';
 import { isCovered, stopwordsFor, words } from '../lib/text.mjs';
+import { CONVERSION, ONBOARDING, conversionTier, onboardingFunnel, pct as fraction } from '../lib/paywall.mjs';
 
 export const help = `
-${c.bold('ship analytics')} ${c.dim('— impressions · product page views · installs, per locale')}
+${c.bold('ship analytics')} ${c.dim('— impressions · page views · installs, then onboarding · paywall · paid')}
 
 ${c.dim('usage:')} ship analytics [subcommand] [flags]
 
-  ${c.cyan('funnel')}   ${c.dim('default')} impressions → page views → installs, and which stage is the bottleneck
-  ${c.cyan('terms')}    ranked search terms, and the ones that convert but are ${c.bold('missing from the keyword field')}
-  ${c.cyan('pull')}     fetch from App Store Connect ${c.dim('(or --file <export> to import a manual export)')}
+  ${c.cyan('funnel')}      ${c.dim('default')} impressions → page views → installs, and which stage is the bottleneck
+  ${c.cyan('onboarding')}  ${c.green('offline')} onboarding step → paywall reach → install→paid tier
+  ${c.cyan('terms')}       ranked search terms, and the ones that convert but are ${c.bold('missing from the keyword field')}
+  ${c.cyan('pull')}        fetch from App Store Connect ${c.dim('(or --file <export> to import a manual export)')}
 
 ${c.bold('Flags')}
   ${c.cyan('--locale <l>')}      one locale ${c.dim('(default: every locale with a pulled file; pull: asc.primaryLocale)')}
-  ${c.cyan('--file <path>')}     ${c.dim('pull')} import an exported report (.csv/.tsv/.json) instead of calling ASC
+  ${c.cyan('--file <path>')}     ${c.dim('pull, onboarding')} import an exported report (.csv/.tsv/.json) instead of calling ASC
   ${c.cyan('--from --to')}       ${c.dim('pull')} window ${c.dim('YYYY-MM-DD, default: the last 30 days')}
   ${c.cyan('--territory <t>')}   ${c.dim('pull')} keep only rows whose territory matches ${c.dim('(default: all territories)')}
   ${c.cyan('--top <n>')}         ${c.dim('terms')} rows to print ${c.dim('(default: 20)')}
+  ${c.cyan('--installs <n>')}    ${c.dim('onboarding')} installs in the window ${c.dim('(default: the pulled funnel file)')}
+  ${c.cyan('--paid <n>')}        ${c.dim('onboarding')} paying subscribers started in the same window
   ${c.cyan('--json')}            machine-readable output
   ${c.cyan('--dry-run')}         print every mutation, write nothing
 
-${c.dim('Artifacts: .asc/analytics/<locale>-terms.json · .asc/analytics/<locale>-funnel.json')}
+${c.dim('Artifacts: .asc/analytics/<locale>-terms.json · -funnel.json · -onboarding.json')}
 ${c.dim('`ship aso score` uses the terms file as measured demand; `ship loc draft` as provenance.')}
 `;
 
@@ -745,7 +754,130 @@ async function funnel({ flags }) {
 	return 0;
 }
 
-const SUB = { funnel, terms, pull };
+// ─── onboarding (offline) ────────────────────────────────────────────────────
+//
+// The stage Apple cannot see. Every export shape in the wild is "an ordered list
+// of steps with a count", so that is the only thing parsed here — the analysis
+// lives in `onboardingFunnel`, which is pure and tested.
+
+const onboardingFile = (cfg, locale) => join(cfg.paths.analytics, `${locale}-onboarding.json`);
+
+/** Column roles in a funnel export. PostHog, Amplitude and Mixpanel each name these differently. */
+const STEP_NAME = /^(step|name|event|label|screen|funnel[ _-]?step)$/i;
+const STEP_COUNT = /^(users?|count|completed|people|value|unique[ _-]?users|conversions?)$/i;
+
+/**
+ * An export → ordered `{name, users}` steps. Accepts the three shapes a funnel
+ * arrives in: delimited text with a header, a bare JSON array, and PostHog's
+ * `{result:[{name, count, order}]}`. Row order is the funnel order except when
+ * an explicit `order`/`step_index` is present, which wins.
+ * @param {string} text
+ */
+export function parseFunnelExport(text) {
+	const raw = String(text ?? '').trim();
+	if (!raw) return [];
+
+	let records;
+	if (raw.startsWith('{') || raw.startsWith('[')) {
+		const doc = JSON.parse(raw);
+		records = Array.isArray(doc) ? doc : (doc.result ?? doc.steps ?? doc.funnel ?? doc.data);
+		if (!Array.isArray(records)) throw new ShipError('that JSON has no funnel array', { hint: 'expected an array, or {steps:[…]} / {result:[…]}' });
+	} else {
+		records = parseDelimited(raw);
+	}
+
+	const steps = records.map((r, i) => {
+		const keys = Object.keys(r ?? {});
+		const nameKey = keys.find((k) => STEP_NAME.test(k.trim()));
+		const countKey = keys.find((k) => STEP_COUNT.test(k.trim()));
+		const order = num(r?.order ?? r?.step_index ?? r?.index);
+		return {
+			name: String((nameKey ? r[nameKey] : r?.name) ?? `step ${i + 1}`).trim(),
+			users: num(countKey ? r[countKey] : (r?.users ?? r?.count)),
+			kind: r?.kind ?? r?.type,
+			// Absent order must not collapse every row onto 0 and reverse nothing.
+			order: Number.isFinite(order) && order > 0 ? order : i + 1,
+		};
+	});
+	return steps.sort((a, b) => a.order - b.order).map(({ order: _order, ...s }) => s);
+}
+
+async function onboardingFor(cfg, locale, flags) {
+	const file = str(flags.file);
+	if (file) {
+		const path = resolve(file);
+		if (!existsSync(path)) throw new ShipError(`no such export: ${path}`);
+		return { steps: parseFunnelExport(await readFile(path, 'utf8')), source: path, imported: true };
+	}
+	const doc = await readJSON(onboardingFile(cfg, locale));
+	if (!doc) return null;
+	const steps = Array.isArray(doc) ? doc : (doc.steps ?? []);
+	return { steps, source: onboardingFile(cfg, locale), installs: num(doc.installs), paid: num(doc.paid) };
+}
+
+/**
+ * Installs for the paid-conversion rate. `--installs` wins, then the export
+ * itself, then the funnel Apple already gave us for this locale — which is the
+ * whole reason the two live under one command.
+ */
+async function installsFor(cfg, locale, flags, doc) {
+	const flag = num(str(flags.installs));
+	if (flag > 0) return { installs: flag, from: '--installs' };
+	if (doc?.installs > 0) return { installs: doc.installs, from: 'export' };
+	const apple = await funnelFor(cfg, locale);
+	return apple?.installs > 0 ? { installs: apple.installs, from: 'App Store funnel' } : { installs: 0, from: null };
+}
+
+async function onboarding({ flags }) {
+	const cfg = await loadConfig();
+	const locale = str(flags.locale) ?? (await targetLocales(cfg, flags))[0] ?? cfg.asc?.primaryLocale ?? 'en-US';
+
+	const doc = await onboardingFor(cfg, locale, flags);
+	if (!doc)
+		throw new ShipError(`no onboarding funnel for ${locale}`, {
+			hint: `export the funnel from PostHog and import it: \`ship analytics onboarding --file <export.csv>\` (it is written to ${onboardingFile(cfg, locale)})`,
+		});
+
+	const analysis = onboardingFunnel(doc.steps);
+	const { installs, from } = await installsFor(cfg, locale, flags, doc);
+	const paid = num(str(flags.paid)) || num(doc.paid);
+	const paidRate = installs > 0 ? paid / installs : 0;
+	const tier = conversionTier(paidRate);
+
+	// An imported export is the artifact from now on; `--dry-run` still writes nothing.
+	if (doc.imported && !dryRun(flags)) {
+		await writeJSON(onboardingFile(cfg, locale), { locale, source: doc.source, steps: analysis.steps.map(({ name, users, role }) => ({ name, users, kind: role })), installs, paid });
+	}
+
+	if (flags.json)
+		return emit({ locale, source: doc.source, installs, installsFrom: from, paid, ...analysis, conversion: tier });
+
+	heading(`Onboarding: ${locale} ${c.dim(`(${doc.source})`)}`);
+	table(analysis.steps, [
+		{ header: 'step', get: (s) => s.name },
+		{ header: 'role', get: (s) => c.dim(s.role) },
+		{ header: 'users', get: (s) => String(s.users) },
+		{ header: 'drop', get: (s) => (s.dropRate >= 0.25 ? c.red(fraction(s.dropRate)) : c.dim(fraction(s.dropRate))) },
+		{ header: 'of entrants', get: (s) => (s.role === 'paywall' && s.reach >= ONBOARDING.paywallReach ? c.green(fraction(s.reach)) : fraction(s.reach)) },
+	]);
+
+	const report = new Report(`Gates ${c.dim(`(reach ≥ ${fraction(ONBOARDING.paywallReach)}, ${ONBOARDING.minScreens}-${ONBOARDING.maxScreens} screens, ≤ ${ONBOARDING.maxQuizScreens} quiz)`)}`);
+	for (const f of analysis.findings) report[f.level === 'skip' ? 'skip' : f.level](f.name, f.detail);
+
+	if (installs > 0) {
+		const detail = `${paid}/${installs} = ${fraction(tier.rate)} ${c.dim(`(floor ${fraction(CONVERSION.floor)} · healthy ${fraction(CONVERSION.healthy)} · excellent ${fraction(CONVERSION.excellent)}; installs from ${from})`)}`;
+		report[tier.rate < CONVERSION.floor ? 'fail' : tier.healthy ? 'ok' : 'warn'](`install→paid (${tier.tier})`, detail);
+	} else {
+		report.skip('install→paid', 'no install count — pass --installs, or `ship analytics pull` for this locale');
+	}
+	report.print();
+
+	if (analysis.worst && analysis.worst.dropRate >= 0.25) note(`worst step: ${analysis.worst.name} — ${tier.fix}`);
+	else note(tier.fix);
+	return report.code;
+}
+
+const SUB = { funnel, onboarding, terms, pull };
 
 export async function run({ args, flags }) {
 	const [sub = 'funnel', ...rest] = args;

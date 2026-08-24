@@ -22,6 +22,7 @@ import {
 	listProjects,
 	resolveProject,
 } from '../lib/revenuecat.mjs';
+import { WINBACK_PATTERN } from '../lib/paywall.mjs';
 
 export const help = `
 ${c.bold('ship rc')} ${c.dim('— RevenueCat monetisation wiring')}
@@ -47,6 +48,9 @@ const emit = (data) => {
 	process.stdout.write(`${JSON.stringify(data, null, 2)}\n`);
 	return 0;
 };
+
+/** A save/exit offer, by lookup key. It belongs behind "manage subscription", not on the paywall. */
+const isWinback = (o) => WINBACK_PATTERN.test(String(o?.lookup_key ?? o?.id ?? ''));
 
 /**
  * A package's products are one level below the package, not inlined in the
@@ -165,6 +169,7 @@ async function offerings({ flags }) {
 				lookup_key: o.lookup_key,
 				is_current: !!o.is_current,
 				display_name: o.display_name,
+				winback: isWinback(o),
 			})),
 			current: current?.lookup_key ?? null,
 			packages: detailed.map((p) => ({
@@ -183,6 +188,9 @@ async function offerings({ flags }) {
 	table(list, [
 		{ header: 'lookup key', get: (o) => o.lookup_key },
 		{ header: 'current', get: (o) => (o.is_current ? c.green('yes') : c.dim('no')) },
+		// A save offer served as the current offering *is* the paywall — worth
+		// seeing next to the `current` column rather than inferring from a name.
+		{ header: 'kind', get: (o) => (isWinback(o) ? c.yellow('win-back') : c.dim('paywall')) },
 		{ header: 'display name', get: (o) => o.display_name ?? '' },
 	]);
 

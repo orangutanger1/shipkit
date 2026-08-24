@@ -35,19 +35,20 @@ Structural changes that hit code we already have:
 | --- | --- | --- |
 | base URL | `api.searchads.apple.com/api/v5/` | `api.ads.apple.com/v1/` |
 | context header | `X-AP-Context: orgId=…` | `X-AP-Context: adAccountId=…` |
-| `ads.mjs:91-101` | `orgOf`/`requireOrg`, `ads.orgId`, `ASC_ADS_ORG_ID` | `adAccountId`; the old `parentOrgId` becomes `orgId` |
+| `ads.mjs` `orgOf`/`requireOrg` | `ads.orgId`, `ASC_ADS_ORG_ID` | `adAccountId`; the old `parentOrgId` becomes `orgId` |
 | response envelope | `data` | `result` |
 | list/find | `POST …/find`, `conditions`, `orderBy`, `ASCENDING` | `POST …/query`, `filters`, `sorting`, `ASC` |
 | hierarchy | parent ids in the path | flat top-level resources, parent ids in the body |
-| `ads.mjs:346-348` | `selector: { orderBy, pagination }` | top-level `filters` / `sorting` / `pagination` |
-| `ads.mjs:604,640,662,682,964` | `defaultBidAmount` | `bidStrategy.bid` |
-| `ads.mjs:933` | campaign `adamId` | `promotedObjectId` + `promotedObjectType: "APPSTORE_APP"` (immutable after create) |
-| `ads.mjs:935` | `budgetAmount` (lifetime) | removed — `dailyBudget` only |
-| `ads.mjs:965` | `pricingModel: 'CPC'` | doc uses `CPT` / `bidStrategyType: MANUAL_CPT` throughout |
-| `ads.mjs:993` | keyword `status: 'ACTIVE'` | `'ENABLED'` (same for negative keywords) |
-| `ads.mjs:1045` | ad body carries `creativeType` + `productPageId` | `creativeType` removed from the ad object; create a **Creative** first, ad references `creativeId` |
-| `ads.mjs:359` | `res.data.reportingDataResponse.row` | `result.rows[].totalMetrics` / `granularMetrics` / `metadata`, plus `summary.grandTotal` |
+| `ads.mjs` `mine` search-term payload | `selector: { orderBy, pagination }` | top-level `filters` / `sorting` / `pagination` |
+| `lib/asa.mjs` `resolveBidding`, `ads.mjs` `adGroupBody` | `defaultBidAmount` | `bidStrategy.bid` |
+| `ads.mjs` `campaignBody` | campaign `adamId` | `promotedObjectId` + `promotedObjectType: "APPSTORE_APP"` (immutable after create) |
+| `ads.mjs` `campaignBody` | `dailyBudgetAmount` — campaign only, and lifetime budget is already rejected | `dailyBudget` only; still no ad-group budget |
+| `ads.mjs` `adGroupBody` | `pricingModel: 'CPC'` | doc uses `CPT` / `bidStrategyType: MANUAL_CPT` throughout |
+| `ads.mjs` `updateKeywords` | keyword `status: 'ACTIVE'` | `'ENABLED'` (same for negative keywords) |
+| `ads.mjs` `bindProductPage` | ad body carries `creativeType` + `productPageId` | `creativeType` removed from the ad object; create a **Creative** first, ad references `creativeId` |
+| `ads.mjs` `reportRows`/`totalsOf` | `res.data.reportingDataResponse.row`, `total` or summed `granularity` | `result.rows[].totalMetrics` / `granularMetrics` / `metadata`, plus `summary.grandTotal` |
 | report options | `returnRowsWithNoMetrics: true` | `options.includeRows: ["EMPTY_METRICS"]` — mutually exclusive with `groupBy` |
+| `ads.mjs` `LEVELS` | selector fields are Apple's, and the error message over-reports them: there is no `installs`, and `campaignId` is rejected at ad-group level | re-verify the whole projection: v1 renames the metric block |
 | `lib/cpp.mjs:15-17` | Ads exposes `/v5/apps/{adamId}/product-pages`, joined **by name** | `POST /v1/product-pages/query` returns a real `productPageId`; creatives take it in `destination.parameters` |
 
 Also deprecated: ad group `cpaCap` (we never emitted it) and lifetime budget.
@@ -59,7 +60,7 @@ new entity to reconcile idempotently.
 Report-shape constraints worth knowing before rewriting `ads mine`:
 
 - all report types except campaign-level require a `campaignId` filter, so the
-  per-campaign loop at `ads.mjs:1461-1485` survives structurally;
+  per-campaign fan-out in `pullReport` survives structurally;
 - ad-group-scoped keyword/search-term reports are gone as endpoints — filter by
   `adGroupId` on the consolidated one instead;
 - search-term reports: **ORTZ only** (no UTC), no `HOURLY`, and `groupBy` excludes

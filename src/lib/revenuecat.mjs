@@ -3,7 +3,7 @@
 // this client covers the deterministic, scriptable half (gates, dashboards, CI).
 import { readFile, readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { fetchJSON } from '../exec.mjs';
 import { ShipError } from '../log.mjs';
 
@@ -12,10 +12,18 @@ export const KEY_FILE = join(homedir(), '.omp', 'revenuecat.key');
 export const KEY_DIR = join(homedir(), '.omp', 'revenuecat');
 
 let cachedKey;
-/** Secret v2 key from REVENUECAT_V2_KEY, else ~/.omp/revenuecat.key. */
+/**
+ * Secret v2 key from the environment, else the ambient `~/.omp/revenuecat.key`.
+ *
+ * `REVENUECAT_API_KEY` is read too because it is the name the MCP server and
+ * most shells already export — an ambient key under a name this client ignored
+ * is how a wrong-account credential stays invisible instead of being validated.
+ * This function does not know which project it is for; anything project-scoped
+ * must go through {@link useKeyForProject}.
+ */
 export async function apiKey({ optional = false } = {}) {
 	if (cachedKey !== undefined) return cachedKey;
-	let key = process.env.REVENUECAT_V2_KEY?.trim();
+	let key = (process.env.REVENUECAT_V2_KEY || process.env.REVENUECAT_API_KEY || '').trim();
 	if (!key) {
 		try {
 			key = (await readFile(KEY_FILE, 'utf8')).trim();
@@ -26,9 +34,21 @@ export async function apiKey({ optional = false } = {}) {
 	cachedKey = key || null;
 	if (!cachedKey && !optional)
 		throw new ShipError('no RevenueCat v2 API key', {
-			hint: `set REVENUECAT_V2_KEY or write the key to ${KEY_FILE}`,
+			hint: `set REVENUECAT_V2_KEY or write the key to ${KEY_FILE} (per project: ${KEY_DIR}/<name>.key)`,
 		});
 	return cachedKey;
+}
+
+/**
+ * Where this repo's key is expected to live. `revenuecat.key` in
+ * ship.config.json names it; otherwise the repo directory name is the only
+ * honest guess, and naming the guess is what makes the failure actionable.
+ */
+export function expectedKeyFile(cfg) {
+	const named = cfg?.revenuecat?.key;
+	if (named) return named.includes('/') ? named : join(KEY_DIR, `${named}.key`);
+	const repo = basename(cfg?.root ?? '') || 'project';
+	return join(KEY_DIR, `${repo}.key`);
 }
 
 /**
@@ -42,22 +62,44 @@ export async function apiKey({ optional = false } = {}) {
  * wrong credential. A gate that fails for a reason the operator cannot
  * distinguish from real breakage is worse than no gate.
  *
- * The happy path costs nothing: the ambient key is tried first and kept if it
- * can see the configured project. Only on a mismatch does this scan the key
- * directory, and then it picks by evidence — the key whose `/projects` actually
- * contains the configured id.
+ * The documented per-project path (`revenuecat.key`, else the repo directory
+ * name) is tried first, then the ambient key, then every key in the directory —
+ * and each candidate is *validated* against the configured project before it is
+ * used. An explicitly named key that cannot see the project is a hard failure
+ * naming the file, not a silent 403 fifty lines later.
  */
 export async function useKeyForProject(cfg) {
 	const want = cfg?.revenuecat?.projectId;
 	if (!want) return { key: await apiKey(), source: 'ambient', switched: false };
 
-	// An explicit name in ship.config.json wins; nothing to probe.
+	const read = async (file) => {
+		try {
+			return (await readFile(file, 'utf8')).trim();
+		} catch {
+			return '';
+		}
+	};
+
+	// An explicit name in ship.config.json is an instruction, so a mismatch is an
+	// error rather than a reason to go looking for a key that happens to work.
 	const named = cfg.revenuecat?.key;
 	if (named) {
-		const file = named.includes('/') ? named : join(KEY_DIR, `${named}.key`);
-		const key = (await readFile(file, 'utf8')).trim();
+		const file = expectedKeyFile(cfg);
+		const key = await read(file);
+		if (!key) throw new ShipError(`revenuecat.key "${named}" points at no readable key`, { hint: `expected ${file}` });
+		if (!(await keySees(key, want)))
+			throw new ShipError(`the key at ${file} cannot see project "${want}"`, {
+				hint: `revenuecat.key names it, so ship will not substitute another — check the project id in ${cfg.file ?? 'ship.config.json'}, or replace that key`,
+			});
 		cachedKey = key;
 		return { key, source: file, switched: true };
+	}
+
+	const guess = expectedKeyFile(cfg);
+	const guessed = await read(guess);
+	if (guessed && (await keySees(guessed, want))) {
+		cachedKey = guessed;
+		return { key: guessed, source: guess, switched: true };
 	}
 
 	const ambient = await apiKey({ optional: true });
@@ -70,8 +112,8 @@ export async function useKeyForProject(cfg) {
 		names = [];
 	}
 	for (const name of names) {
-		const key = (await readFile(join(KEY_DIR, name), 'utf8')).trim();
-		if (!key || key === ambient) continue;
+		const key = await read(join(KEY_DIR, name));
+		if (!key || key === ambient || key === guessed) continue;
 		if (await keySees(key, want)) {
 			cachedKey = key;
 			return { key, source: join(KEY_DIR, name), switched: true };
@@ -79,8 +121,8 @@ export async function useKeyForProject(cfg) {
 	}
 	throw new ShipError(`no RevenueCat key can see project "${want}"`, {
 		hint: names.length
-			? `tried the ambient key and ${names.join(', ')} in ${KEY_DIR} — add the key for this project there, or name it as revenuecat.key in ship.config.json`
-			: `set REVENUECAT_V2_KEY, or drop the project's key in ${KEY_DIR}/<name>.key`,
+			? `expected ${guess}; tried the ambient key and ${names.join(', ')} in ${KEY_DIR} — add the key for this project there, or name it as revenuecat.key in ship.config.json`
+			: `expected ${guess} — set REVENUECAT_V2_KEY, or drop the project's key there`,
 	});
 }
 
@@ -126,6 +168,38 @@ export const listPackages = (projectId, offeringId) =>
 
 /** v2 nests the store identity under the store block; older payloads flatten it. */
 export const bundleOf = (app) => app?.app_store?.bundle_id ?? app?.bundle_id ?? '';
+
+/**
+ * The project's own money, from `/metrics/overview` — the only endpoint in the
+ * v2 API that answers "did any of this convert". The catalogue endpoints above
+ * describe what you *could* sell.
+ *
+ * RevenueCat returns an array of `{id, value}` whose ids have changed before, so
+ * every metric is looked up by several plausible ids and a miss is `null` rather
+ * than 0: "no data" and "zero revenue" lead to opposite decisions about whether
+ * to keep buying installs.
+ */
+export async function overviewMetrics(projectId) {
+	const body = await rc(`/projects/${projectId}/metrics/overview`);
+	const by = new Map((body?.metrics ?? []).map((m) => [m.id, Number(m.value)]));
+	const pick = (...ids) => {
+		for (const id of ids) {
+			const v = by.get(id);
+			if (Number.isFinite(v)) return v;
+		}
+		return null;
+	};
+	return {
+		project: projectId,
+		period: body?.metrics?.[0]?.period ?? null,
+		customers: pick('new_customers', 'active_users', 'active_subscribers'),
+		trials: pick('active_trials', 'new_trials'),
+		subscriptions: pick('active_subscriptions', 'new_subscriptions'),
+		revenue: pick('revenue'),
+		mrr: pick('mrr'),
+		metrics: body?.metrics ?? [],
+	};
+}
 
 /**
  * Resolve the configured project, tolerating a name instead of an id.

@@ -22,12 +22,21 @@
 //     reversible. `apply` refuses any move larger than --max-delta without
 //     --force, and refuses the whole batch rather than half of it, because a
 //     half-applied price table is worse than either price.
+//  5. A per-territory number is the wrong argument when the *ladder* is wrong.
+//     `show` answers "are the numbers wrong in this storefront"; `audit` answers
+//     "is the shape wrong" — no yearly at all, a yearly above the price where
+//     the EU's 14-day right of withdrawal starts reversing it, a trial sitting
+//     on the weekly. Those thresholds live in lib/paywall.mjs because they are
+//     contested business rules; this file only decides which of them we have
+//     the data to judge, and says "unknown" for the rest.
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadConfig, requireAppId } from '../config.mjs';
-import { ASC, asc, isDryRun, run as exec } from '../exec.mjs';
-import { ShipError, c, good, heading, info, note, step, table, warn } from '../log.mjs';
+import { ASC, asc, isDryRun, run as exec, which } from '../exec.mjs';
+import { Report, ShipError, c, good, heading, info, note, step, table, warn } from '../log.mjs';
+import { auditLadder, normalisePeriod } from '../lib/paywall.mjs';
+import { apiKey, listOfferings, resolveProject } from '../lib/revenuecat.mjs';
 
 export const help = `
 ${c.bold('ship price')} ${c.dim('— per-territory pricing: derive it offline, then push it')}
@@ -37,6 +46,7 @@ ${c.dim('usage:')} ship price [subcommand] [flags]
   ${c.cyan('show')}   ${c.dim('default')} live app price, price schedule and subscription prices; diffs the local plan
   ${c.cyan('plan')}   ${c.green('offline')} derive a per-territory price table into store/pricing/plan.json
   ${c.cyan('apply')}  push the plan through asc, refusing oversized moves
+  ${c.cyan('audit')}  ladder shape: tiers, the yearly ceiling, trial placement, the win-back offer
 
 ${c.bold('Flags')}
   ${c.cyan('--base <usd>')}          base US price ${c.dim('(default: price.basePriceUsd in ship.config.json)')}
@@ -358,11 +368,17 @@ async function requireAsc(path) {
 
 // ─── live reads ──────────────────────────────────────────────────────────────
 
-/** asc emits `{data:[...]}` for raw API payloads and a bare array once unwrapped. */
+/**
+ * asc emits `{data:[...]}` for raw API payloads and a bare array once unwrapped
+ * — except `subscriptions pricing prices list`, which names its own envelope
+ * `prices`. Missing that key is why a per-territory read looks empty on an app
+ * whose prices are all set.
+ */
 function rows(payload) {
 	if (Array.isArray(payload)) return payload;
 	if (Array.isArray(payload?.data)) return payload.data;
 	if (Array.isArray(payload?.items)) return payload.items;
+	if (Array.isArray(payload?.prices)) return payload.prices;
 	if (payload && typeof payload === 'object') return [payload];
 	return [];
 }
@@ -403,7 +419,7 @@ const priceMap = (payload) => {
 	return map;
 };
 
-/** Subscriptions in the app, flattened to the three fields anything here needs. */
+/** Subscriptions in the app, flattened to the fields the readers below need. */
 async function listSubscriptions(appId) {
 	const payload = await asc(['subscriptions', 'list', '--app', appId, '--paginate'], { fallback: null });
 	return rows(payload)
@@ -411,6 +427,10 @@ async function listSubscriptions(appId) {
 			id: s?.id ?? s?.attributes?.id ?? null,
 			productId: s?.productId ?? s?.attributes?.productId ?? null,
 			name: s?.name ?? s?.attributes?.name ?? s?.attributes?.referenceName ?? null,
+			// null, never a default: a period we cannot read must not audit as a
+			// monthly, and an absent trial must not read as "no trial".
+			period: s?.attributes?.subscriptionPeriod ?? s?.subscriptionPeriod ?? null,
+			trialDays: trialDaysOf(s),
 		}))
 		.filter((s) => s.id || s.productId);
 }
@@ -789,7 +809,109 @@ async function applyAppPrice({ cfg, appId, planDoc, flags, maxDelta, force, star
 	return 0;
 }
 
-const SUB = { show, plan, apply };
+// ─── audit (the shape of the ladder) ─────────────────────────────────────────
+
+/** ASC offer durations, plus the ISO 8601 durations the same field arrives as. */
+const OFFER_DAYS = {
+	THREE_DAYS: 3, ONE_WEEK: 7, TWO_WEEKS: 14, ONE_MONTH: 30,
+	TWO_MONTHS: 60, THREE_MONTHS: 90, SIX_MONTHS: 180, ONE_YEAR: 365,
+	P3D: 3, P1W: 7, P2W: 14, P1M: 30, P2M: 60, P3M: 90, P6M: 180, P1Y: 365,
+};
+
+/**
+ * Days in a subscription's introductory offer, or null when there is nothing to
+ * read. An intro offer hangs off a relationship `asc subscriptions list` does
+ * not include, so null is the honest answer far more often than not — and it is
+ * not zero, because zero means "this app has no trial" and warns about it.
+ */
+function trialDaysOf(s) {
+	const a = s?.attributes ?? {};
+	const offer = rows(a.introductoryOffers ?? s?.introductoryOffers ?? a.introductoryOffer ?? s?.introductoryOffer)[0];
+	const raw =
+		offer?.attributes?.duration ??
+		offer?.duration ??
+		a.introductoryOfferDuration ??
+		s?.introductoryOfferDuration ??
+		null;
+	if (raw == null) return null;
+	return OFFER_DAYS[String(raw).trim().toUpperCase()] ?? null;
+}
+
+/**
+ * The App Store Connect half. Returns `subs: null` — not an empty list — when we
+ * could not read ASC at all: "this app has no subscriptions" and "this machine
+ * has no credentials" are different answers, and only the first is a finding.
+ */
+async function ladderSubscriptions(appId) {
+	if (!appId) return { subs: null, why: 'no App Store Connect app id — set asc.appId in ship.config.json' };
+	if (!(await which(ASC))) return { subs: null, why: 'asc is not on PATH — see `ship doctor`' };
+	const auth = await asc(['auth', 'status'], { fallback: null });
+	if (!auth?.credentials?.length) return { subs: null, why: 'no App Store Connect credentials — `asc auth login`' };
+	const subs = await listSubscriptions(appId).catch(() => null);
+	if (!subs) return { subs: null, why: '`asc subscriptions list` did not answer' };
+	// One price read per subscription: every edge of the ladder is argued in the
+	// US number, and an unreadable one stays null so the audit can say so.
+	await Promise.all(
+		subs.map(async (s) => {
+			const prices = await subscriptionPrices(s.id ?? s.productId, appId).catch(() => null);
+			s.priceUsd = prices?.get('US')?.price ?? null;
+		}),
+	);
+	return { subs, why: null };
+}
+
+/** The RevenueCat half. A missing key is a skip, never a failure of this command. */
+async function ladderOfferings(cfg) {
+	if (!(await apiKey({ optional: true }))) return { offerings: null, why: 'no RevenueCat v2 key — see `ship doctor`' };
+	try {
+		const project = await resolveProject(cfg);
+		if (!project) return { offerings: null, why: 'no revenuecat.projectId in ship.config.json' };
+		return { offerings: await listOfferings(project.id), why: null };
+	} catch (err) {
+		return { offerings: null, why: `offerings unreadable — ${err.message}` };
+	}
+}
+
+/**
+ * Is the shape of the ladder wrong? lib/paywall.mjs owns every threshold — this
+ * only gathers the inputs and decides which findings we actually have the data
+ * to stand behind.
+ */
+async function audit({ flags }) {
+	const cfg = await loadConfig(process.cwd(), { optional: true });
+	if (!cfg)
+		throw new ShipError('price audit: no ship.config.json in this repo', {
+			hint: 'run `ship init` in an app repo first',
+		});
+	const report = new Report(`Price ladder · ${cfg.name}`);
+	const [live, rc] = await Promise.all([
+		ladderSubscriptions(cfg.asc?.appId ?? process.env.ASC_APP_ID ?? null),
+		ladderOfferings(cfg),
+	]);
+	if (rc.why) report.skip('offerings', rc.why);
+
+	// Unknown is not wrong. Without a readable period there is no shape to judge,
+	// and the audit would otherwise report a missing yearly it simply cannot see.
+	if (live.why) report.skip('ladder', live.why);
+	else if (live.subs.length && !live.subs.some((s) => normalisePeriod(s.period)))
+		report.skip('ladder', 'asc returned no subscription periods — cannot tell a yearly from a weekly');
+	else {
+		const trialKnown = live.subs.some((s) => s.trialDays != null);
+		for (const r of auditLadder({ subscriptions: live.subs, offerings: rc.offerings ?? [] })) {
+			// auditLadder's own skip already means "no offerings passed"; the row
+			// above named why they are missing, so do not say it twice.
+			if (r.name === 'retention offer' && r.level === 'skip' && rc.why) continue;
+			if (r.name === 'trial placement' && !trialKnown)
+				report.skip(r.name, '`asc subscriptions list` carries no introductory-offer duration — trial length unreadable');
+			else report[r.level](r.name, r.detail);
+		}
+		if (live.subs.length && !live.subs.some((s) => s.priceUsd != null))
+			report.skip('annual price', 'no US price readable from `asc subscriptions pricing prices list`');
+	}
+	return report.print({ json: !!flags.json });
+}
+
+const SUB = { show, plan, apply, audit };
 
 export async function run({ args, flags }) {
 	const [name = 'show'] = args;

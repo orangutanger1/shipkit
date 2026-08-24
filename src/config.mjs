@@ -4,6 +4,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { ShipError } from './log.mjs';
+import { checkAdsConfig } from './lib/asa.mjs';
 
 export const CONFIG_NAME = 'ship.config.json';
 export const SHIPKIT_ROOT = resolve(new URL('..', import.meta.url).pathname);
@@ -28,7 +29,22 @@ const DEFAULTS = {
 	// `ship shots capture/render/verify`.
 	shots: { spec: 'figma-geometry.json' },
 	revenuecat: { projectId: null, appId: null, entitlement: null, keyEnv: null },
-	ads: { orgId: null, dir: 'aso/asa', targetCpi: null, subPrice: null },
+	// `targetCpi` and `subPrice` are checked against each other at load time: a
+	// target above everything a subscriber ever pays is a decision to lose money,
+	// and nothing else in the tool would ever notice. `seedBid` is where a bid
+	// starts before the account has a realised CPT of its own — deliberately not
+	// Apple's $0.30 floor, which loses every auction.
+	ads: {
+		orgId: null,
+		dir: 'aso/asa',
+		targetCpi: null,
+		subPrice: null,
+		retentionMonths: 1,
+		seedBid: null,
+		baselineInstallRate: 0.4,
+		minTaps: null,
+		retain: 12,
+	},
 	aso: { dir: 'aso', seeds: [], seedsByLocale: {}, minVolume: 0 },
 	loc: { sourceLocale: null, glossary: 'store/glossary.json' },
 	analytics: { dir: '.asc/analytics' },
@@ -101,11 +117,20 @@ export function normalise(raw, file) {
 		glossary: abs(cfg.loc.glossary),
 	};
 	cfg.versionDir = (version) => join(cfg.paths.store, 'version', version);
+
+	// Spend settings are validated here rather than in `ship ads`, because a
+	// contradiction between targetCpi and subPrice is a property of the config and
+	// every command that reads one of them inherits it. Errors are fatal;
+	// warnings ride along for whichever command wants to print them.
+	const ads = checkAdsConfig(cfg.ads);
+	if (ads.errors.length)
+		throw new ShipError(`${file}: incoherent "ads" settings`, { hint: ads.errors.join('\n') });
+	cfg.warnings = ads.warnings.map((w) => `ads: ${w}`);
 	return cfg;
 }
 
 export async function saveConfig(cfg, file = cfg.file) {
-	const { file: _f, root: _r, paths: _p, versionDir: _v, ...clean } = cfg;
+	const { file: _f, root: _r, paths: _p, versionDir: _v, warnings: _w, ...clean } = cfg;
 	await writeFile(file, `${JSON.stringify(clean, null, '\t')}\n`);
 	return file;
 }
