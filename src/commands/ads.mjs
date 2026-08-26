@@ -87,8 +87,9 @@ ${c.bold('Flags')}
   ${c.cyan('--min-taps <n>')}      ${c.dim('mine')} taps before zero installs counts as evidence ${c.dim('(default: derived from ads.baselineInstallRate)')}
   ${c.cyan('--file <path>')}       ${c.dim('mine')} search-term report JSON instead of pulling one ${c.dim('(no credentials)')}
   ${c.cyan('--apply --confirm')}   ${c.dim('mine')} push the mined negatives and promotions ${c.dim('(--apply alone prints the evidence and stops)')}
+  ${c.cyan('--render')}            ${c.dim('plan')} re-render campaign-plan.md from campaign-plan.json ${c.dim('(no replan, no credentials)')}
   ${c.cyan('--prune')}             ${c.dim('sync')} allow pausing live objects the plan does not contain
-  ${c.cyan('--force')}             ${c.dim('sync')} overwrite values changed outside ship ${c.dim('(the plan wins)')}
+  ${c.cyan('--force')}             ${c.dim('sync')} overwrite values changed outside ship ${c.dim('(the plan wins)')} · ${c.dim('plan')} replan over a plan bound to a live account
   ${c.cyan('--adopt')}             ${c.dim('sync')} record live values into the plan instead ${c.dim('(the account wins)')}
   ${c.cyan('--no-ltv-check')}      ${c.dim('plan, sync')} skip the RevenueCat monetisation check
   ${c.cyan('--json')}              machine-readable output
@@ -96,6 +97,7 @@ ${c.bold('Flags')}
 ${c.dim('Credentials are separate from ASC: app-ads.apple.com → Account Settings → API.')}
 ${c.dim('`ship ads plan` needs no Apple Ads credentials at all.')}
 ${c.dim('Nothing is paused, and no manual change is reverted, without a flag that says so.')}
+${c.dim('`ship ads plan` will not overwrite a plan carrying Apple object ids: --render the doc, or --force the replan.')}
 `;
 
 const emit = (data) => {
@@ -1024,18 +1026,103 @@ export function buildPlan({
 	};
 }
 
-function renderPlan(p) {
+/**
+ * Whether a plan document is bound to a live account — i.e. `ship ads sync` has
+ * recorded Apple object ids into it, so it is no longer a disposable derivation
+ * of `scored.json` but the only record of what the account is supposed to be.
+ *
+ * This is the signal `plan` uses to refuse an overwrite. Bids adopted by hand,
+ * ad groups pruned by hand and keywords added outside the ASO set all live
+ * *only* here: rebuilding from scores would silently drop them and the next
+ * `ship ads sync --force` would then revert the account to match.
+ */
+export function planBindings(doc) {
+	const ids = [];
+	let syncedAt = null;
+	const visit = (node) => {
+		if (!node || typeof node !== 'object') return;
+		if (Array.isArray(node)) return void node.forEach(visit);
+		if (node.apple?.id) {
+			ids.push(String(node.apple.id));
+			const t = node.apple.syncedAt ?? null;
+			if (t && (syncedAt === null || String(t) > syncedAt)) syncedAt = String(t);
+		}
+		for (const v of Object.values(node)) visit(v);
+	};
+	visit(doc?.campaigns ?? null);
+	return { bound: ids.length > 0, objects: ids.length, syncedAt };
+}
+
+/**
+ * What the campaigns in a plan actually add up to, which is not necessarily what
+ * its `budget`/`bidding` params say. `buildPlan` stamps those params once and
+ * they are historical the moment a budget, bid or ad group is changed by hand or
+ * adopted from the account — and `ship ads sync` pushes the campaigns, never the
+ * params. So the summary is derived from the campaigns and the stamped values
+ * are only reported when they disagree.
+ */
+export function planTotals(p) {
+	const campaigns = p?.campaigns ?? [];
+	const split = {};
+	let daily = 0;
+	for (const cp of campaigns) {
+		const b = num(cp.dailyBudget);
+		daily = Math.round((daily + b) * 100) / 100;
+		split[cp.role ?? cp.name] = b;
+	}
+	const bids = [
+		...new Set(
+			campaigns.flatMap((cp) => (cp.adGroups ?? []).map((g) => num(g.defaultBidAmount))).filter((n) => n > 0),
+		),
+	].sort((a, b) => a - b);
+	const stamped = { daily: p?.budget?.daily ?? null, distinctBids: p?.bidding?.distinctBids ?? null };
+	return {
+		daily,
+		split,
+		bids,
+		stamped,
+		drifted: stamped.daily !== null && Math.abs(num(stamped.daily) - daily) > 0.005,
+	};
+}
+
+export function renderPlan(p, { renderedAt = null } = {}) {
 	const L = [];
+	const bound = planBindings(p);
+	const t = planTotals(p);
 	L.push(`# Apple Search Ads plan — ${p.app.name}`, '');
 	L.push(`Generated ${p.generatedAt}${p.source ? ` from \`${p.source}\`` : ''}.`, '');
+	if (renderedAt) L.push(`Re-rendered ${renderedAt} from \`campaign-plan.json\` — \`ship ads plan --render\`.`, '');
+	if (bound.bound)
+		L.push(
+			`This plan is **bound to a live account**: ${bound.objects} Apple object id(s) recorded by ` +
+				`\`ship ads sync\`${bound.syncedAt ? `, last at ${bound.syncedAt}` : ''}. Hand-set bids, pruned ad groups ` +
+				'and keywords outside the ASO set exist **only** in `campaign-plan.json`, so `ship ads plan` refuses to ' +
+				'overwrite it without `--force`. To refresh this document alone, use `ship ads plan --render`.',
+			'',
+		);
 	L.push(`- **Market**: ${p.market} (locale ${p.locale})`);
-	L.push(`- **Daily budget**: ${money(p.budget.daily)} across ${p.campaigns.length} campaigns — ${p.budget.scope}`);
+	L.push(`- **Daily budget**: ${money(t.daily)} across ${p.campaigns.length} campaigns — ${p.budget.scope}`);
 	L.push(
-		`- **Split**: ${Object.entries(p.budget.split)
+		`- **Split**: ${Object.entries(t.split)
 			.map(([role, v]) => `${role} ${money(v)}`)
-			.join(' · ')} — ${p.budget.derivation}`,
+			.join(' · ')}${t.drifted ? '' : ` — ${p.budget.derivation}`}`,
 	);
-	L.push(`- **Bids**: ${p.bidding.derivation} — ${p.bidding.distinctBids} distinct bid(s)`);
+	L.push(
+		`- **Bids**: ${
+			t.bids.length === 0
+				? '—'
+				: t.bids.length === 1
+					? money(t.bids[0])
+					: `${money(t.bids[0])}–${money(t.bids[t.bids.length - 1])}`
+		} — ${t.bids.length} distinct bid(s)${t.drifted ? '' : ` · ${p.bidding.derivation}`}`,
+	);
+	if (t.drifted)
+		L.push(
+			`- **Stamped parameters are historical**: this plan was generated for ${money(t.stamped.daily)}/day ` +
+				`with bids \`${p.bidding.derivation}\`, and has since been changed by hand or adopted from the account. ` +
+				'Every number above and below is read from the campaigns, which is what `ship ads sync` pushes; ' +
+				'`params` in `campaign-plan.json` records the run that first created them and is not re-derived.',
+		);
 	L.push(
 		`- **Demand floor**: aso.minVolume ${p.targeting.minVolume}${p.targeting.dropped ? ` — dropped ${p.targeting.dropped} of ${p.targeting.considered} scored terms as not worth bidding on` : ''}`,
 	);
@@ -1212,6 +1299,61 @@ async function reindexArtifacts(cfg) {
 async function plan({ flags }) {
 	const cfg = await loadConfig();
 	for (const w of cfg.warnings ?? []) warn(w);
+	const planFile = join(cfg.paths.asa, 'campaign-plan.json');
+	const mdFile = join(cfg.paths.asa, 'campaign-plan.md');
+	const onDisk = existsSync(planFile) ? JSON.parse(await readFile(planFile, 'utf8')) : null;
+
+	// `--render` regenerates the *document* from the plan already on disk. It is
+	// the answer to a real failure: `campaign-plan.md` is generated, so the only
+	// way to refresh it used to be a full replan — which rewrites
+	// `campaign-plan.json` from `scored.json` and discards every hand-set bid,
+	// pruned ad group and non-ASO keyword the account is actually running. The
+	// document then agreed with a plan nobody wanted, or was left stale and
+	// quietly wrong. This reads no scores, needs no credentials, and touches
+	// nothing but the Markdown.
+	if (flags.render) {
+		if (!onDisk)
+			throw new ShipError(`no plan to render: ${planFile}`, {
+				hint: 'run `ship ads plan` first — --render re-renders campaign-plan.md from an existing campaign-plan.json, it does not build one',
+			});
+		const renderedAt = new Date().toISOString();
+		await writeFile(mdFile, renderPlan(onDisk, { renderedAt }));
+		const bound = planBindings(onDisk);
+		const t = planTotals(onDisk);
+		if (flags.json)
+			return emit({ rendered: mdFile, from: planFile, generatedAt: onDisk.generatedAt, renderedAt, ...bound, totals: t });
+		heading(`Render · ${cfg.name}`);
+		good(`wrote ${mdFile} from ${planFile}`);
+		note(`plan generated ${onDisk.generatedAt} — unchanged; only the document was rewritten`);
+		info(
+			`${money(t.daily)}/day across ${onDisk.campaigns.length} campaigns · ${Object.entries(t.split)
+				.map(([role, v]) => `${role} ${money(v)}`)
+				.join(' · ')}`,
+		);
+		if (t.drifted)
+			note(
+				`stamped params say ${money(t.stamped.daily)}/day — historical, and not re-derived: the campaigns are what \`ship ads sync\` pushes`,
+			);
+		if (bound.bound)
+			note(`${bound.objects} Apple object id(s) in this plan${bound.syncedAt ? ` (last synced ${bound.syncedAt})` : ''} — \`ship ads sync --dry-run\` diffs it against the account`);
+		return 0;
+	}
+
+	// A plan carrying Apple object ids is the only record of what the account is
+	// supposed to be. Rebuilding it from scores is a legitimate thing to want and
+	// a catastrophic thing to do by accident, so it now costs a flag.
+	const bound = planBindings(onDisk);
+	if (bound.bound && !flags.force)
+		throw new ShipError(
+			`${planFile} is bound to a live account — ${bound.objects} Apple object id(s)${bound.syncedAt ? `, last synced ${bound.syncedAt}` : ''}`,
+			{
+				hint:
+					'a fresh plan is rebuilt from scored.json and would drop hand-set bids, pruned ad groups and any keyword outside the ASO set — ' +
+					'`ship ads plan --render` to refresh campaign-plan.md alone, `ship ads sync --dry-run` to see what is live, ' +
+					'or `ship ads plan --force` to replan anyway (the previous plan is kept as campaign-plan.prev.json)',
+			},
+		);
+
 	const locale = String(flags.locale ?? cfg.asc?.primaryLocale ?? 'en-US');
 
 	const scoredFile = join(cfg.paths.aso, locale, 'scored.json');
@@ -1265,11 +1407,20 @@ async function plan({ flags }) {
 		source: scoredFile,
 	});
 
+	// A forced replan is the one path that destroys desired state, so the thing it
+	// destroys is kept beside it. Not dated: `reindexArtifacts` only retains
+	// dated mining/snapshot files, and one recoverable previous plan is the whole
+	// requirement — anything older is in git.
+	let backup = null;
+	if (onDisk && bound.bound) {
+		backup = join(cfg.paths.asa, 'campaign-plan.prev.json');
+		await writeFile(backup, `${JSON.stringify(onDisk, null, '\t')}\n`);
+	}
+
 	const jsonFile = await writeArtifact(cfg, 'campaign-plan.json', out);
-	const mdFile = join(cfg.paths.asa, 'campaign-plan.md');
 	await writeFile(mdFile, renderPlan(out));
 
-	if (flags.json) return emit(out);
+	if (flags.json) return emit({ ...out, replacedBoundPlan: backup ? { backup, objects: bound.objects } : null });
 
 	heading(`Campaign plan · ${cfg.name} · ${out.market}`);
 	info(
@@ -1278,6 +1429,12 @@ async function plan({ flags }) {
 			.join(' · ')}`,
 	);
 	note(out.budget.scope);
+	if (backup) {
+		warn(
+			`replanned over a plan bound to ${bound.objects} live Apple object(s) — every Apple id, hand-set bid and pruned ad group in it is gone from campaign-plan.json`,
+		);
+		note(`previous plan kept at ${backup} · \`ship ads sync --dry-run\` before pushing, or --adopt to take the live values back`);
+	}
 	info(`bids: ${out.bidding.derivation}`);
 	if (measured.cpt === null && !flags.bid)
 		note(`no realised cost per tap yet (${measured.reason}) — seeded at ${money(out.bidding.seed)}, override with --bid`);

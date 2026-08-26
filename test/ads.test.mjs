@@ -9,7 +9,19 @@
 // negated on three taps, and an ad-group budget field Apple does not have.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { SPLIT, allocate, buildPlan, convertingTerms, decide, help, parseSplit, searchTermRows } from '../src/commands/ads.mjs';
+import {
+	SPLIT,
+	allocate,
+	buildPlan,
+	convertingTerms,
+	decide,
+	help,
+	parseSplit,
+	planBindings,
+	planTotals,
+	renderPlan,
+	searchTermRows,
+} from '../src/commands/ads.mjs';
 import { BID } from '../src/lib/asa.mjs';
 
 const row = (over = {}) => ({
@@ -396,4 +408,120 @@ test('allocate: cents-exact, remainder on the largest share', () => {
 	const odd = allocate(0.07, { a: 2, b: 1 });
 	assert.equal(odd.a + odd.b, 0.07);
 	assert.equal(allocate(10, { a: 0 }).a, undefined, 'a zero weight gets no campaign at all');
+});
+
+// Regression for a live account: `campaign-plan.md` was stale, the only way to
+// refresh it was `ship ads plan`, and that rebuilds campaign-plan.json from
+// scored.json — which would have dropped hand-set bids, nine pruned ad groups
+// and three non-ASO keywords, after which `ship ads sync --force` would have
+// reverted the account to match. Hence a binding check, --render and --force.
+test('planBindings: an unsynced plan is disposable, a synced one is not', () => {
+	const fresh = buildPlan({
+		app: { name: 'Wrenchy' },
+		terms: [{ text: 'oil change reminder', volume: 80 }],
+		targetCpi: 1.1,
+	});
+	assert.deepEqual(planBindings(fresh), { bound: false, objects: 0, syncedAt: null });
+	assert.deepEqual(planBindings(null), { bound: false, objects: 0, syncedAt: null });
+	assert.deepEqual(planBindings({}), { bound: false, objects: 0, syncedAt: null });
+});
+
+test('planBindings: counts ids at every depth and keeps the newest syncedAt', () => {
+	const bound = planBindings({
+		campaigns: [
+			{
+				name: 'Wrenchy · Exact · US',
+				apple: { id: '2144507320', syncedAt: '2026-08-26T02:41:00.000Z' },
+				adGroups: [
+					{
+						name: 'EX · oil change reminder',
+						apple: { id: '2150517194', syncedAt: '2026-08-26T22:13:56.193Z' },
+						keywords: [{ text: 'oil change reminder', apple: { id: '2303536512' } }],
+					},
+					{ name: 'EX · unsynced', keywords: [{ text: 'car maintenance' }] },
+				],
+				negativeKeywords: [{ text: 'segway', apple: { id: '9' } }],
+			},
+		],
+	});
+	assert.equal(bound.bound, true);
+	assert.equal(bound.objects, 4, 'campaign + ad group + keyword + negative');
+	assert.equal(bound.syncedAt, '2026-08-26T22:13:56.193Z', 'newest, not last seen');
+});
+
+test('renderPlan: a bound plan documents why plan refuses to overwrite it', () => {
+	const p = buildPlan({ app: { name: 'Wrenchy' }, terms: [{ text: 'oil change reminder', volume: 80 }], targetCpi: 1.1 });
+	assert.ok(!renderPlan(p).includes('bound to a live account'), 'a fresh plan carries no such warning');
+
+	p.campaigns[0].apple = { id: '2144507320', syncedAt: '2026-08-26T22:13:56.193Z' };
+	const md = renderPlan(p, { renderedAt: '2026-08-26T23:00:00.000Z' });
+	assert.ok(md.includes('bound to a live account'), 'the document says so');
+	assert.ok(md.includes('1 Apple object id(s)'));
+	assert.ok(md.includes('2026-08-26T22:13:56.193Z'));
+	assert.ok(md.includes('--force'), 'and names the flag that would destroy it');
+	assert.ok(md.includes('Re-rendered 2026-08-26T23:00:00.000Z'), 'provenance separates a render from a replan');
+	assert.ok(md.includes(`Generated ${p.generatedAt}`), 'the plan date survives the render');
+});
+
+test('renderPlan: rendering is pure — same doc in, same markdown out', () => {
+	const p = buildPlan({ app: { name: 'Wrenchy' }, terms: [{ text: 'oil change reminder', volume: 80 }], targetCpi: 1.1 });
+	assert.equal(renderPlan(p), renderPlan(p));
+	assert.ok(renderPlan(p).includes('- **Market**:'), 'the market line is not lost to the provenance block');
+});
+
+test('help: --render and the plan overwrite guard are documented', () => {
+	assert.ok(help.includes('--render'));
+	assert.ok(help.includes('will not overwrite a plan carrying Apple object ids'));
+});
+
+// The bug `--render` surfaced on the first real run: the summary bullets came
+// from the stamped `budget`/`bidding` params while the tables came from the
+// campaigns, so a hand-edited plan rendered "$30.00/day" above campaigns
+// totalling $32.00. `sync` pushes campaigns, so campaigns are the truth.
+test('planTotals: derives budget, split and bids from the campaigns', () => {
+	const t = planTotals({
+		budget: { daily: 30 },
+		bidding: { distinctBids: 9 },
+		campaigns: [
+			{ role: 'exact', dailyBudget: 12, adGroups: [{ defaultBidAmount: 0.68 }, { defaultBidAmount: 0.78 }] },
+			{ role: 'discovery', dailyBudget: 15, adGroups: [{ defaultBidAmount: 0.75 }] },
+			{ role: 'competitor', dailyBudget: 4, adGroups: [{ defaultBidAmount: 1.5 }] },
+			{ role: 'brand', dailyBudget: 1, adGroups: [{ defaultBidAmount: 0.3 }] },
+		],
+	});
+	assert.equal(t.daily, 32);
+	assert.deepEqual(t.split, { exact: 12, discovery: 15, competitor: 4, brand: 1 });
+	assert.deepEqual(t.bids, [0.3, 0.68, 0.75, 0.78, 1.5]);
+	assert.equal(t.drifted, true, '$30 stamped against $32 of campaigns');
+	assert.equal(t.stamped.daily, 30);
+});
+
+test('planTotals: a fresh plan does not drift from its own params', () => {
+	const p = buildPlan({
+		app: { name: 'Wrenchy' },
+		terms: [{ text: 'oil change reminder', volume: 80 }, { text: 'car maintenance log', volume: 60 }],
+		budget: 10,
+		targetCpi: 1.1,
+	});
+	const t = planTotals(p);
+	assert.equal(t.drifted, false);
+	assert.equal(t.daily, p.budget.daily);
+});
+
+test('planTotals: cents survive the sum, and an empty plan is zero not NaN', () => {
+	const t = planTotals({ campaigns: [{ dailyBudget: 0.07 }, { dailyBudget: 0.14 }] });
+	assert.equal(t.daily, 0.21, 'no float dust');
+	assert.deepEqual(planTotals({}), { daily: 0, split: {}, bids: [], stamped: { daily: null, distinctBids: null }, drifted: false });
+});
+
+test('renderPlan: a drifted plan reports the campaigns, not the stamped params', () => {
+	const p = buildPlan({ app: { name: 'Wrenchy' }, terms: [{ text: 'oil change reminder', volume: 80 }], budget: 10, targetCpi: 1.1 });
+	assert.ok(renderPlan(p).includes('**Daily budget**: $10.00'));
+	assert.ok(!renderPlan(p).includes('Stamped parameters are historical'));
+
+	for (const cp of p.campaigns) cp.dailyBudget = 8;
+	const md = renderPlan(p);
+	assert.ok(md.includes(`**Daily budget**: ${`$${(8 * p.campaigns.length).toFixed(2)}`}`), 'summed from campaigns');
+	assert.ok(md.includes('Stamped parameters are historical'));
+	assert.ok(md.includes('$10.00/day'), 'and says what it was generated for');
 });

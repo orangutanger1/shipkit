@@ -369,6 +369,7 @@ subscriber is work nobody pays you for.
 ```bash
 ship ads status                       # also prints the exact login line when unconfigured
 ship ads plan --locale en-US --top 15 --budget 10 --bid 0.55
+ship ads plan --render                # rewrite campaign-plan.md from the plan on disk
 ship ads snapshot                     # observed state: ids, statuses, bids, per-object spend
 ship ads sync --dry-run               # the exact mutation set; nothing runs
 ship ads report --level ad-group --from 2026-08-01
@@ -379,13 +380,19 @@ Apple Ads credentials are **separate** from App Store Connect credentials.
 `ship ads plan` needs none of them: it works from `aso/<locale>/scored.json`, so a
 campaign plan can be prepared before any credential exists.
 
-Four rules to know before touching a live account:
+Five rules to know before touching a live account:
 
 - **The plan is intent, the snapshot is state.** `sync` reconciles them by Apple's
   object ids, which it records into the plan. It refuses — and exits non-zero —
   rather than pause anything without `--prune`, or overwrite a value changed
   outside `ship` without `--force` (plan wins) or `--adopt` (account wins). Read
   the printed diff; it is the whole mutation set.
+- **A plan with ids in it cannot be regenerated.** `plan` builds from
+  `scored.json`, so replanning drops every hand-set bid, pruned ad group and
+  non-ASO keyword — and the next `sync --force` then reverts the account to match.
+  It refuses to overwrite a bound plan: `--render` refreshes `campaign-plan.md`
+  alone, `--force` replans and keeps `campaign-plan.prev.json`. Never hand-edit
+  `campaign-plan.md`; it is generated, and `--render` is the way to refresh it.
 - **Budgets are campaign-level only.** Apple has no ad-group budget, so no ad group
   in a plan has one. One ad group per keyword buys creative control (its own Custom
   Product Page and bid), not budget isolation.

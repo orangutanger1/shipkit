@@ -311,6 +311,18 @@ paused without `--prune`; nothing that changed outside `ship` is overwritten
 without `--force` (the plan wins) or `--adopt` (the account wins). Either way the
 divergent objects are named and the default is to refuse and exit non-zero.
 
+**A plan bound to a live account is not regenerable.** `ship ads plan` builds from
+`scored.json`, so once ids are recorded — and once a bid is hand-set, an ad group
+pruned or a keyword added outside the ASO set — a replan silently drops all of it,
+after which `ship ads sync --force` reverts the account to match. `plan` therefore
+refuses to overwrite a plan carrying Apple ids: `--render` rewrites
+`campaign-plan.md` alone from the JSON on disk (no scores, no credentials, no
+replan), and `--force` replans anyway, keeping the previous plan as
+`campaign-plan.prev.json`. The generated document reads its summary from the
+campaigns rather than the stamped `params`, and says so when the two disagree —
+a doc claiming $30/day above campaigns totalling $32 is how a hand edit gets
+reverted by the next person to run the generator.
+
 **A bid is a price in an auction, not a share of a budget.** Bids start from the
 account's own realised cost-per-tap where there is one, else `ads.seedBid`
 (default $0.60 — deliberately not Apple's $0.30 floor, which loses every
@@ -340,6 +352,7 @@ whole funnel is one command. Silence there is how $10/day survives a review.
 
 ```
 ship ads plan --budget 10 --bid 0.55   # offline apart from the CPT and LTV reads
+ship ads plan --render                 # campaign-plan.md from campaign-plan.json, nothing recomputed
 ship ads snapshot                      # observed state, with ids
 ship ads sync --dry-run                # the mutation set, exactly
 ship ads report --level ad-group       # where a bid regression is visible
