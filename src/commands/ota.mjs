@@ -8,7 +8,7 @@
 // on that channel. So the diff against the last build's fingerprint is not
 // advice here, it is a precondition: `ship ota` refuses by default and only
 // `--force` (with a warning nobody can miss) gets past it.
-import { loadConfig, resolveVersion } from '../config.mjs';
+import { loadConfig, readExpoConfig, resolveVersion } from '../config.mjs';
 import { eas } from '../exec.mjs';
 import { ShipError, c, good, heading, info, note, step, table, warn } from '../log.mjs';
 import { otaSafety } from '../lib/native.mjs';
@@ -109,11 +109,21 @@ export async function run({ args, flags }) {
 			hint: 'eas update messages are the only changelog a rolled-back OTA leaves behind — `ship ota --message "fix paywall copy"`',
 		});
 
-	step('eas update');
-	const res = await eas(['update', '--branch', branch, '--message', message, '--non-interactive'], {
-		cwd: cfg.paths.app,
-		mutating: true,
-	});
+	// Scoped to the platforms the app actually declares. `eas update` with no
+	// --platform exports "all", and its export step reads the Expo config per
+	// platform: an iOS-only app (expo.platforms: ["ios"], no expo.android) fails
+	// the whole publish on "Platform android is not configured to use the Metro
+	// bundler", having already built the bundle it was asked for. Nothing about
+	// that is a decision for the operator to make on the command line, so it is
+	// read rather than flagged.
+	const platforms = (await readExpoConfig(cfg))?.platforms;
+	const scope = Array.isArray(platforms) && platforms.length ? platforms.join(',') : 'all';
+
+	step(`eas update ${c.dim(`(${scope})`)}`);
+	const res = await eas(
+		['update', '--branch', branch, '--message', message, '--platform', scope, '--non-interactive'],
+		{ cwd: cfg.paths.app, mutating: true },
+	);
 
 	if (res.skipped) {
 		note('dry run — no update published, baseline untouched');
