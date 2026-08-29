@@ -142,9 +142,23 @@ export function ascRaw(args, opts = {}) {
 	return run(ASC, args, { inherit: true, capture: false, ...opts });
 }
 
-/** `eas` via npx so no global install is required. */
+/**
+ * `eas`, preferring the project's own pinned copy.
+ *
+ * `npx --yes eas-cli@latest` re-downloads eas-cli whenever the npx cache turns
+ * over, so any local modification to it — notably a shortened App Store Connect
+ * token lifetime, which some machines need because eas-cli asks Apple for
+ * exactly the 1200 s ceiling and a clock a second fast makes every token 401 —
+ * silently disappears. A project that pins eas-cli as a devDependency gets that
+ * copy; everyone else still gets npx.
+ */
 export function eas(args, opts = {}) {
-	return run('npx', ['--yes', 'eas-cli@latest', ...args], { inherit: true, capture: false, ...opts });
+	const cwd = opts.cwd ?? process.cwd();
+	const local = join(cwd, 'node_modules', '.bin', 'eas');
+	const spec = existsSync(local)
+		? { command: local, args: [...args] }
+		: { command: 'npx', args: ['--yes', 'eas-cli@latest', ...args] };
+	return run(spec.command, spec.args, { inherit: true, capture: false, ...opts });
 }
 
 /** Fetch JSON with a clear error surface. */
