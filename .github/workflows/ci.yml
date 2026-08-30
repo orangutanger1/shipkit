@@ -53,7 +53,7 @@ jobs:
             name=$(basename "$f" .mjs)
             ship "$name" --help >/dev/null || { echo "::error file=$f::ship $name --help failed"; exit 1; }
           done
-          echo "loaded $(ls src/commands/*.mjs | wc -l) command modules"
+          echo "loaded $(find src/commands -maxdepth 1 -name '*.mjs' | wc -l) command modules"
 
       - name: Scaffold an app and validate it against the schema
         run: |
