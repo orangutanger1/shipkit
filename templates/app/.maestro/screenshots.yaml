@@ -1,0 +1,32 @@
+# The flow ci/screenshots.yml drives. Maestro runs this per locale × device
+# against the simulator build, and every takeScreenshot name becomes a PNG that
+# `ship shots validate` / `ship shots upload` read from
+# store/screenshots/<locale>/<displayType>/.
+#
+# Name captures after the store slot they fill (01-hero, 02-detail, …) and keep
+# the order stable: Apple serves the set in upload order.
+#
+# APP_ID and LOCALE arrive as Maestro env vars from the workflow
+# (`maestro test ... --env APP_ID=… --env LOCALE=…`). Run it locally with:
+#   maestro test -e APP_ID=com.example.app -e LOCALE=en-US .maestro/screenshots.yaml
+appId: ${APP_ID}
+name: screenshots-${LOCALE}
+---
+- launchApp:
+    clearState: false
+    permissions:
+      all: deny
+
+# Give the app's first render time to settle before the hero shot.
+- waitForAnimationToEnd:
+    timeout: 10000
+
+- takeScreenshot: 01-home
+
+# Edit the taps below to walk the screens a buyer needs to see. Maestro matches
+# by text or accessibility id; prefer ids — copy changes, ids do not.
+# - tapOn:
+#     id: "paywall-button"
+# - waitForAnimationToEnd:
+#     timeout: 5000
+# - takeScreenshot: 02-paywall

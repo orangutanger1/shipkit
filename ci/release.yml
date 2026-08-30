@@ -64,7 +64,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: orangutanger1/shipkit/.github/actions/setup@main
+      # Mutable ref, pinned to the default branch. Pin to a commit SHA for
+      # reproducible releases once a release cadence exists.
+      - uses: orangutanger1/shipkit/.github/actions/setup@master
         with:
           asc-version: ${{ vars.ASC_VERSION }}
 
@@ -72,7 +74,11 @@ jobs:
         run: asc auth status --validate --output json
 
       - name: Doctor
-        run: ship doctor --json | tee "$RUNNER_TEMP/doctor.json"
+        # pipefail: without it a failing gate exits non-zero into tee, which
+        # exits zero, and the doctor can never fail this workflow.
+        run: |
+          set -euo pipefail
+          ship doctor --json | tee "$RUNNER_TEMP/doctor.json"
 
       - name: Release
         run: |

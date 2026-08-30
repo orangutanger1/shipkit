@@ -22,7 +22,12 @@ export const LIMITS = {
 const DEFAULTS = {
 	appDir: '.',
 	asc: { appId: null, profile: null, primaryLocale: 'en-US', platform: 'IOS' },
-	eas: { profile: 'production', platform: 'ios', channel: 'production' },
+	eas: { profile: 'production', platform: 'ios', channel: 'production', environment: 'production' },
+	// `requiredEnv` is the OTA publish gate: every key listed here must be present
+	// in the EAS environment *and* inlined into the exported bundle before
+	// `ship ota` will publish. A key whose absence crashes the app (RevenueCat,
+	// analytics) belongs here, not in memory.
+	ota: { requiredEnv: [] },
 	store: { dir: 'store', locales: [] },
 	// `spec` is relative to store.dir and is absent in most repos: a repo that
 	// only uploads finished PNGs never loads it. Its presence is what turns on

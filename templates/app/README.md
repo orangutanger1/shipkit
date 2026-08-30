@@ -49,7 +49,7 @@ ship rc audit       # gate: exits 1 on anything that renders an empty paywall
 | `ship doctor` | preconditions: toolchain, config, credentials, identities |
 | `ship aso harvest` | pull real competitor keywords for your markets |
 | `ship aso score` | rank harvested terms by traffic vs difficulty |
-| `ship aso pack` | fill the 100 keyword characters optimally |
+| `ship aso suggest` | fill the 100 keyword characters optimally |
 | `ship meta lint` | offline validation of `store/staged/*.json` |
 | `ship loc draft` | translate the listing into the rest of `store.locales` |
 | `ship loc review` | gate: the localized listing against the glossary |

@@ -22,7 +22,7 @@
 //     live check skips — never fails — when credentials are absent or --offline
 //     is passed. A skip means "unknown"; only a fail means "you are blocked".
 import { Report, ShipError, SYM, c } from '../log.mjs';
-import { ASC, asc, run as exec, which } from '../exec.mjs';
+import { ASC, run as exec, which } from '../exec.mjs';
 import { loadConfig, readExpoConfig, resolveVersion, requireAppId } from '../config.mjs';
 import { readStaged, lintListing } from '../lib/locales.mjs';
 import { otaSafety } from '../lib/native.mjs';
@@ -145,22 +145,23 @@ async function checkVersion(report, cfg, version) {
 }
 
 async function checkAscVersion(report, appId, version) {
-	const res = await asc(['versions', 'list', '--app', appId, '--version', version], { fallback: null });
-	const rows = res?.data ?? (Array.isArray(res) ? res : []);
+	const probe = await ascProbe(['versions', 'list', '--app', appId, '--version', version]);
+	if (probeRow(report, 'asc version', probe, `\`asc versions list --app ${appId}\``)) return;
+	const rows = probe.payload?.data ?? (Array.isArray(probe.payload) ? probe.payload : []);
 	const hit = rows.find((r) => (r?.attributes?.versionString ?? r?.versionString) === version) ?? rows[0];
 	if (!hit) {
 		report.fail('asc version', `${version} does not exist on app ${appId} — create it before submitting`);
-		return null;
+		return;
 	}
 	const attrs = hit.attributes ?? hit;
 	const state = attrs.appStoreState ?? attrs.state ?? 'UNKNOWN';
 	report.ok('asc version', `${version} · ${state}`);
-	return state;
 }
 
 async function checkBuild(report, appId) {
-	const res = await asc(['builds', 'list', '--app', appId, '--limit', '5'], { fallback: null });
-	const rows = res?.data ?? (Array.isArray(res) ? res : []);
+	const probe = await ascProbe(['builds', 'list', '--app', appId, '--limit', '5']);
+	if (probeRow(report, 'build', probe, '`asc builds list` / `ship build`')) return;
+	const rows = probe.payload?.data ?? (Array.isArray(probe.payload) ? probe.payload : []);
 	if (!rows.length) {
 		report.warn('build', `no builds on app ${appId} — run \`ship build\``);
 		return;
@@ -176,10 +177,14 @@ async function checkBuild(report, appId) {
 }
 
 async function checkValidate(report, appId, version) {
-	const res = await asc(['validate', '--app', appId, '--version', version, '--platform', 'IOS'], {
-		fallback: null,
-		allowFail: true,
-	});
+	const probe = await ascProbe(['validate', '--app', appId, '--version', version, '--platform', 'IOS']);
+	// asc validate can exit non-zero *because* it found blockers, and its plan
+	// payload still arrives — only auth/transport trouble is a skip, not a fail.
+	if (['unsupported', 'unauthorized', 'unavailable'].includes(probe.state)) {
+		probeRow(report, 'validate', probe, `\`asc validate --app ${appId} --version ${version}\``);
+		return;
+	}
+	const res = probe.payload;
 	if (!res) {
 		report.fail('validate', `asc validate returned nothing for ${version} — run it manually to see the error`);
 		return;
@@ -268,11 +273,12 @@ async function checkScreenshots(report, cfg, appId, version) {
 		report.skip('screenshots', clean(err.message));
 		return;
 	}
-	const res = await asc(['screenshots', 'list', '--version-localization', locId], {
-		fallback: null,
-		allowFail: true,
-	});
-	const sets = Array.isArray(res?.sets) ? res.sets : [];
+	const probe = await ascProbe(['screenshots', 'list', '--version-localization', locId]);
+	if (['unsupported', 'unauthorized', 'unavailable'].includes(probe.state)) {
+		probeRow(report, 'screenshots', probe, '`ship shots upload`');
+		return;
+	}
+	const sets = Array.isArray(probe.payload?.sets) ? probe.payload.sets : [];
 	const counts = sets
 		.map((s) => ({
 			type: s.set?.attributes?.screenshotDisplayType ?? 'UNKNOWN',
@@ -558,8 +564,11 @@ const REVIEW_ROWS = ['age rating', 'content rights', 'privacy labels'];
 async function ascReachable(offline) {
 	if (offline) return { live: false, why: '--offline' };
 	if (!(await which(ASC))) return { live: false, why: 'asc is not on PATH — see `ship doctor`' };
-	const status = await asc(['auth', 'status'], { fallback: null });
-	if (!status?.credentials?.length) return { live: false, why: 'no App Store Connect credentials — `asc auth login`' };
+	const probe = await ascProbe(['auth', 'status']);
+	if (probe.state === 'unauthorized' || probe.state === 'error')
+		return { live: false, why: `asc auth status failed — ${probe.detail || 'not authenticated'}` };
+	if (!probe.payload?.credentials?.length)
+		return { live: false, why: 'no App Store Connect credentials — `asc auth login`' };
 	return { live: true, why: null };
 }
 
@@ -584,17 +593,19 @@ async function preflight({ flags }) {
 	await checkEncryption(report, cfg);
 
 	if (offline) skipAll([...ASC_ROWS, ...REVIEW_ROWS], gate.why);
-	else {
+	else if (!gate.live) {
+		// A dead key or missing asc is "unknown", not "the version does not exist".
+		// Each check below still probes on its own, so this only short-circuits
+		// what we already know will be a skip.
+		skipAll([...ASC_ROWS, ...REVIEW_ROWS], gate.why);
+	} else {
 		await checkAscVersion(report, appId, version);
 		await checkBuild(report, appId);
 		await checkScreenshots(report, cfg, appId, version);
 		await checkValidate(report, appId, version);
-		if (!gate.live) skipAll(REVIEW_ROWS, gate.why);
-		else {
-			await checkAgeRating(report, appId);
-			await checkContentRights(report, appId);
-			await checkPrivacy(report, appId);
-		}
+		await checkAgeRating(report, appId);
+		await checkContentRights(report, appId);
+		await checkPrivacy(report, appId);
 	}
 
 	if (offline) skipAll(['rc', 'privacy url', 'support url'], gate.why);

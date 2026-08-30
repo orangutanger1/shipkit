@@ -45,7 +45,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: orangutanger1/shipkit/.github/actions/setup@main
+      - uses: orangutanger1/shipkit/.github/actions/setup@master
 
       - name: Is an OTA legal?
         id: check

@@ -8,7 +8,7 @@
 // the same checks review does and hands back an ordered remediation plan, which
 // is strictly cheaper than a rejection three days later.
 import { loadConfig, requireAppId, resolveVersion } from '../config.mjs';
-import { asc, eas, isDryRun } from '../exec.mjs';
+import { asc, ascMutate, eas, isDryRun } from '../exec.mjs';
 import { ShipError, c, good, heading, info, note, step, table, warn } from '../log.mjs';
 
 export const help = `
@@ -219,13 +219,13 @@ export async function run({ args, flags }) {
 			throw new ShipError('no processed build id to attach', {
 				hint: '`asc builds list --app ' + appId + '` should show a VALID build; pass --build <id> to pick one explicitly',
 			});
-		const res = await asc(
+		const res = await ascMutate(
 			['review', 'submit', '--app', appId, '--version', version, '--build', buildId, '--confirm'],
-			{ mutating: true, fallback: null, allowFail: true },
 		);
-		if (!res)
-			throw new ShipError('asc review submit returned no result', {
-				hint: 'check `asc submit status --app ' + appId + '` — the submission may still have gone through',
+		if (!res.ok)
+			throw new ShipError(`asc review submit exited ${res.code}`, {
+				hint: (res.stderr || 'no stderr').split('\n').slice(-6).join('\n') +
+					`\ncheck \`asc submit status --app ${appId}\` — the submission may still have gone through`,
 			});
 		summary.submitted = true;
 		good(`${cfg.name} ${version} submitted for review (build ${buildId})`);

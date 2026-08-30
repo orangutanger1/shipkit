@@ -9,7 +9,7 @@ import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { LIMITS, loadConfig, requireAppId, resolveVersion } from '../config.mjs';
-import { asc, isDryRun } from '../exec.mjs';
+import { asc, ascMutate, isDryRun } from '../exec.mjs';
 import { ShipError, c, good, heading, info, note, step, table, warn } from '../log.mjs';
 import {
 	APP_INFO_FIELDS,
@@ -227,10 +227,13 @@ async function pull({ flags }) {
 	heading(`${cfg.name} ${version} — pull`);
 
 	step(`asc metadata pull --app ${appId} --version ${version}`);
-	await asc(
+	const pulled = await ascMutate(
 		['metadata', 'pull', '--app', appId, '--version', version, '--dir', cfg.paths.store, '--platform', cfg.asc.platform, '--force'],
-		{ mutating: true, fallback: null },
 	);
+	if (!pulled.ok)
+		throw new ShipError(`asc metadata pull exited ${pulled.code}`, {
+			hint: (pulled.stderr || 'check asc auth: asc auth status').split('\n').slice(-6).join('\n'),
+		});
 
 	// Reverse the expansion: asc writes the canonical two-tree layout, we fold it
 	// back into one authored file per locale so the next edit has a single home.
@@ -394,7 +397,7 @@ async function apply({ flags }) {
 	const applyArgs = ['metadata', 'apply', '--app', appId, '--version', version, '--dir', cfg.paths.store, '--platform', cfg.asc.platform];
 
 	step('dry-run apply');
-	const plan = await asc([...applyArgs, '--dry-run'], { fallback: null });
+	const plan = await asc([...applyArgs, '--dry-run']);
 	const counts = planCounts(plan);
 	info(`${c.green(`+${counts.add}`)} add  ${c.yellow(`~${counts.update}`)} update  ${c.red(`-${counts.delete}`)} delete`);
 	if (!counts.add && !counts.update && !counts.delete) note('asc reported no changes — the live listing already matches store/');
@@ -408,20 +411,29 @@ async function apply({ flags }) {
 	// Two passes, always. On a fresh version pass 1 creates the empty
 	// localizations and then reports "entity with locale already exists" for the
 	// same locales it just made; pass 2 is the one that actually fills the fields.
+	// Pass 1 may legitimately exit non-zero on that noise, so it warns; pass 2 is
+	// the record of truth and must exit clean — a swallowed failure here is how a
+	// release reports success over metadata that never landed.
 	step('apply pass 1/2');
-	await asc(applyArgs, { mutating: true, fallback: null });
+	const pass1 = await ascMutate(applyArgs);
+	if (!pass1.ok)
+		warn(`apply pass 1 exited ${pass1.code} — pass 2 decides${pass1.stderr ? `:\n${pass1.stderr.split('\n').slice(-4).join('\n')}` : ''}`);
 	step('apply pass 2/2');
-	const result = await asc(applyArgs, { mutating: true, fallback: null });
+	const res = await ascMutate(applyArgs);
+	if (!res.ok)
+		throw new ShipError(`metadata apply pass 2 exited ${res.code}`, {
+			hint: (res.stderr || 'check asc auth: asc auth status').split('\n').slice(-6).join('\n'),
+		});
 
 	const reportDir = join(cfg.paths.reports, 'metadata-apply');
 	await mkdir(reportDir, { recursive: true });
 	// Colons are legal here but break the moment the repo is opened on exFAT or
 	// a Windows checkout, and the report is the only record of a failed apply.
 	const reportFile = join(reportDir, `${new Date().toISOString().replaceAll(':', '-')}.json`);
-	await writeFile(reportFile, `${JSON.stringify(result ?? { note: 'asc returned no JSON' }, null, '\t')}\n`);
+	await writeFile(reportFile, `${JSON.stringify(res.data ?? { note: 'asc returned no JSON' }, null, '\t')}\n`);
 	note(reportFile.replace(`${cfg.root}/`, ''));
 
-	const failures = failureList(result);
+	const failures = failureList(res.data);
 	if (failures.length) {
 		for (const f of failures) process.stdout.write(`  ${c.red('fail')} ${f}\n`);
 		throw new ShipError(`${failures.length} localization${failures.length === 1 ? '' : 's'} failed to apply`, {
@@ -782,6 +794,7 @@ async function cppApply(cfg, entries, flags) {
 		await asc(['product-pages', 'custom-pages', 'list', '--app', appId, '--paginate'], { fallback: [] }),
 	);
 	const results = [];
+	const screenshotFailures = [];
 
 	for (const entry of entries) {
 		const name = entry.page.name ?? entry.slug;
@@ -790,13 +803,14 @@ async function cppApply(cfg, entries, flags) {
 
 		let page = livePages.find((p) => attr(p, 'name') === name) ?? null;
 		if (page) note(`page exists → ${idOf(page)}`);
-		else
-			page = first(
-				await asc(['product-pages', 'custom-pages', 'create', '--app', appId, '--name', name], {
-					mutating: true,
-					fallback: null,
-				}),
-			);
+		else {
+			const created = await ascMutate(['product-pages', 'custom-pages', 'create', '--app', appId, '--name', name]);
+			if (!created.ok && !dry)
+				throw new ShipError(`custom product page create for "${name}" exited ${created.code}`, {
+					hint: (created.stderr || 'check asc auth: asc auth status').split('\n').slice(-6).join('\n'),
+				});
+			page = first(created.data);
+		}
 		const pageId = idOf(page);
 		if (!pageId) {
 			if (dry) {
@@ -816,13 +830,16 @@ async function cppApply(cfg, entries, flags) {
 		);
 		let pageVersion =
 			versions.find((v) => stateOf(v) === 'PREPARE_FOR_SUBMISSION') ?? versions[0] ?? null;
-		if (!pageVersion)
-			pageVersion = first(
-				await asc(['product-pages', 'custom-pages', 'versions', 'create', '--custom-page-id', pageId], {
-					mutating: true,
-					fallback: null,
-				}),
+		if (!pageVersion) {
+			const createdVersion = await ascMutate(
+				['product-pages', 'custom-pages', 'versions', 'create', '--custom-page-id', pageId],
 			);
+			if (!createdVersion.ok && !dry)
+				throw new ShipError(`custom page version create for "${name}" exited ${createdVersion.code}`, {
+					hint: (createdVersion.stderr || 'check asc auth: asc auth status').split('\n').slice(-6).join('\n'),
+				});
+			pageVersion = first(createdVersion.data);
+		}
 		const versionId = idOf(pageVersion);
 		if (!versionId) {
 			if (dry) continue;
@@ -848,16 +865,15 @@ async function cppApply(cfg, entries, flags) {
 			const promo = payload.promotionalText ?? '';
 			const live = existing.find((l) => attr(l, 'locale') === locale) ?? null;
 			const localizationId = idOf(live);
-			if (localizationId)
-				await asc(
-					['product-pages', 'custom-pages', 'localizations', 'update', '--localization-id', localizationId, '--promotional-text', promo],
-					{ mutating: true, fallback: null },
-				);
-			else
-				await asc(
-					['product-pages', 'custom-pages', 'localizations', 'create', '--custom-page-version-id', versionId, '--locale', locale, '--promotional-text', promo],
-					{ mutating: true, fallback: null },
-				);
+			const written = await ascMutate(
+				localizationId
+					? ['product-pages', 'custom-pages', 'localizations', 'update', '--localization-id', localizationId, '--promotional-text', promo]
+					: ['product-pages', 'custom-pages', 'localizations', 'create', '--custom-page-version-id', versionId, '--locale', locale, '--promotional-text', promo],
+			);
+			if (!written.ok && !dry)
+				throw new ShipError(`${entry.slug}/${locale}: localization ${localizationId ? 'update' : 'create'} exited ${written.code}`, {
+					hint: (written.stderr || 'check asc auth: asc auth status').split('\n').slice(-6).join('\n'),
+				});
 			applied.push({ locale, action: localizationId ? 'update' : 'create', localizationId });
 			if (!flags.json) note(`${locale} ${localizationId ? 'updated' : 'created'} ${c.dim(`${chars(promo)}/${LIMITS.promotionalText}`)}`);
 
@@ -887,10 +903,14 @@ async function cppApply(cfg, entries, flags) {
 				));
 				if (!localizationTarget) break;
 				step(`upload ${locale}/${deviceType}`);
-				await asc(
+				const upload = await ascMutate(
 					['product-pages', 'custom-pages', 'localizations', 'screenshot-sets', 'upload', '--localization-id', localizationTarget, '--path', path, '--device-type', deviceType],
-					{ mutating: true, fallback: null, allowFail: true },
 				);
+				if (!upload.ok) {
+					const msg = `${entry.slug}/${locale}/${deviceType}: screenshot upload exited ${upload.code}`;
+					if (dry) warn(msg);
+					else screenshotFailures.push(`${msg}\n${(upload.stderr || 'no stderr').split('\n').slice(-4).join('\n')}`);
+				}
 			}
 		}
 
@@ -903,6 +923,12 @@ async function cppApply(cfg, entries, flags) {
 		return 0;
 	}
 	process.stdout.write('\n');
+	if (screenshotFailures.length) {
+		for (const f of screenshotFailures) process.stdout.write(`  ${c.red('fail')} ${f}\n`);
+		throw new ShipError(`${screenshotFailures.length} screenshot upload${screenshotFailures.length === 1 ? '' : 's'} failed`, {
+			hint: 're-run `ship meta cpp apply --screenshots` — uploads are append-only, so check the sets in ASC first',
+		});
+	}
 	good(`${dry ? 'dry-run: ' : ''}${results.length} page(s) applied`);
 	const unlinked = entries.filter((e) => !e.page.adGroup);
 	if (unlinked.length)

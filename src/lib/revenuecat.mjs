@@ -146,12 +146,21 @@ async function rc(path, init = {}) {
 	});
 }
 
-/** Follow `next_page` links so callers never paginate by hand. */
+/**
+ * Follow `next_page` links so callers never paginate by hand. RC v2 answers
+ * with next_page as an absolute URL — appending it to BASE used to produce
+ * `https://api.revenuecat.com/v2https://…` and a TypeError on page 2, so any
+ * project past one page of products failed. Relative values (if a payload ever
+ * carries one) are joined with BASE as before.
+ */
 async function all(path) {
 	const items = [];
 	let next = path;
 	while (next) {
-		const page = await rc(next);
+		const url = /^https?:\/\//i.test(next) ? next : `${BASE}${next}`;
+		const page = await fetchJSON(url, {
+			headers: { Authorization: `Bearer ${await apiKey()}`, 'Content-Type': 'application/json' },
+		});
 		items.push(...(page.items ?? []));
 		next = page.next_page ?? null;
 	}

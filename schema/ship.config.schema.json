@@ -102,6 +102,22 @@
 					"type": "string",
 					"default": "production",
 					"description": "EAS Update channel/branch used by `ship ota`."
+				},
+				"environment": {
+					"type": "string",
+					"default": "production",
+					"description": "EAS environment whose variables `ship ota` loads before exporting the bundle."
+				}
+			}
+		},
+		"ota": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"requiredEnv": {
+					"type": "array",
+					"items": { "type": "string" },
+					"description": "EXPO_PUBLIC_* keys that must be present in the EAS environment and inlined into the bundle before `ship ota` publishes. Keys whose absence crashes the app belong here."
 				}
 			}
 		},

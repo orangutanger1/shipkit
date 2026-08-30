@@ -164,6 +164,13 @@ export async function run({ args, flags }) {
 		});
 
 	const name = flags.name ?? brief?.listing?.name ?? titleCase(slug);
+	// The name is interpolated into app.json as a JSON string; a quote or
+	// backslash would write invalid JSON and leave a half-scaffold on disk.
+	// eslint-disable-next-line eslint/no-control-regex -- the control characters are the point
+	if (/["\\\x00-\x1f]/.test(name))
+		throw new ShipError(`new: invalid display name ${JSON.stringify(name)}`, {
+			hint: 'quotes and backslashes cannot appear in app.json — pick a plain display name',
+		});
 	// Expo URL schemes must be a single alphanumeric token — hyphens break deep links.
 	const scheme = slug.replace(/[^a-z0-9]/g, '');
 	const bundleId = flags['bundle-id'] ?? flags.bundleId ?? `com.${scheme}.app`;
@@ -229,9 +236,13 @@ export async function run({ args, flags }) {
 
 	// Lazy import: init.mjs is a peer command and resolving it at module load
 	// would couple `ship new`'s parse-time to it.
+	// `--force` means "write into a non-empty directory" here and "overwrite
+	// human-set config values / npm scripts" in init — two different decisions.
+	// A fresh scaffold has neither, so init never inherits the flag.
 	step('Wiring ship.config.json');
 	const init = await import('./init.mjs');
-	const code = await init.run({ args: [], flags: { ...flags, dir: targetDir, app: targetDir } });
+	const { force: _newForce, ...initFlags } = flags;
+	const code = await init.run({ args: [], flags: { ...initFlags, dir: targetDir, app: targetDir } });
 	if (code) return code;
 
 	if (brief && !dry) await seedAso(targetDir, brief);

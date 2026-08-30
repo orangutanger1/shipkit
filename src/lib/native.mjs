@@ -16,21 +16,47 @@ const PURE_JS = new Set([
 ]);
 
 /** Anything matching these is native by construction. */
-const NATIVE_HINT = /^(expo-|react-native-|@react-native|@stripe\/stripe-react-native|@sentry\/react-native)/;
+const NATIVE_HINT = /^(expo-|react-native-|@react-native|@expo\/|@stripe\/stripe-react-native|@sentry\/react-native)/;
 
 export function isNativeDep(name) {
 	if (PURE_JS.has(name)) return false;
-	return NATIVE_HINT.test(name) || name === 'react-native' || name === 'expo';
+	if (name === 'react-native' || name === 'expo' || NATIVE_HINT.test(name)) return true;
+	// `react-native` anywhere in the name, not just at the front: scoped natives
+	// like @shopify/react-native-skia, @notifee/react-native and
+	// posthog-react-native all carry native code the old prefix match missed.
+	if (name.includes('react-native')) return true;
+	// Unknown package: assume native. A false "unsafe" costs one rebuild; a
+	// false "OTA safe" costs every installed client.
+	return true;
 }
 
-/** Native dependency fingerprint of a package.json. */
+/** The version actually installed in node_modules, or null when not present. */
+async function installedVersion(appDir, name) {
+	try {
+		const pkg = JSON.parse(await readFile(join(appDir, 'node_modules', name, 'package.json'), 'utf8'));
+		return pkg.version ?? null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Native dependency fingerprint of an app dir.
+ *
+ * The value fingerprinted is the version resolved in node_modules, not the
+ * declared range: `npm update` can move a ^/~ range without package.json
+ * changing, and a fingerprint of ranges would call the result OTA-safe while
+ * the lockfile moved native code under the installed binary. Works for
+ * npm/pnpm/bun alike because all three resolve through node_modules.
+ */
 export async function nativeFingerprint(appDir) {
 	const pkgFile = join(appDir, 'package.json');
 	const pkg = JSON.parse(await readFile(pkgFile, 'utf8'));
 	const deps = { ...pkg.dependencies };
 	const out = {};
 	for (const [name, range] of Object.entries(deps)) {
-		if (isNativeDep(name)) out[name] = range;
+		if (!isNativeDep(name)) continue;
+		out[name] = (await installedVersion(appDir, name)) ?? range;
 	}
 	return out;
 }

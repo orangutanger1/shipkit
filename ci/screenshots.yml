@@ -60,7 +60,9 @@ jobs:
         with:
           xcode-version: ${{ vars.XCODE_VERSION || '16.2' }}
 
-      - uses: orangutanger1/shipkit/.github/actions/setup@main
+      # Mutable ref, pinned to the default branch. Pin to a commit SHA when a
+      # tag exists to pin to.
+      - uses: orangutanger1/shipkit/.github/actions/setup@master
 
       # Before the build, not after: a listing whose locales cannot be resolved
       # should cost seconds, not a 30-minute simulator build.
@@ -84,14 +86,17 @@ jobs:
           echo "Capturing $LOCALES" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Build simulator app
+        env:
+          # Set the EAS_CLI_VERSION repo variable to pin the CLI; blank rides latest.
+          EAS_CLI_VERSION: ${{ vars.EAS_CLI_VERSION || 'latest' }}
         run: |
           # A simulator build is a .tar.gz containing the .app — no signing, no
-          # provisioning profile, and it installs straight into simctl.
-          npx --yes eas-cli@latest build \
-            --platform ios --profile preview --non-interactive --local \
+          # provisioning profile, and it installs straight into simctl. The
+          # `simulator` profile in eas.json is the one with ios.simulator: true;
+          # a device profile would emit an unsigned .ipa with no .app inside.
+          npx --yes eas-cli@"$EAS_CLI_VERSION" build \
+            --platform ios --profile simulator --non-interactive --local \
             --output "$RUNNER_TEMP/sim.tar.gz"
-        env:
-          EAS_BUILD_PROFILE_PREVIEW_IOS_SIMULATOR: "true"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -119,9 +124,12 @@ jobs:
       matrix:
         locale: ${{ fromJSON(needs.build.outputs.locales) }}
         # The two slots Apple actually requires for a modern iPhone-only listing.
+        # iPhone 16 Pro Max renders 1320×2868 = the 6.9" size (APP_IPHONE_69);
+        # iPhone 16 Pro renders 1206×2622 = 6.3" (APP_IPHONE_63). The older
+        # APP_IPHONE_67/61 types are 6.7"/6.1" and reject these dimensions.
         device:
-          - { name: iPhone 16 Pro Max, displayType: APP_IPHONE_67 }
-          - { name: iPhone 16 Pro, displayType: APP_IPHONE_61 }
+          - { name: iPhone 16 Pro Max, displayType: APP_IPHONE_69 }
+          - { name: iPhone 16 Pro, displayType: APP_IPHONE_63 }
     steps:
       - uses: actions/checkout@v4
 
@@ -129,7 +137,7 @@ jobs:
         with:
           xcode-version: ${{ vars.XCODE_VERSION || '16.2' }}
 
-      - uses: orangutanger1/shipkit/.github/actions/setup@main
+      - uses: orangutanger1/shipkit/.github/actions/setup@master
         with:
           maestro: "true"
           maestro-version: ${{ vars.MAESTRO_VERSION }}

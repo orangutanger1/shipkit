@@ -25,7 +25,7 @@
 		"workflow": [
 			"ship aso harvest   — pull real competitor terms for your markets",
 			"ship aso score     — rank them by traffic vs difficulty",
-			"ship aso pack      — fill these 100 characters optimally",
+			"ship aso suggest   — fill these 100 characters optimally",
 			"ship meta lint     — offline validation before anything touches ASC",
 			"ship meta apply    — push this listing to App Store Connect"
 		],

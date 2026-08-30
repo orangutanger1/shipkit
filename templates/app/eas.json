@@ -22,6 +22,11 @@
 				"simulator": false
 			}
 		},
+		"simulator": {
+			"ios": {
+				"simulator": true
+			}
+		},
 		"production": {
 			"autoIncrement": true,
 			"channel": "production"
