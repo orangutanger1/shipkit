@@ -56,6 +56,40 @@ const TYPE_DEFAULTS = {
 	margin: null,
 	/** Locales whose captions break between characters, having no spaces. */
 	perCharacterLocales: ['ja', 'ko', 'zh-Hans', 'zh-Hant', 'th'],
+	/**
+	 * Optional second text run. Absent — the normal case — a caption is one
+	 * headline and every existing app renders byte-identically. Present, a frame
+	 * whose copy carries a `subtitle` gets a second, smaller run beneath the
+	 * headline, which is what the base art was authored with.
+	 */
+	subtitle: null,
+};
+
+/**
+ * Subtitle ramp defaults, filled only when `type.subtitle` exists. The sizes are
+ * deliberately not derived from the headline: the designer chose a ratio, and
+ * guessing one produces a subtitle that is subtly wrong in every frame.
+ */
+const SUBTITLE_DEFAULTS = {
+	size: 64,
+	lineHeight: 80,
+	colour: '#A0A0A0',
+	minSize: 40,
+	step: 2,
+	/**
+	 * Baseline-to-baseline: the headline's last baseline to the subtitle's first.
+	 * Measured that way because that is what a design tool reports between two
+	 * stacked text layers, and it does not move when either run shrinks.
+	 */
+	gap: 96,
+	/**
+	 * Variation axis for the subtitle's own face, when it differs from the
+	 * headline's. A variable font opens on its default instance, so a subtitle
+	 * meant to be lighter than a Bold headline needs the axis stated — inheriting
+	 * the headline's `wght` is how the CJK captions once shipped at the wrong
+	 * weight. Null keeps the locale's own font entry exactly as the headline uses it.
+	 */
+	variation: null,
 };
 
 const BAND_DEFAULTS = {
@@ -119,6 +153,17 @@ export function normaliseSpec(raw, cfg, file = '<spec>') {
 
 	spec.displayType = spec.displayType ?? 'IPHONE_65';
 	spec.type = { ...TYPE_DEFAULTS, ...(spec.type ?? {}) };
+	if (spec.type.subtitle) {
+		spec.type.subtitle = { ...SUBTITLE_DEFAULTS, ...spec.type.subtitle };
+		const st = spec.type.subtitle;
+		if (!(st.size > 0) || !(st.lineHeight > 0))
+			throw new ShipError(`${file}: type.subtitle needs a positive size and lineHeight`);
+		if (st.minSize > st.size)
+			throw new ShipError(`${file}: type.subtitle.minSize (${st.minSize}) is above its size (${st.size})`, {
+				hint: 'the fitter only ever shrinks, so a floor above the design size can never be reached',
+			});
+		if (!(st.step > 0)) throw new ShipError(`${file}: type.subtitle.step must be positive`);
+	}
 	spec.band = { ...BAND_DEFAULTS, ...(spec.band ?? {}) };
 	spec.source = spec.source ?? {};
 
@@ -197,6 +242,21 @@ function normaliseBand(spec, cfg, file) {
 				hint: 'they place the band above or below the mockup',
 			});
 	}
+}
+
+/**
+ * One frame's copy, as the renderer wants it.
+ *
+ * Copy is either a plain string — the headline, which is every app today — or
+ * `{ headline, subtitle }`. A missing subtitle is not an error: a frame without
+ * one renders the headline alone, positioned exactly as it is now.
+ */
+export function captionRuns(entry) {
+	if (entry == null) return null;
+	if (typeof entry === 'string') return { headline: entry, subtitle: null };
+	if (typeof entry === 'object' && typeof entry.headline === 'string')
+		return { headline: entry.headline, subtitle: entry.subtitle || null };
+	return null;
 }
 
 /**

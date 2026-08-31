@@ -107,10 +107,26 @@ export function wrapBalanced(font, tokens, joiner, size, maxWidth) {
 	return lines;
 }
 
+/**
+ * Characters that may not open a line — Japanese and Korean kinsoku shori.
+ * Breaking before one is a typographic error a reader notices immediately: it
+ * strands a full stop or a closing bracket alone at the head of a line, which
+ * is what a two-line CJK subtitle does the moment its last character lands on
+ * a boundary.
+ */
+const NO_LINE_START = '。、，．！？：；）］｝〉》」』】〕・ー〜…';
+
 /** Split a caption into wrappable tokens. CJK captions carry no spaces. */
 export function tokenise(text, { perCharacter = false } = {}) {
 	const t = text.trim();
-	if (perCharacter && !/\s/.test(t)) return { tokens: [...t], joiner: '' };
+	if (perCharacter && !/\s/.test(t)) {
+		const tokens = [];
+		for (const ch of t) {
+			if (tokens.length && NO_LINE_START.includes(ch)) tokens[tokens.length - 1] += ch;
+			else tokens.push(ch);
+		}
+		return { tokens, joiner: '' };
+	}
 	return { tokens: t.split(/\s+/).filter(Boolean), joiner: ' ' };
 }
 
@@ -164,16 +180,10 @@ export function fitCaption(font, text, { box, budget, targetLines = null, type, 
 	throw new Error(`caption will not fit: ${JSON.stringify(text)}`);
 }
 
-/**
- * Glyph outlines for a fitted caption, as an SVG document sized to the canvas.
- * Lines are centred on the box centre, which is what every one of these designs
- * does and what keeps a longer localized string from drifting off-axis.
- */
-export function captionSvg(font, fit, { box, canvas, colour, top = null }) {
+function runPaths(font, fit, box, y0) {
 	const { lines, size, lineHeight } = fit;
 	const s = scaleFor(font, size);
 	const base = firstBaseline(font, size, lineHeight);
-	const y0 = top ?? box.y;
 	const paths = [];
 	lines.forEach((line, i) => {
 		const run = font.layout(line);
@@ -185,8 +195,141 @@ export function captionSvg(font, fit, { box, canvas, colour, top = null }) {
 			pen += glyph.advanceWidth * s;
 		}
 	});
+	return paths;
+}
+
+/**
+ * Glyph outlines for a fitted caption, as an SVG document sized to the canvas.
+ * Lines are centred on the box centre, which is what every one of these designs
+ * does and what keeps a longer localized string from drifting off-axis.
+ *
+ * `fit` is either one fit (the single-run call, unchanged) or an array of runs
+ * `{ fit, colour, top, font? }`. Each run becomes its own `<g fill>`, because a
+ * headline and its subtitle are set in different colours; a single group could
+ * only paint one of them. A one-element array emits byte-identical SVG to the
+ * single-run call, so nothing about the existing pipeline moves.
+ */
+export function captionSvg(font, fit, { box, canvas, colour, top = null } = {}) {
+	const runs = Array.isArray(fit) ? fit : [{ fit, colour, top }];
+	const groups = runs.map(
+		(r) => `<g fill="${r.colour}">${runPaths(r.font ?? font, r.fit, box, r.top ?? box.y).join('')}</g>`,
+	);
 	return (
 		`<svg xmlns="http://www.w3.org/2000/svg" width="${canvas.w}" height="${canvas.h}">` +
-		`<g fill="${colour}">${paths.join('')}</g></svg>`
+		`${groups.join('')}</svg>`
 	);
+}
+
+/** Height of one fitted run's line boxes. */
+export const blockHeight = (fit) => fit.lines.length * fit.lineHeight;
+
+/** The type ramp a subtitle is fitted with, derived from its spec block. */
+const subtitleRamp = (type) => ({
+	size: type.subtitle.size,
+	lineHeight: type.subtitle.lineHeight,
+	// The subtitle breaks with the same algorithm as the headline: `wrap` is a
+	// statement about which design tool authored the art, not a per-run taste.
+	wrap: type.wrap,
+	targetMinSize: type.subtitle.minSize,
+	minSize: type.subtitle.minSize,
+	step: type.subtitle.step,
+});
+
+/**
+ * Lay out a caption as one or two runs.
+ *
+ * With no `type.subtitle` in the spec, or no subtitle string for this frame,
+ * this is exactly the old single-run fit and the returned run sits at top 0 —
+ * every existing app renders unchanged.
+ *
+ * With both, the headline is fitted into the budget less the room the subtitle
+ * needs, then the subtitle into what is left. `gap` is measured baseline to
+ * baseline: from the headline's last baseline to the subtitle's first, which is
+ * how a design tool spaces two stacked text layers.
+ *
+ * A subtitle that will not fit even at its `minSize` is dropped and the
+ * headline re-fitted at the full budget — a cramped subtitle reads worse than
+ * no subtitle — and `onDrop` is called so the drop is reported, not silent.
+ */
+export function layoutCaption(
+	font,
+	{ headline, subtitle },
+	{ box, budget, targetLines = null, type, perCharacter = false, subtitleFont = null, onDrop = null },
+) {
+	const fitHeadline = (b) =>
+		fitCaption(font, headline, { box, budget: b, targetLines, type, perCharacter });
+
+	const single = () => {
+		const fit = fitHeadline(budget);
+		return { runs: [{ fit, colour: type.colour, top: 0, font }], fit, subtitle: null, height: blockHeight(fit) };
+	};
+	if (!type.subtitle || !subtitle) return single();
+
+	const st = type.subtitle;
+	const sFont = subtitleFont ?? font;
+	const ramp = subtitleRamp(type);
+	const gap = st.gap;
+
+	// Reserve: how much *further than its own last line box* the headline pushes
+	// the block down once the subtitle is under it, at both runs' design sizes.
+	// Not `subtitle height + gap`: the gap is baseline to baseline, so it already
+	// contains the headline's last descender and the subtitle's ascent. Charging
+	// the headline for those twice shrinks it for room nothing needs — it cost
+	// glovebox's frames two of their four headlines at full size.
+	const wrapFn = type.wrap === 'greedy' ? wrapGreedy : wrapBalanced;
+	const { tokens, joiner } = tokenise(subtitle, { perCharacter });
+	// A subtitle with explicit line breaks keeps them: per-character wrapping has
+	// no idea where a Japanese phrase ends, so a copywriter who broke the line
+	// themselves has said something the fitter cannot work out.
+	const estLines = subtitle.includes('\n')
+		? subtitle.split('\n').filter((l) => l.trim()).length
+		: (wrapFn(sFont, tokens, joiner, st.size, box.wrap)?.length ?? 1);
+	const reserve = Math.max(
+		0,
+		firstBaseline(font, type.size, type.lineHeight) -
+			type.lineHeight +
+			gap -
+			firstBaseline(sFont, st.size, st.lineHeight) +
+			estLines * st.lineHeight,
+	);
+
+	let head;
+	try {
+		head = fitHeadline(Math.max(0, budget - reserve));
+	} catch {
+		head = null;
+	}
+
+	if (head) {
+		// Where the subtitle's line boxes start, given the headline that actually
+		// fitted: its last baseline, plus the gap, back off the subtitle's own
+		// first baseline within its line box.
+		const lastBaseline = firstBaseline(font, head.size, head.lineHeight) + (head.lines.length - 1) * head.lineHeight;
+		const subTop = lastBaseline + gap - firstBaseline(sFont, st.size, st.lineHeight);
+		try {
+			const sub = fitCaption(sFont, subtitle, {
+				box,
+				budget: budget - subTop,
+				type: ramp,
+				perCharacter,
+			});
+			// Re-derive the top for the size the subtitle settled at: a shrunk
+			// subtitle has a shorter first baseline than the one assumed above.
+			const top = lastBaseline + gap - firstBaseline(sFont, sub.size, sub.lineHeight);
+			return {
+				runs: [
+					{ fit: head, colour: type.colour, top: 0, font },
+					{ fit: sub, colour: st.colour, top, font: sFont },
+				],
+				fit: head,
+				subtitle: sub,
+				height: top + blockHeight(sub),
+			};
+		} catch {
+			/* falls through to the drop below */
+		}
+	}
+
+	onDrop?.(subtitle);
+	return single();
 }
