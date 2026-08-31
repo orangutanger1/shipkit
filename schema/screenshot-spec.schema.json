@@ -93,7 +93,7 @@
 		"captions": {
 			"type": "string",
 			"default": "screenshot-captions.json",
-			"description": "Caption copy file, relative to store.dir. Accepts either `{ locale: { frameKey: text } }` or `{ locales: { locale: { captions: {…} } } }`; the locales found there are the locales a render can produce."
+			"description": "Caption copy file, relative to store.dir. Accepts either `{ locale: { frameKey: text } }` or `{ locales: { locale: { captions: {…} } } }`; the locales found there are the locales a render can produce. A frame's copy is a string (the headline) or `{ headline, subtitle }`, which paints a second run when `type.subtitle` is set."
 		},
 		"ref": {
 			"type": "string",
@@ -214,6 +214,61 @@
 					],
 					"default": null,
 					"description": "Side margin every caption box is widened to, centre preserved. Set it when the designer varied box widths per frame about one shared centre, so a narrow box does not shrink a long localized caption for no design reason. Null wraps inside each frame's own box width."
+				},
+				"subtitle": {
+					"type": [
+						"object",
+						"null"
+					],
+					"additionalProperties": false,
+					"default": null,
+					"patternProperties": {
+						"^_": {
+							"description": "Annotation about the subtitle ramp, especially where its colour and size were measured off the base art."
+						}
+					},
+					"properties": {
+						"size": {
+							"type": "number",
+							"default": 64,
+							"description": "Subtitle size the design was drawn at, in canvas pixels."
+						},
+						"lineHeight": {
+							"type": "number",
+							"default": 80,
+							"description": "Subtitle line height at its design size, scaled with the size as the fitter shrinks."
+						},
+						"colour": {
+							"type": "string",
+							"pattern": "^#?[0-9a-fA-F]{6}$",
+							"default": "#A0A0A0",
+							"description": "Subtitle ink colour, as #rrggbb. Read it off the base art rather than guessing: the subtitle is a different colour from the headline, which is the whole reason each run gets its own fill."
+						},
+						"minSize": {
+							"type": "number",
+							"default": 40,
+							"description": "Absolute shrink floor for the subtitle. Below this the subtitle is dropped and the headline re-fitted at the full budget, because a cramped subtitle reads worse than none."
+						},
+						"step": {
+							"type": "number",
+							"default": 2,
+							"description": "Size decrement per subtitle shrink attempt."
+						},
+						"gap": {
+							"type": "number",
+							"default": 96,
+							"description": "Baseline to baseline: the headline's last baseline to the subtitle's first. Measured that way because that is what a design tool reports between two stacked text layers, and it does not move when either run shrinks."
+						},
+						"variation": {
+							"type": [
+								"object",
+								"null"
+							],
+							"default": null,
+							"description": "Variable-font axis values for the subtitle run, merged over the locale's own font entry. State it whenever the subtitle is a different weight from the headline: a variable face opens on its default instance, so an inherited axis silently renders the subtitle at the headline's weight."
+						}
+					},
+					"description": "Optional second text run beneath the headline. Absent, a caption is one run and rendering is unchanged. Present, any frame whose copy is `{ headline, subtitle }` paints both; a frame whose copy is a plain string still paints the headline alone, in the position it has today."
 				},
 				"perCharacterLocales": {
 					"type": "array",

@@ -348,7 +348,9 @@ async function render({ args, flags }) {
 			flags.json
 				? null
 				: note(
-						`${r.locale}/${r.frame} ${r.lines.length}L${r.size === spec.type.size ? '' : ` [${r.size}px]`} ${r.lines.join(' / ')}`,
+						`${r.locale}/${r.frame} ${r.lines.length}L${r.size === spec.type.size ? '' : ` [${r.size}px]`} ${r.lines.join(' / ')}${
+							r.subtitle ? c.dim(` — ${r.subtitle.join(' / ')}`) : ''
+						}`,
 					),
 	});
 

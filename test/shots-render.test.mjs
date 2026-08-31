@@ -6,9 +6,9 @@
 // its own, and nobody diffs 96 images by eye.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { captionSvg, fitCaption, tokenise, wrapBalanced, wrapGreedy } from '../src/lib/shots-type.mjs';
+import { captionSvg, fitCaption, layoutCaption, tokenise, wrapBalanced, wrapGreedy } from '../src/lib/shots-type.mjs';
 import { bandBounds, glassRect, measureBand, parseColour, frameFile } from '../src/lib/shots-render.mjs';
-import { normaliseSpec } from '../src/lib/shots-spec.mjs';
+import { captionRuns, normaliseSpec } from '../src/lib/shots-spec.mjs';
 import { seedFor } from '../src/lib/shots-capture.mjs';
 import { driftOf } from '../src/lib/figma.mjs';
 
@@ -72,11 +72,21 @@ test('a single word wider than the box fails the wrap instead of overflowing', (
 });
 
 test('CJK captions tokenise per character, Latin per word', () => {
-	assert.deepEqual(tokenise('愛車の整備記録。', { perCharacter: true }).tokens.length, 8);
+	// Eight characters, seven tokens: the closing 。 rides on the character before
+	// it, because no line may open with it.
+	assert.deepEqual(tokenise('愛車の整備記録。', { perCharacter: true }).tokens.length, 7);
 	assert.equal(tokenise('愛車の整備記録。', { perCharacter: true }).joiner, '');
 	// A per-character locale whose caption does have spaces is still word-wrapped:
 	// breaking "Set up" mid-word would be worse than a long line.
 	assert.deepEqual(tokenise('Set up', { perCharacter: true }).tokens, ['Set', 'up']);
+});
+
+test('a CJK line never opens with a full stop the wrap could have stranded', () => {
+	// Kinsoku shori. Without it a two-line Japanese subtitle whose last character
+	// lands on the boundary puts 。 alone at the head of the second line, which is
+	// exactly what the first ja subtitle render did.
+	assert.deepEqual(tokenise('点検が遅れる前に、賢く通知。', { perCharacter: true }).tokens.at(-1), '知。');
+	assert.deepEqual(tokenise('あい、う。', { perCharacter: true }).tokens, ['あ', 'い、', 'う。']);
 });
 
 // ------------------------------------------------------------------- fitting
@@ -119,6 +129,151 @@ test('the line box, not the em box, positions the first baseline', () => {
 	});
 	assert.match(svg, /width="1000" height="1000"/);
 	assert.match(svg, /fill="#ABCDEF"/);
+});
+
+// ---------------------------------------------------------------- subtitles
+
+const SUB_TYPE = {
+	...TYPE,
+	subtitle: { size: 50, lineHeight: 62.5, colour: '#A0A0A0', minSize: 30, step: 10, gap: 150, variation: null },
+};
+
+const runsOf = (text) => captionRuns(text);
+
+test('copy is either a headline string or a headline/subtitle pair', () => {
+	// The string form is what every app ships today and must keep working.
+	assert.deepEqual(captionRuns('Never Miss an Oil Change.'), {
+		headline: 'Never Miss an Oil Change.',
+		subtitle: null,
+	});
+	assert.deepEqual(captionRuns({ headline: 'H', subtitle: 'S' }), { headline: 'H', subtitle: 'S' });
+	// A pair with no subtitle is the headline alone, not an error.
+	assert.deepEqual(captionRuns({ headline: 'H' }), { headline: 'H', subtitle: null });
+	assert.equal(captionRuns(undefined), null);
+	assert.equal(captionRuns({ subtitle: 'orphan' }), null);
+});
+
+test('without type.subtitle the layout is the single run it has always been', () => {
+	// The byte-identity guarantee for every app that is not opting in: one run,
+	// at top 0, fitted against the whole budget.
+	const layout = layoutCaption(font(), runsOf('aa bb'), {
+		box: { wrap: 10000, centre: 500 },
+		budget: 10000,
+		type: TYPE,
+	});
+	assert.equal(layout.runs.length, 1);
+	assert.equal(layout.subtitle, null);
+	assert.deepEqual(layout.runs[0].fit.lines, ['aa bb']);
+	assert.equal(layout.runs[0].top, 0);
+	assert.equal(layout.runs[0].colour, TYPE.colour);
+});
+
+test('a frame with no subtitle string sits exactly where it does today, even when the spec has a subtitle ramp', () => {
+	const box = { wrap: 10000, centre: 500 };
+	const plain = layoutCaption(font(), runsOf('aa bb'), { box, budget: 10000, type: SUB_TYPE });
+	const before = layoutCaption(font(), runsOf('aa bb'), { box, budget: 10000, type: TYPE });
+	assert.equal(plain.runs.length, 1);
+	assert.deepEqual(plain.runs[0].fit, before.runs[0].fit);
+	assert.equal(plain.runs[0].top, before.runs[0].top);
+});
+
+test('both runs are painted, in their own colours, stacked by the baseline gap', () => {
+	const f = font();
+	const box = { wrap: 10000, centre: 500 };
+	const layout = layoutCaption(f, { headline: 'aa', subtitle: 'bb cc' }, { box, budget: 10000, type: SUB_TYPE });
+	assert.equal(layout.runs.length, 2);
+	assert.equal(layout.runs[0].colour, TYPE.colour);
+	assert.equal(layout.runs[1].colour, '#A0A0A0');
+	assert.equal(layout.runs[1].fit.size, SUB_TYPE.subtitle.size);
+	// gap is baseline to baseline: the subtitle's first baseline lands exactly
+	// `gap` below the headline's last, whatever the two line boxes are.
+	const baseline = (fit, top) => top + (fit.lineHeight - (0.8 - -0.2) * fit.size) / 2 + 0.8 * fit.size;
+	assert.equal(
+		Math.round(baseline(layout.runs[1].fit, layout.runs[1].top)),
+		Math.round(baseline(layout.runs[0].fit, layout.runs[0].top) + SUB_TYPE.subtitle.gap),
+	);
+	assert.ok(layout.height > layout.runs[0].fit.lineHeight, 'the block is taller than the headline alone');
+});
+
+test('the headline gives up room to the subtitle, and takes it back when the subtitle is dropped', () => {
+	const f = font();
+	const box = { wrap: 1000, centre: 500 };
+	// Budget fits the headline at full size only if nothing is reserved below it.
+	const tight = { ...SUB_TYPE, subtitle: { ...SUB_TYPE.subtitle, gap: 400 } };
+	const dropped = [];
+	const layout = layoutCaption(
+		f,
+		{ headline: 'aa bb cc', subtitle: 'dd ee ff gg hh' },
+		{ box, budget: 300, type: tight, onDrop: (t) => dropped.push(t) },
+	);
+	// No room for both, so the subtitle goes and the headline is re-fitted at the
+	// full budget rather than left shrunken by a reserve it no longer needs.
+	assert.equal(layout.runs.length, 1);
+	assert.equal(layout.subtitle, null);
+	assert.deepEqual(dropped, ['dd ee ff gg hh']);
+	const alone = layoutCaption(f, runsOf('aa bb cc'), { box, budget: 300, type: TYPE });
+	assert.equal(layout.runs[0].fit.size, alone.runs[0].fit.size);
+	assert.deepEqual(layout.runs[0].fit.lines, alone.runs[0].fit.lines);
+});
+
+test('the whole two-run block stays inside the budget it was given', () => {
+	// The band's flatness gate licensed exactly these bounds, so overflowing them
+	// is not a cosmetic problem — it paints over artwork.
+	const f = font();
+	const box = { wrap: 2000, centre: 500 };
+	for (const budget of [400, 600, 900, 2000]) {
+		const layout = layoutCaption(
+			f,
+			{ headline: 'aa bb', subtitle: 'cc dd ee ff' },
+			{ box, budget, type: SUB_TYPE },
+		);
+		assert.ok(layout.height <= budget, `block ${layout.height} overflowed budget ${budget}`);
+	}
+});
+
+test('the subtitle wraps with the headline\'s algorithm, not a prettier one', () => {
+	const f = font();
+	const greedy = { ...SUB_TYPE, wrap: 'greedy' };
+	const layout = layoutCaption(
+		f,
+		{ headline: 'aa', subtitle: 'aaaa bb cc' },
+		{ box: { wrap: 350, centre: 500 }, budget: 10000, type: greedy },
+	);
+	// At size 50 in a 350 box: greedy takes "aaaa bb" then "cc"; balanced would
+	// have evened it to "aaaa" / "bb cc".
+	assert.deepEqual(layout.runs[1].fit.lines, ['aaaa bb', 'cc']);
+});
+
+test('each run becomes its own fill group, and one run emits what it always did', () => {
+	const f = font();
+	const box = { y: 0, centre: 500 };
+	const canvas = { w: 1000, h: 1000 };
+	const fit = { lines: ['a'], size: 100, lineHeight: 125 };
+	const single = captionSvg(f, fit, { box, canvas, colour: '#ABCDEF' });
+	assert.equal(captionSvg(f, [{ fit, colour: '#ABCDEF', top: 0 }], { box, canvas }), single);
+	const two = captionSvg(
+		f,
+		[
+			{ fit, colour: '#FFFFFF', top: 0 },
+			{ fit, colour: '#A0A0A0', top: 300 },
+		],
+		{ box, canvas },
+	);
+	assert.equal(two.match(/<g fill=/g).length, 2);
+	assert.match(two, /fill="#A0A0A0"/);
+});
+
+test('a subtitle ramp is validated at load, not discovered as a subtitle that never shrinks', () => {
+	const raw = deviceSpec();
+	raw.type = { subtitle: { size: 60, minSize: 80 } };
+	assert.throws(() => normaliseSpec(raw, cfg), /minSize \(80\) is above its size/);
+	const ok = deviceSpec();
+	ok.type = { subtitle: { size: 60, lineHeight: 75 } };
+	const spec = normaliseSpec(ok, cfg);
+	assert.equal(spec.type.subtitle.colour, '#A0A0A0');
+	assert.equal(spec.type.subtitle.step, 2);
+	// Absent, it stays null so the renderer takes the single-run path.
+	assert.equal(normaliseSpec(deviceSpec(), cfg).type.subtitle, null);
 });
 
 // ---------------------------------------------------------------------- band

@@ -17,8 +17,9 @@ import { mkdir, readFile, readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { appDep } from './appdeps.mjs';
-import { ShipError } from '../log.mjs';
-import { captionSvg, fitCaption, runWidth } from './shots-type.mjs';
+import { ShipError, warn } from '../log.mjs';
+import { captionSvg, fitCaption, layoutCaption, runWidth } from './shots-type.mjs';
+import { captionRuns } from './shots-spec.mjs';
 
 /** #rrggbb → sharp's background object. */
 export function parseColour(hex) {
@@ -28,11 +29,20 @@ export function parseColour(hex) {
 	return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255, alpha: 1 };
 }
 
-/** Font per locale, cached: opening a TTF per frame is wasted work. */
+/**
+ * Font per locale, cached: opening a TTF per frame is wasted work.
+ *
+ * `variation` overrides the locale entry's own axis values, which is how a
+ * subtitle set lighter than its headline gets the weight it was designed at.
+ * It has to be stated: ja/ko resolve to variable Noto faces that open on
+ * Regular, so an inherited axis is the difference between the design and a
+ * caption that silently renders at the wrong weight.
+ */
 function fontLoader(spec, fontkit) {
 	const cache = new Map();
-	return (locale) => {
-		const entry = spec.fonts.byLocale[locale] ?? spec.fonts.default;
+	return (locale, variation = null) => {
+		const base = spec.fonts.byLocale[locale] ?? spec.fonts.default;
+		const entry = variation ? { ...base, variation: { ...(base.variation ?? {}), ...variation } } : base;
 		const key = `${entry.file}|${JSON.stringify(entry.variation)}`;
 		if (!cache.has(key)) {
 			if (!existsSync(entry.file))
@@ -67,10 +77,13 @@ export function sourceLineCounts(spec, captions, sourceLocale, loadFont) {
 	const font = loadFont(sourceLocale);
 	const out = {};
 	for (const frame of spec.frames) {
-		const text = copy[frame.key];
-		if (!text) throw new ShipError(`${sourceLocale}: no caption for frame ${frame.key}`);
+		const runs = captionRuns(copy[frame.key]);
+		if (!runs) throw new ShipError(`${sourceLocale}: no caption for frame ${frame.key}`);
+		// The headline alone sets the rhythm every locale aims at. A subtitle is
+		// fitted per frame against whatever the headline leaves, so it has no
+		// target line count of its own.
 		out[frame.key] =
-			fitCaption(font, text, {
+			fitCaption(font, runs.headline, {
 				box: frame.caption,
 				budget: captionBudget(spec, frame) ?? Infinity,
 				type: spec.type,
@@ -78,6 +91,25 @@ export function sourceLineCounts(spec, captions, sourceLocale, loadFont) {
 			}).lines.length + spec.type.extraLines;
 	}
 	return out;
+}
+
+/** The font a subtitle run is set in: the locale's face, at the subtitle's axis. */
+const subtitleFontFor = (ctx, locale) =>
+	ctx.spec.type.subtitle ? ctx.loadFont(locale, ctx.spec.type.subtitle.variation) : null;
+
+/** Lay a frame's copy out as one or two runs, reporting a dropped subtitle. */
+function layoutFor(ctx, { locale, frame, copy, budget, targetLines }) {
+	return layoutCaption(ctx.loadFont(locale), copy, {
+		box: frame.caption,
+		budget,
+		targetLines,
+		type: ctx.spec.type,
+		perCharacter: perCharacter(ctx.spec, locale),
+		subtitleFont: subtitleFontFor(ctx, locale),
+		// Named on stdout rather than swallowed: a subtitle that silently stopped
+		// shipping in one locale is exactly the failure this feature exists to fix.
+		onDrop: (text) => warn(`${locale}/${frame.key}: subtitle dropped, will not fit at minSize: ${text}`),
+	});
 }
 
 // --------------------------------------------------------------- device frame
@@ -210,7 +242,7 @@ async function compose(sharp, { width, height, background, items }) {
 	return sharp(canvas).extract({ left: padLeft, top: padTop, width, height }).png({ compressionLevel: 9 }).toBuffer();
 }
 
-async function renderDeviceFrame(ctx, { locale, frame, text, targetLines }) {
+async function renderDeviceFrame(ctx, { locale, frame, copy, targetLines }) {
 	const { sharp, spec, loadFont } = ctx;
 	const srcPath = join(spec.paths.raw, locale, spec.displayType, frame.src);
 	if (!existsSync(srcPath))
@@ -232,18 +264,19 @@ async function renderDeviceFrame(ctx, { locale, frame, text, targetLines }) {
 	const device = await compose(sharp, { width: spec.device.w, height: spec.device.h, items: parts });
 
 	const font = loadFont(locale);
-	const fit = fitCaption(font, text, {
-		box: frame.caption,
-		budget: captionBudget(spec, frame),
-		targetLines,
-		type: spec.type,
-		perCharacter: perCharacter(spec, locale),
-	});
-	const svg = captionSvg(font, fit, {
-		box: frame.caption,
-		canvas: spec.canvas,
-		colour: spec.type.colour,
-	});
+	const layout = layoutFor(ctx, { locale, frame, copy, budget: captionBudget(spec, frame), targetLines });
+	const { fit } = layout;
+	const svg = captionSvg(
+		font,
+		layout.runs.length === 1
+			? fit
+			: layout.runs.map((r) => ({ ...r, top: frame.caption.y + r.top })),
+		{
+			box: frame.caption,
+			canvas: spec.canvas,
+			colour: spec.type.colour,
+		},
+	);
 
 	const png = await compose(sharp, {
 		width: spec.canvas.w,
@@ -254,7 +287,7 @@ async function renderDeviceFrame(ctx, { locale, frame, text, targetLines }) {
 			{ input: await sharp(Buffer.from(svg)).png().toBuffer(), left: 0, top: 0 },
 		],
 	});
-	return { png, ...fit };
+	return { png, ...fit, subtitle: layout.subtitle };
 }
 
 // --------------------------------------------------------------- caption band
@@ -351,7 +384,32 @@ async function baseImage(ctx, frame) {
 	return entry;
 }
 
-async function renderCaptionBand(ctx, { locale, frame, text, targetLines }) {
+/**
+ * The drawn caption reduced to its ink, for aligning on the source ink top.
+ *
+ * A single run is trimmed on all four sides and re-centred on the caption
+ * centre, exactly as it always was. Two runs are trimmed vertically only: the
+ * headline and the subtitle are each centred on that same centre, but their ink
+ * boxes have different side bearings, so re-centring their union would shift
+ * both runs by the difference. Keeping full canvas width keeps each run on the
+ * axis the design put it on.
+ */
+async function inkStrip(sharp, drawn, twoRun) {
+	if (!twoRun) {
+		const trimmed = await sharp(drawn).trim({ threshold: 1 }).png().toBuffer();
+		return { trimmed, ink: { ...(await sharp(trimmed).metadata()), full: false } };
+	}
+	const probe = await sharp(drawn).trim({ threshold: 1 }).toBuffer({ resolveWithObject: true });
+	const full = await sharp(drawn).metadata();
+	const top = Math.abs(probe.info.trimOffsetTop ?? 0);
+	const trimmed = await sharp(drawn)
+		.extract({ left: 0, top, width: full.width, height: probe.info.height })
+		.png()
+		.toBuffer();
+	return { trimmed, ink: { width: full.width, height: probe.info.height, full: true } };
+}
+
+async function renderCaptionBand(ctx, { locale, frame, copy, targetLines }) {
 	const { sharp, spec, loadFont } = ctx;
 	const base = await baseImage(ctx, frame);
 	const { y0, y1 } = base.bounds;
@@ -359,27 +417,28 @@ async function renderCaptionBand(ctx, { locale, frame, text, targetLines }) {
 	const pad = spec.band.pad;
 
 	const font = loadFont(locale);
-	const fit = fitCaption(font, text, {
-		box: frame.caption,
-		budget: bandH - 2 * pad,
-		targetLines,
-		type: spec.type,
-		perCharacter: perCharacter(spec, locale),
-	});
+	// The band is the budget, and it is not negotiable: the flatness gate above
+	// licensed repainting exactly these bounds. A two-run block that will not fit
+	// loses its subtitle inside layoutCaption rather than growing the band.
+	const layout = layoutFor(ctx, { locale, frame, copy, budget: bandH - 2 * pad, targetLines });
+	const { fit } = layout;
 
 	// Draw into a band-sized canvas with slack above and below, then trim to the
 	// ink so the block can be aligned on the source-locale ink top rather than
 	// on a font-dependent line box.
 	const slack = Math.round(spec.type.size * 2);
-	const svg = captionSvg(font, fit, {
-		box: frame.caption,
-		canvas: { w: spec.canvas.w, h: bandH + 2 * slack },
-		colour: spec.type.colour,
-		top: slack,
-	});
+	const svg = captionSvg(
+		font,
+		layout.runs.length === 1 ? fit : layout.runs.map((r) => ({ ...r, top: slack + r.top })),
+		{
+			box: frame.caption,
+			canvas: { w: spec.canvas.w, h: bandH + 2 * slack },
+			colour: spec.type.colour,
+			top: slack,
+		},
+	);
 	const drawn = await sharp(Buffer.from(svg)).png().toBuffer();
-	const trimmed = await sharp(drawn).trim({ threshold: 1 }).png().toBuffer();
-	const ink = await sharp(trimmed).metadata();
+	const { trimmed, ink } = await inkStrip(sharp, drawn, layout.runs.length > 1);
 
 	// Keep the source ink top; when the localized block is taller, grow it about
 	// that line so the caption stays optically where the designer put it.
@@ -397,12 +456,16 @@ async function renderCaptionBand(ctx, { locale, frame, text, targetLines }) {
 				left: 0,
 				top: y0,
 			},
-			{ input: trimmed, left: Math.round(frame.caption.centre - ink.width / 2), top: Math.round(y) },
+			{
+				input: trimmed,
+				left: ink.full ? 0 : Math.round(frame.caption.centre - ink.width / 2),
+				top: Math.round(y),
+			},
 		])
 		.png({ compressionLevel: 9 })
 		.toBuffer();
 
-	return { png, ...fit };
+	return { png, ...fit, subtitle: layout.subtitle };
 }
 
 // ------------------------------------------------------------------- driver
@@ -432,9 +495,14 @@ export async function renderLocales(cfg, spec, captions, locales, { onFrame } = 
 		const copy = captions[locale];
 		if (!copy) throw new ShipError(`no caption copy for ${locale}`);
 		for (const [i, frame] of spec.frames.entries()) {
-			const text = copy[frame.key];
-			if (!text) throw new ShipError(`${locale}: no caption for frame ${frame.key}`);
-			const { png, lines, size } = await render(ctx, { locale, frame, text, targetLines: targets[frame.key] });
+			const runs = captionRuns(copy[frame.key]);
+			if (!runs) throw new ShipError(`${locale}: no caption for frame ${frame.key}`);
+			const { png, lines, size, subtitle } = await render(ctx, {
+				locale,
+				frame,
+				copy: runs,
+				targetLines: targets[frame.key],
+			});
 			const dest = join(spec.paths.out, locale, spec.displayType, frameFile(spec, frame, i));
 			await mkdir(dirname(dest), { recursive: true });
 			// Re-encode at sharp's default settings rather than dumping the
@@ -442,7 +510,7 @@ export async function renderLocales(cfg, spec, captions, locales, { onFrame } = 
 			// re-render that changed nothing shows up as an empty diff instead of
 			// as N rewritten binaries.
 			await ctx.sharp(png).png().toFile(dest);
-			const row = { locale, frame: frame.key, file: dest, size, lines };
+			const row = { locale, frame: frame.key, file: dest, size, lines, subtitle: subtitle?.lines ?? null };
 			written.push(row);
 			onFrame?.(row);
 		}
@@ -545,7 +613,7 @@ export async function verify(cfg, spec, captions, locales) {
 			const rendered = await renderDeviceFrame(ctx, {
 				locale: sourceLocale,
 				frame,
-				text: captions[sourceLocale][frame.key],
+				copy: captionRuns(captions[sourceLocale][frame.key]),
 				targetLines: targets[frame.key],
 			});
 			const refName = refs.find((f) => f.startsWith(frame.key)) ?? refs[i];
@@ -575,7 +643,7 @@ export async function verify(cfg, spec, captions, locales) {
 		const { png, size, lines } = await renderCaptionBand(ctx, {
 			locale: sourceLocale,
 			frame,
-			text: captions[sourceLocale][frame.key],
+			copy: captionRuns(captions[sourceLocale][frame.key]),
 			targetLines: targets[frame.key],
 		});
 		const { data, info } = await sharp(png).removeAlpha().raw().toBuffer({ resolveWithObject: true });
