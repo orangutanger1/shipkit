@@ -159,12 +159,18 @@ export async function resolveVersion(cfg, override) {
 	});
 }
 
+/** ASC app id from config or ASC_APP_ID; null when neither is set. */
+export function optionalAppId(cfg) {
+	const id = cfg.asc.appId ?? process.env.ASC_APP_ID;
+	return id === null || id === undefined ? null : String(id);
+}
+
 /** ASC app id, from config or ASC_APP_ID. */
 export function requireAppId(cfg) {
-	const id = cfg.asc.appId ?? process.env.ASC_APP_ID;
+	const id = optionalAppId(cfg);
 	if (!id)
 		throw new ShipError(`${cfg.name}: no App Store Connect app id`, {
 			hint: 'set asc.appId in ship.config.json (find it with `asc apps list`)',
 		});
-	return String(id);
+	return id;
 }

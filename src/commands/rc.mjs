@@ -23,6 +23,8 @@ import {
 	resolveProject,
 } from '../lib/revenuecat.mjs';
 import { WINBACK_PATTERN } from '../lib/paywall.mjs';
+import { emit } from '../lib/output.mjs';
+import { resolveSubcommand } from '../lib/util.mjs';
 
 export const help = `
 ${c.bold('ship rc')} ${c.dim('— RevenueCat monetisation wiring')}
@@ -43,11 +45,6 @@ ${c.dim(`Key: REVENUECAT_V2_KEY, else ${KEY_FILE}`)}
 ${c.dim('Project selection: revenuecat.projectId in ship.config.json')}
 ${c.dim('Mutations (create offering, attach product, edit paywall) → MCP: https://mcp.revenuecat.ai/mcp')}
 `;
-
-const emit = (data) => {
-	process.stdout.write(`${JSON.stringify(data, null, 2)}\n`);
-	return 0;
-};
 
 /** A save/exit offer, by lookup key. It belongs behind "manage subscription", not on the paywall. */
 const isWinback = (o) => WINBACK_PATTERN.test(String(o?.lookup_key ?? o?.id ?? ''));
@@ -265,11 +262,6 @@ async function audit({ flags }) {
 const SUB = { status, projects, offerings, products, entitlements, audit };
 
 export async function run({ args, flags }) {
-	const [sub = 'status', ...rest] = args;
-	const fn = SUB[sub];
-	if (!fn)
-		throw new ShipError(`rc: unknown subcommand "${sub}"`, {
-			hint: `try: ${Object.keys(SUB).join(', ')}`,
-		});
+	const { fn, args: rest } = resolveSubcommand({ command: 'rc', args, subs: SUB, fallback: 'status' });
 	return fn({ args: rest, flags });
 }

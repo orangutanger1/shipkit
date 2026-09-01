@@ -17,8 +17,8 @@ import {
 	TERRITORIES,
 	derivePlan,
 	normaliseTerritory,
-	reconcile,
-} from '../src/commands/price.mjs';
+	reconcilePrices as reconcile,
+} from '../src/lib/pricing.mjs';
 
 const BASE = 4.99;
 const plan = derivePlan(BASE);

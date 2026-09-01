@@ -1,0 +1,12 @@
+{
+	"$schema": "https://raw.githubusercontent.com/webpro/knip/main/schema.json",
+	"entry": [
+		"bin/ship",
+		"test/**/*.test.mjs",
+		"test/fixtures/*.mjs",
+		"test/helpers/*.mjs",
+		"scripts/*.mjs"
+	],
+	"project": ["src/**/*.mjs", "bin/**"],
+	"includeEntryExports": false
+}

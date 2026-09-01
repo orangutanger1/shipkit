@@ -138,39 +138,27 @@ export async function loadSpec(cfg, { required = false } = {}) {
  * Validate and fill a spec. Every failure here is one that would otherwise show
  * up as a wrong-looking PNG on the App Store, so they are all fatal.
  */
-export function normaliseSpec(raw, cfg, file = '<spec>') {
-	const abs = resolver(cfg);
-	const spec = { ...raw, file };
-
-	if (!MODES.includes(spec.mode))
-		throw new ShipError(`${file}: mode must be one of ${MODES.join(', ')}`, {
-			hint: 'device-frame rebuilds the mockup; caption-band repaints an existing composite',
-		});
-	if (!spec.canvas?.w || !spec.canvas?.h)
-		throw new ShipError(`${file}: canvas.w and canvas.h are required`);
-	if (!Array.isArray(spec.frames) || !spec.frames.length)
-		throw new ShipError(`${file}: frames[] is empty`);
-
-	spec.displayType = spec.displayType ?? 'IPHONE_65';
+/** Validate + default the type block, including the two-run subtitle axes. */
+function normaliseType(spec, file) {
 	spec.type = { ...TYPE_DEFAULTS, ...(spec.type ?? {}) };
-	if (spec.type.subtitle) {
-		spec.type.subtitle = { ...SUBTITLE_DEFAULTS, ...spec.type.subtitle };
-		const st = spec.type.subtitle;
-		if (!(st.size > 0) || !(st.lineHeight > 0))
-			throw new ShipError(`${file}: type.subtitle needs a positive size and lineHeight`);
-		if (st.minSize > st.size)
-			throw new ShipError(`${file}: type.subtitle.minSize (${st.minSize}) is above its size (${st.size})`, {
-				hint: 'the fitter only ever shrinks, so a floor above the design size can never be reached',
-			});
-		if (!(st.step > 0)) throw new ShipError(`${file}: type.subtitle.step must be positive`);
-	}
-	spec.band = { ...BAND_DEFAULTS, ...(spec.band ?? {}) };
-	spec.source = spec.source ?? {};
+	if (!spec.type.subtitle) return;
+	spec.type.subtitle = { ...SUBTITLE_DEFAULTS, ...spec.type.subtitle };
+	const st = spec.type.subtitle;
+	if (!(st.size > 0) || !(st.lineHeight > 0))
+		throw new ShipError(`${file}: type.subtitle needs a positive size and lineHeight`);
+	if (st.minSize > st.size)
+		throw new ShipError(`${file}: type.subtitle.minSize (${st.minSize}) is above its size (${st.size})`, {
+			hint: 'the fitter only ever shrinks, so a floor above the design size can never be reached',
+		});
+	if (!(st.step > 0)) throw new ShipError(`${file}: type.subtitle.step must be positive`);
+}
 
-	// A font entry is either a path or `{ file, variation }`. The variation is
-	// not decoration: a variable face opens on its default instance, which for
-	// Noto Sans is Regular, so a design calling for Bold silently renders light
-	// and every caption comes out narrower than the reference.
+/** Resolve font entries (path or `{file, variation}`) and require a default face. */
+function normaliseFonts(spec, abs, file) {
+	// The variation is not decoration: a variable face opens on its default
+	// instance, which for Noto Sans is Regular, so a design calling for Bold
+	// silently renders light and every caption comes out narrower than the
+	// reference.
 	const fontEntry = (v) =>
 		typeof v === 'string' ? { file: abs(v), variation: null } : { file: abs(v?.file), variation: v?.variation ?? null };
 	spec.fonts = {
@@ -183,16 +171,10 @@ export function normaliseSpec(raw, cfg, file = '<spec>') {
 		throw new ShipError(`${file}: fonts.default is required`, {
 			hint: 'point it at the same face the design uses; a substitute drifts caption widths',
 		});
+}
 
-	spec.paths = {
-		raw: abs(spec.raw ?? 'screenshots-raw'),
-		out: join(cfg.paths.store, 'screenshots'),
-		captions: abs(spec.captions ?? 'screenshot-captions.json'),
-		parts: abs(spec.device?.parts ?? 'figma-export/parts'),
-		ref: abs(spec.ref ?? null),
-	};
-
-	// Caption boxes: record each box's centre and the width wrapping may use.
+/** Caption boxes: record each box's centre and the width wrapping may use. */
+function normaliseCaptionBoxes(spec, file) {
 	for (const frame of spec.frames) {
 		if (!frame.key) throw new ShipError(`${file}: every frame needs a key`);
 		const box = frame.caption ?? {};
@@ -203,6 +185,38 @@ export function normaliseSpec(raw, cfg, file = '<spec>') {
 				: 2 * Math.min(centre, spec.canvas.w - centre) - 2 * spec.type.margin;
 		frame.caption = { ...box, centre, wrap: Math.max(box.w ?? 0, room) };
 	}
+}
+
+/**
+ * Validate and fill a spec. Every failure here is one that would otherwise show
+ * up as a wrong-looking PNG on the App Store, so they are all fatal.
+ */
+export function normaliseSpec(raw, cfg, file = '<spec>') {
+	const abs = resolver(cfg);
+	const spec = { ...raw, file };
+
+	if (!MODES.includes(spec.mode))
+		throw new ShipError(`${file}: mode must be one of ${MODES.join(', ')}`, {
+			hint: 'device-frame rebuilds the mockup; caption-band repaints an existing composite',
+		});
+	if (!spec.canvas?.w || !spec.canvas?.h) throw new ShipError(`${file}: canvas.w and canvas.h are required`);
+	if (!Array.isArray(spec.frames) || !spec.frames.length) throw new ShipError(`${file}: frames[] is empty`);
+
+	spec.displayType = spec.displayType ?? 'IPHONE_65';
+	normaliseType(spec, file);
+	spec.band = { ...BAND_DEFAULTS, ...(spec.band ?? {}) };
+	spec.source = spec.source ?? {};
+	normaliseFonts(spec, abs, file);
+
+	spec.paths = {
+		raw: abs(spec.raw ?? 'screenshots-raw'),
+		out: join(cfg.paths.store, 'screenshots'),
+		captions: abs(spec.captions ?? 'screenshot-captions.json'),
+		parts: abs(spec.device?.parts ?? 'figma-export/parts'),
+		ref: abs(spec.ref ?? null),
+	};
+
+	normaliseCaptionBoxes(spec, file);
 
 	if (spec.mode === 'device-frame') normaliseDevice(spec, file);
 	else normaliseBand(spec, cfg, file);

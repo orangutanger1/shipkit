@@ -68,17 +68,3 @@ export async function appDep(cfg, name) {
 		hint: `npm i -D ${pkg}\n${last?.message ?? ''}`.trim(),
 	});
 }
-
-/** Which of the render dependencies resolve here. Used by `ship doctor`. */
-export async function probeDeps(cfg, names = Object.keys(PROVIDES)) {
-	const out = {};
-	for (const name of names) {
-		try {
-			await appDep(cfg, name);
-			out[name] = true;
-		} catch {
-			out[name] = false;
-		}
-	}
-	return out;
-}

@@ -146,13 +146,8 @@ async function seedAso(targetDir, brief) {
 	good(`aso.seeds ← ${seeds.join(', ')}`);
 }
 
-export async function run({ args, flags }) {
-	// scout.mjs owns the brief format and drags in the whole storefront client;
-	// only --from pays for loading it.
-	const scout = flags.from ? await import('./scout.mjs') : null;
-	const brief = scout ? await scout.readBrief(flags.from) : null;
-	const listing = brief ? scout.listingFromBrief(brief) : null;
-
+/** Slug, display name and bundle id — every one validated at its source. */
+function resolveIdentity({ args, flags, brief }) {
 	const slug = args[0] ?? (brief ? slugFromBrief(brief) : null);
 	if (!slug)
 		throw new ShipError('new: a slug is required', {
@@ -178,10 +173,12 @@ export async function run({ args, flags }) {
 		throw new ShipError(`new: invalid bundle id "${bundleId}"`, {
 			hint: 'reverse-DNS, e.g. com.acme.myapp',
 		});
+	return { slug, name, scheme, bundleId };
+}
 
+async function resolveTargetDir(flags, slug) {
 	const raw = flags.dir ?? slug;
 	const targetDir = isAbsolute(raw) ? resolve(raw) : resolve(process.cwd(), raw);
-
 	if (existsSync(targetDir)) {
 		const existing = await readdir(targetDir);
 		if (existing.length && !flags.force)
@@ -193,26 +190,25 @@ export async function run({ args, flags }) {
 		throw new ShipError(`new: template tree missing at ${TEMPLATE_ROOT}`, {
 			hint: 'reinstall shipkit — templates/app ships with the CLI',
 		});
+	return targetDir;
+}
 
-	const vars = { SLUG: slug, NAME: name, BUNDLE_ID: bundleId, SCHEME: scheme };
-	const dry = isDryRun();
-
+function printIntro({ name, slug, bundleId, scheme, targetDir, brief }) {
 	heading(`New app — ${name}`);
 	info(`slug       ${c.cyan(slug)}`);
 	info(`bundle id  ${c.cyan(bundleId)}`);
 	info(`scheme     ${c.cyan(scheme)}`);
 	info(`directory  ${c.cyan(targetDir)}`);
-	if (brief) {
-		info(`brief      ${c.cyan(relative(process.cwd(), brief.file) || brief.file)}`);
-		info(
-			`term       ${c.cyan(brief.term)} ${c.dim(`(demand ${brief.demand} · competition ${brief.competition} · opportunity ${brief.opportunity})`)}`,
-		);
-		if (brief.verdict?.go === false)
-			warn(
-				`the brief is a NO-GO on ${brief.verdict.reasons.map((r) => r.gate).join(', ')} — scaffolding anyway`,
-			);
-	}
+	if (!brief) return;
+	info(`brief      ${c.cyan(relative(process.cwd(), brief.file) || brief.file)}`);
+	info(
+		`term       ${c.cyan(brief.term)} ${c.dim(`(demand ${brief.demand} · competition ${brief.competition} · opportunity ${brief.opportunity})`)}`,
+	);
+	if (brief.verdict?.go === false)
+		warn(`the brief is a NO-GO on ${brief.verdict.reasons.map((r) => r.gate).join(', ')} — scaffolding anyway`);
+}
 
+async function writeScaffold({ targetDir, vars, listing, brief, dry }) {
 	step(dry ? 'Files that would be written' : 'Writing scaffold');
 	const written = [];
 	for await (const rel of walk(TEMPLATE_ROOT)) {
@@ -231,22 +227,10 @@ export async function run({ args, flags }) {
 	written.sort();
 	for (const f of written) note(f);
 	good(`${written.length} files${dry ? ' (dry run)' : ''}`);
-	if (listing && !dry)
-		note(`${STAGED_LISTING} drafted from "${brief.term}" — edit it, then \`ship meta lint\``);
+	if (listing && !dry) note(`${STAGED_LISTING} drafted from "${brief.term}" — edit it, then \`ship meta lint\``);
+}
 
-	// Lazy import: init.mjs is a peer command and resolving it at module load
-	// would couple `ship new`'s parse-time to it.
-	// `--force` means "write into a non-empty directory" here and "overwrite
-	// human-set config values / npm scripts" in init — two different decisions.
-	// A fresh scaffold has neither, so init never inherits the flag.
-	step('Wiring ship.config.json');
-	const init = await import('./init.mjs');
-	const { force: _newForce, ...initFlags } = flags;
-	const code = await init.run({ args: [], flags: { ...initFlags, dir: targetDir, app: targetDir } });
-	if (code) return code;
-
-	if (brief && !dry) await seedAso(targetDir, brief);
-
+function printNextSteps({ targetDir, bundleId, flags }) {
 	if (!flags['bundle-id'] && !flags.bundleId)
 		warn(`bundle id was derived as ${bundleId} — change it before the first EAS build`);
 
@@ -261,5 +245,40 @@ export async function run({ args, flags }) {
 		process.stdout.write(`  ${c.green('$')} ${cmd}\n`);
 	note('eas init fills extra.eas.projectId in app.json; ship doctor fails until it does.');
 	process.stdout.write('\n');
+}
+
+export async function run({ args, flags }) {
+	// scout.mjs owns the brief format and drags in the whole storefront client;
+	// only --from pays for loading it.
+	const scout = flags.from ? await import('./scout.mjs') : null;
+	const brief = scout ? await scout.readBrief(flags.from) : null;
+	const listing = brief ? scout.listingFromBrief(brief) : null;
+
+	const identity = resolveIdentity({ args, flags, brief });
+	const targetDir = await resolveTargetDir(flags, identity.slug);
+	const dry = isDryRun();
+
+	printIntro({ ...identity, targetDir, brief });
+	await writeScaffold({
+		targetDir,
+		vars: { SLUG: identity.slug, NAME: identity.name, BUNDLE_ID: identity.bundleId, SCHEME: identity.scheme },
+		listing,
+		brief,
+		dry,
+	});
+
+	// Lazy import: init.mjs is a peer command and resolving it at module load
+	// would couple `ship new`'s parse-time to it.
+	// `--force` means "write into a non-empty directory" here and "overwrite
+	// human-set config values / npm scripts" in init — two different decisions.
+	// A fresh scaffold has neither, so init never inherits the flag.
+	step('Wiring ship.config.json');
+	const init = await import('./init.mjs');
+	const { force: _newForce, ...initFlags } = flags;
+	const code = await init.run({ args: [], flags: { ...initFlags, dir: targetDir, app: targetDir } });
+	if (code) return code;
+
+	if (brief && !dry) await seedAso(targetDir, brief);
+	printNextSteps({ ...identity, targetDir, flags });
 	return 0;
 }

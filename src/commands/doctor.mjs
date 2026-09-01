@@ -7,7 +7,7 @@
 //   · Astro is a macOS desktop app. On this Linux host it can only be reached
 //     through an SSH tunnel to the Mac, so "unreachable" is never a failure.
 import { existsSync } from 'node:fs';
-import { readFile, readdir } from 'node:fs/promises';
+import { readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Report, c } from '../log.mjs';
@@ -15,7 +15,9 @@ import { Report, c } from '../log.mjs';
 // so importing exec's `run` under that name shadows — or silently resolves to —
 // the wrong function.
 import { ASC, asc, run as exec, which } from '../exec.mjs';
-import { loadConfig, readExpoConfig } from '../config.mjs';
+import { loadConfig, optionalAppId, readExpoConfig } from '../config.mjs';
+import { readJSONOrNull } from '../lib/jsonio.mjs';
+import { tilde } from '../lib/util.mjs';
 import { KEY_FILE, apiKey, listProjects, useKeyForProject } from '../lib/revenuecat.mjs';
 
 export const help = `
@@ -42,18 +44,6 @@ const ASTRO_MCP = 'http://127.0.0.1:8089/mcp';
 const MCP_SERVERS = ['revenuecat', 'astro', 'apple-ads'];
 const WIRE_HINT = 'run `ship init` to wire MCP';
 
-/** Absolute paths are noise in a report; the reader knows their own home. */
-const tilde = (p) => (p.startsWith(homedir()) ? `~${p.slice(homedir().length)}` : p);
-
-async function readJSON(file) {
-	if (!existsSync(file)) return null;
-	try {
-		return JSON.parse(await readFile(file, 'utf8'));
-	} catch {
-		return null;
-	}
-}
-
 /**
  * Which file declares each MCP server, searched in the order a client resolves them.
  * @returns {Promise<Map<string, string>>} server name → declaring file
@@ -68,7 +58,7 @@ async function mcpDeclarations(root) {
 		[claudeFile, (j) => ({ ...j.mcpServers, ...j.projects?.[root]?.mcpServers })],
 	];
 	for (const [file, pick] of sources) {
-		const json = await readJSON(file);
+		const json = await readJSONOrNull(file);
 		if (!json) continue;
 		for (const name of Object.keys(pick(json) ?? {})) {
 			if (!found.has(name)) found.set(name, file);
@@ -196,7 +186,7 @@ async function checkMcp(report, root) {
 async function checkRepo(report, cfg) {
 	report.ok('config', tilde(cfg.file));
 
-	const appId = cfg.asc.appId ?? process.env.ASC_APP_ID;
+	const appId = optionalAppId(cfg);
 	let ascBundleId = null;
 	if (!appId) {
 		report.fail('asc app', 'no asc.appId in ship.config.json — find it with `asc apps list`');

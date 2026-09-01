@@ -157,7 +157,22 @@ export function onboardingFunnel(input) {
 
 	const findings = [];
 	const add = (level, name, detail) => findings.push({ level, name, detail });
+	funnelFindings({ steps, paywall, reach, screens, quizScreens, worst, regressed, add });
 
+	return {
+		entered,
+		steps,
+		screens,
+		quizScreens,
+		reach,
+		worst,
+		healthy: !findings.some((f) => f.level === 'fail' || f.level === 'warn'),
+		findings,
+	};
+}
+
+/** Every audit rule for one onboarding funnel, in report order. */
+function funnelFindings({ steps, paywall, reach, screens, quizScreens, worst, regressed, add }) {
 	if (!steps.length) add('fail', 'instrumentation', 'no onboarding funnel recorded — an uninstrumented onboarding cannot be tuned in either direction');
 	if (regressed) add('fail', 'export', 'a step reports more users than the step before it — this is not an ordered funnel export');
 
@@ -190,17 +205,6 @@ export function onboardingFunnel(input) {
 			'worst step',
 			`${worst.name} loses ${pct(worst.dropRate)}${worst.dropRate >= 0.25 ? ' — this is the screen to cut or rewrite first' : ''}`,
 		);
-
-	return {
-		entered,
-		steps,
-		screens,
-		quizScreens,
-		reach,
-		worst,
-		healthy: !findings.some((f) => f.level === 'fail' || f.level === 'warn'),
-		findings,
-	};
 }
 
 // ─── the price ladder ────────────────────────────────────────────────────────

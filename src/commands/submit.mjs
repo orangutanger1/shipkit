@@ -126,6 +126,75 @@ function readValidation(payload) {
 
 const LEVEL_MARK = { error: () => c.red('✗'), warning: () => c.yellow('!'), info: () => c.dim('·') };
 
+async function uploadBinary({ cfg, profile, summary }) {
+	const up = await eas(['submit', '--platform', 'ios', '--profile', profile, '--latest', '--non-interactive'], {
+		cwd: cfg.paths.app,
+		mutating: true,
+	});
+	if (up.skipped) note('dry run — nothing uploaded');
+	else if (up.code !== 0)
+		throw new ShipError(`eas submit failed (exit ${up.code})`, {
+			hint: 'the usual cause is an expired App Store Connect API key in the EAS submit profile',
+		});
+	else {
+		summary.uploaded = true;
+		good('binary uploaded to App Store Connect');
+	}
+}
+
+async function readinessStep({ appId, version, force, summary }) {
+	const validation = await asc(['validate', '--app', appId, '--version', version], {
+		fallback: null,
+		allowFail: true,
+	});
+	if (!validation) {
+		warn('asc validate returned nothing — treating readiness as unknown');
+		if (!force)
+			throw new ShipError('cannot confirm the version is submittable', {
+				hint: 'run `asc validate --app ' + appId + ' --version ' + version + '` by hand, or pass --force',
+			});
+		return;
+	}
+	const { clean, problems, plan } = readValidation(validation);
+	summary.validated = clean;
+	if (problems.length)
+		table(problems, [
+			{ header: '', get: (p) => (LEVEL_MARK[p.level] ?? LEVEL_MARK.info)() },
+			{ header: 'FINDING', get: (p) => p.text },
+		]);
+	if (plan.length) {
+		process.stdout.write(`\n${c.bold('  remediation plan')}\n`);
+		plan.forEach((s, i) => note(`${i + 1}. ${s.blocking ? `${c.red('blocking')} ` : ''}${s.text}`));
+		process.stdout.write('\n');
+	}
+	if (clean) good('validate is clean — the version is submittable');
+	else if (force) warn(c.red('--force: submitting a version validate says will be rejected'));
+	else
+		throw new ShipError('validate reported problems — not submitting', {
+			hint: 'work the remediation plan above, then re-run `ship submit --skip-upload`',
+		});
+}
+
+async function submitForReview({ cfg, appId, version, build, flags, dry, summary }) {
+	const buildId = build?.id ?? (flags.build == null ? null : String(flags.build));
+	if (dry) {
+		note(`dry run — would run \`asc review submit --app ${appId} --version ${version} --build <id> --confirm\``);
+		return;
+	}
+	if (!buildId)
+		throw new ShipError('no processed build id to attach', {
+			hint: '`asc builds list --app ' + appId + '` should show a VALID build; pass --build <id> to pick one explicitly',
+		});
+	const res = await ascMutate(['review', 'submit', '--app', appId, '--version', version, '--build', buildId, '--confirm']);
+	if (!res.ok)
+		throw new ShipError(`asc review submit exited ${res.code}`, {
+			hint: (res.stderr || 'no stderr').split('\n').slice(-6).join('\n') +
+				`\ncheck \`asc submit status --app ${appId}\` — the submission may still have gone through`,
+		});
+	summary.submitted = true;
+	good(`${cfg.name} ${version} submitted for review (build ${buildId})`);
+}
+
 export async function run({ args, flags }) {
 	if (args.length)
 		throw new ShipError(`submit: unexpected argument "${args[0]}"`, {
@@ -153,20 +222,7 @@ export async function run({ args, flags }) {
 		step('eas submit');
 		note('skipped — --skip-upload, expecting the build to already be in App Store Connect');
 	} else {
-		step('eas submit');
-		const up = await eas(
-			['submit', '--platform', 'ios', '--profile', profile, '--latest', '--non-interactive'],
-			{ cwd: cfg.paths.app, mutating: true },
-		);
-		if (up.skipped) note('dry run — nothing uploaded');
-		else if (up.code !== 0)
-			throw new ShipError(`eas submit failed (exit ${up.code})`, {
-				hint: 'the usual cause is an expired App Store Connect API key in the EAS submit profile',
-			});
-		else {
-			summary.uploaded = true;
-			good('binary uploaded to App Store Connect');
-		}
+		await uploadBinary({ cfg, profile, summary });
 	}
 
 	step('wait for Apple to finish processing');
@@ -179,57 +235,10 @@ export async function run({ args, flags }) {
 	}
 
 	step('readiness check');
-	const validation = await asc(['validate', '--app', appId, '--version', version], {
-		fallback: null,
-		allowFail: true,
-	});
-	if (!validation) {
-		warn('asc validate returned nothing — treating readiness as unknown');
-		if (!force)
-			throw new ShipError('cannot confirm the version is submittable', {
-				hint: 'run `asc validate --app ' + appId + ' --version ' + version + '` by hand, or pass --force',
-			});
-	} else {
-		const { clean, problems, plan } = readValidation(validation);
-		summary.validated = clean;
-		if (problems.length)
-			table(problems, [
-				{ header: '', get: (p) => (LEVEL_MARK[p.level] ?? LEVEL_MARK.info)() },
-				{ header: 'FINDING', get: (p) => p.text },
-			]);
-		if (plan.length) {
-			process.stdout.write(`\n${c.bold('  remediation plan')}\n`);
-			plan.forEach((s, i) => note(`${i + 1}. ${s.blocking ? `${c.red('blocking')} ` : ''}${s.text}`));
-			process.stdout.write('\n');
-		}
-		if (clean) good('validate is clean — the version is submittable');
-		else if (force) warn(c.red('--force: submitting a version validate says will be rejected'));
-		else
-			throw new ShipError('validate reported problems — not submitting', {
-				hint: 'work the remediation plan above, then re-run `ship submit --skip-upload`',
-			});
-	}
+	await readinessStep({ appId, version, force, summary });
 
 	step('submit for review');
-	const buildId = build?.id ?? (flags.build == null ? null : String(flags.build));
-	if (dry) {
-		note(`dry run — would run \`asc review submit --app ${appId} --version ${version} --build <id> --confirm\``);
-	} else {
-		if (!buildId)
-			throw new ShipError('no processed build id to attach', {
-				hint: '`asc builds list --app ' + appId + '` should show a VALID build; pass --build <id> to pick one explicitly',
-			});
-		const res = await ascMutate(
-			['review', 'submit', '--app', appId, '--version', version, '--build', buildId, '--confirm'],
-		);
-		if (!res.ok)
-			throw new ShipError(`asc review submit exited ${res.code}`, {
-				hint: (res.stderr || 'no stderr').split('\n').slice(-6).join('\n') +
-					`\ncheck \`asc submit status --app ${appId}\` — the submission may still have gone through`,
-			});
-		summary.submitted = true;
-		good(`${cfg.name} ${version} submitted for review (build ${buildId})`);
-	}
+	await submitForReview({ cfg, appId, version, build, flags, dry, summary });
 
 	note(`follow up with: ${c.cyan(`ship status --version ${version}`)}`);
 	if (json) process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);

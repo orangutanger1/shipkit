@@ -81,41 +81,52 @@ export async function readStaged(cfg) {
  * a third of the store when it splits on /\s+/.
  * @returns {{level:'fail'|'warn', field:string, message:string}[]}
  */
-export function lintListing({ locale, file, data }) {
-	const tag = data.locale ?? locale ?? 'en';
-	const problems = [];
-	const fail = (field, message) => problems.push({ level: 'fail', field, message, locale, file });
-	const warn = (field, message) => problems.push({ level: 'warn', field, message, locale, file });
+/** Keyword-specific rules: separator hygiene, dupes (fail) and slot waste (warn). */
+function keywordProblems(data, tag) {
+	const out = [];
+	if (/,\s/.test(data.keywords)) out.push(['fail', 'keywords', 'contains ", " — spaces after commas waste index characters']);
+	const list = keywordList(data.keywords);
+	const dupes = list.filter((k, i) => list.findIndex((o) => o.toLocaleLowerCase() === k.toLocaleLowerCase()) !== i);
+	if (dupes.length) out.push(['fail', 'keywords', `duplicate terms: ${[...new Set(dupes)].join(', ')}`]);
+	const indexed = indexedWords(`${data.name ?? ''} ${data.subtitle ?? ''}`, tag);
+	const wasted = list.filter((k) => isCovered(k, indexed, tag));
+	if (wasted.length)
+		out.push(['warn', 'keywords', `already indexed via name/subtitle: ${wasted.join(', ')} — free up the slots`]);
+	return out;
+}
 
-	if (data.locale && data.locale !== locale)
-		fail('locale', `file says "${data.locale}" but is named ${basename(file)}`);
-
+/** Required-field (fail), length-limit (fail/warn) and URL-shape (fail) rules. */
+function fieldProblems(data) {
+	const out = [];
 	for (const field of REQUIRED) {
-		if (!String(data[field] ?? '').trim()) fail(field, 'required but empty');
+		if (!String(data[field] ?? '').trim()) out.push(['fail', field, 'required but empty']);
 	}
 	for (const [field, max] of Object.entries(LIMITS)) {
 		const value = data[field];
 		if (value == null) continue;
 		const len = charCount(value);
-		if (len > max) fail(field, `${len}/${max} chars — over limit`);
+		if (len > max) out.push(['fail', field, `${len}/${max} chars — over limit`]);
 		else if (field === 'keywords' && len < max * 0.8)
-			warn(field, `${len}/${max} chars — ${max - len} keyword characters unused`);
-	}
-	if (data.keywords) {
-		if (/,\s/.test(data.keywords))
-			fail('keywords', 'contains ", " — spaces after commas waste index characters');
-		const list = keywordList(data.keywords);
-		const dupes = list.filter((k, i) => list.findIndex((o) => o.toLocaleLowerCase() === k.toLocaleLowerCase()) !== i);
-		if (dupes.length) fail('keywords', `duplicate terms: ${[...new Set(dupes)].join(', ')}`);
-		const indexed = indexedWords(`${data.name ?? ''} ${data.subtitle ?? ''}`, tag);
-		const wasted = list.filter((k) => isCovered(k, indexed, tag));
-		if (wasted.length)
-			warn('keywords', `already indexed via name/subtitle: ${wasted.join(', ')} — free up the slots`);
+			out.push(['warn', field, `${len}/${max} chars — ${max - len} keyword characters unused`]);
 	}
 	for (const field of ['privacyPolicyUrl', 'supportUrl', 'marketingUrl']) {
 		const v = data[field];
-		if (v && !v.startsWith('https://')) fail(field, 'must be an https URL');
+		if (v && !v.startsWith('https://')) out.push(['fail', field, 'must be an https URL']);
 	}
+	return out;
+}
+
+export function lintListing({ locale, file, data }) {
+	const tag = data.locale ?? locale ?? 'en';
+	const problems = [];
+	const push = (level, field, message) => problems.push({ level, field, message, locale, file });
+
+	if (data.locale && data.locale !== locale)
+		push('fail', 'locale', `file says "${data.locale}" but is named ${basename(file)}`);
+
+	const groups = [fieldProblems(data)];
+	if (data.keywords) groups.push(keywordProblems(data, tag));
+	for (const group of groups) for (const [level, field, message] of group) push(level, field, message);
 	return problems;
 }
 

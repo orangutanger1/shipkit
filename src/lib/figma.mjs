@@ -61,11 +61,6 @@ export async function fileMeta(fileKey, token) {
 	return { version: body.version, lastModified: body.lastModified, name: body.name };
 }
 
-/** Raw node tree for the frames a spec names, for re-deriving geometry. */
-export async function fileNodes(fileKey, ids, token) {
-	return api(`/files/${fileKey}/nodes?ids=${ids.map(encodeURIComponent).join(',')}`, token);
-}
-
 /**
  * Export node images. This is the quota. Callers must be prepared for
  * `FigmaQuotaError` and must have something on disk to fall back to.

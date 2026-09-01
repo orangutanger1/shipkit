@@ -121,32 +121,8 @@ async function servedManifest(url, platform, runtimeVersion, branch) {
 	}
 }
 
-/**
- * The inner half: runs under `eas env:exec <environment>`, so process.env is
- * exactly what the published bundle will be built with. Every check here is
- * the difference between the 2026-08-25 incident and its absence.
- */
-async function publishInner({ cfg, flags, version }) {
-	const app = cfg.paths.app;
-	const branch = String(flags.branch ?? cfg.eas.channel);
-	const environment = String(flags.environment ?? cfg.eas.environment ?? 'production');
-	const scope = String(flags.platforms ?? 'ios');
-	const platforms = scope === 'all' ? ['ios', 'android'] : scope.split(',').filter(Boolean);
-	const message = flags['message-b64'] ? Buffer.from(String(flags['message-b64']), 'base64').toString('utf8') : '';
-	if (!message.trim()) throw new ShipError('ota inner: no message to publish');
-
-	const required = cfg.ota?.requiredEnv ?? [];
-	const missingEnv = required.filter((key) => !process.env[key]);
-	if (missingEnv.length)
-		throw new ShipError(
-			`${missingEnv.join(', ')} absent from the ${environment} environment — the bundle would ship without it`,
-			{ hint: 'create them with `eas env:create`, or adjust ota.requiredEnv in ship.config.json' },
-		);
-
-	const publicKeys = Object.keys(process.env).filter((k) => k.startsWith('EXPO_PUBLIC_'));
-	if (!publicKeys.length)
-		warn(`the ${environment} environment defines no EXPO_PUBLIC_* values — if this app needs any, the bundle will not have them`);
-
+/** The export-and-verify loop: rebuild per platform and prove the secrets landed in the bytes. */
+async function exportAndVerify({ app, platforms, required, publicKeys }) {
 	for (const platform of platforms) {
 		// `--clear` is load-bearing, not hygiene. EXPO_PUBLIC_* values are inlined
 		// by the transformer and Metro caches per file, not per environment, so an
@@ -180,6 +156,54 @@ async function publishInner({ cfg, flags, version }) {
 		good(`${platform}: ${basename(bundlePath)} verified (md5 ${digest})`);
 		if (unverified.length) note(`${unverified.join(', ')} defined but not inlined — fine if they are optional`);
 	}
+}
+
+/** Prove the branch actually serves what `eas update` just published. */
+async function verifyServed({ cfg, platforms, entries, branch, version }) {
+	const updatesUrl = (await readExpoConfig(cfg))?.updates?.url;
+	for (const platform of platforms) {
+		const update = entries.find((e) => e?.platform === platform) ?? entries[0];
+		if (!update?.id) throw new ShipError(`eas update published nothing identifiable for ${platform}`);
+		if (!updatesUrl) {
+			note(`no expo.updates.url in app.json — cannot verify what ${branch} serves`);
+			continue;
+		}
+		const manifest = await servedManifest(updatesUrl, platform, version, branch);
+		if (manifest?.id !== update.id)
+			throw new ShipError(
+				`${branch} serves ${manifest?.id ?? 'no update'} for ${platform}, not the ${update.id} just published — check the channel's branch mapping`,
+			);
+		good(`${platform}: ${branch} serves update ${update.id}`);
+	}
+}
+
+/**
+ * The inner half: runs under `eas env:exec <environment>`, so process.env is
+ * exactly what the published bundle will be built with. Every check here is
+ * the difference between the 2026-08-25 incident and its absence.
+ */
+async function publishInner({ cfg, flags, version }) {
+	const app = cfg.paths.app;
+	const branch = String(flags.branch ?? cfg.eas.channel);
+	const environment = String(flags.environment ?? cfg.eas.environment ?? 'production');
+	const scope = String(flags.platforms ?? 'ios');
+	const platforms = scope === 'all' ? ['ios', 'android'] : scope.split(',').filter(Boolean);
+	const message = flags['message-b64'] ? Buffer.from(String(flags['message-b64']), 'base64').toString('utf8') : '';
+	if (!message.trim()) throw new ShipError('ota inner: no message to publish');
+
+	const required = cfg.ota?.requiredEnv ?? [];
+	const missingEnv = required.filter((key) => !process.env[key]);
+	if (missingEnv.length)
+		throw new ShipError(
+			`${missingEnv.join(', ')} absent from the ${environment} environment — the bundle would ship without it`,
+			{ hint: 'create them with `eas env:create`, or adjust ota.requiredEnv in ship.config.json' },
+		);
+
+	const publicKeys = Object.keys(process.env).filter((k) => k.startsWith('EXPO_PUBLIC_'));
+	if (!publicKeys.length)
+		warn(`the ${environment} environment defines no EXPO_PUBLIC_* values — if this app needs any, the bundle will not have them`);
+
+	await exportAndVerify({ app, platforms, required, publicKeys });
 
 	step(`eas update ${c.dim(`(${scope})`)}`);
 	const res = await eas(
@@ -205,21 +229,7 @@ async function publishInner({ cfg, flags, version }) {
 	const published = salvageJSON(res.stdout);
 	const entries = Array.isArray(published) ? published : published ? [published] : [];
 
-	const updatesUrl = (await readExpoConfig(cfg))?.updates?.url;
-	for (const platform of platforms) {
-		const update = entries.find((e) => e?.platform === platform) ?? entries[0];
-		if (!update?.id) throw new ShipError(`eas update published nothing identifiable for ${platform}`);
-		if (!updatesUrl) {
-			note(`no expo.updates.url in app.json — cannot verify what ${branch} serves`);
-			continue;
-		}
-		const manifest = await servedManifest(updatesUrl, platform, version, branch);
-		if (manifest?.id !== update.id)
-			throw new ShipError(
-				`${branch} serves ${manifest?.id ?? 'no update'} for ${platform}, not the ${update.id} just published — check the channel's branch mapping`,
-			);
-		good(`${platform}: ${branch} serves update ${update.id}`);
-	}
+	await verifyServed({ cfg, platforms, entries, branch, version });
 	return 0;
 }
 
