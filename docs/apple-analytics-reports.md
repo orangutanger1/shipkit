@@ -57,6 +57,24 @@ than zero. **That distinction is the point** — `analytics diagnose` reads a
 missing report as `unknown` and names the command that would answer it, never
 as a passing stage.
 
+The absence is Apple's, not ours. Enumerating the `ONGOING` request on
+2026-08-28 returns nine report/granularity instances, and `App Sessions
+Standard` and `App Crashes` are not among them:
+
+```
+App Downloads Standard                        DAILY   segs=2   ← read
+App Store Installation and Deletion Standard  DAILY   segs=1   ← read
+App Store Discovery and Engagement Standard   DAILY   segs=1   ← read
+App Store Discovery and Engagement Standard   WEEKLY           ← skipped, granularity
+App Store Discovery and Engagement Detailed   DAILY/WEEKLY     ← skipped, not in REPORTS
+App Store Web Preview Engagement Std/Detailed DAILY            ← skipped, website surface
+Platform App Installs                         DAILY            ← skipped, not in REPORTS
+```
+
+So `analytics diagnose`'s hint for an unmeasured crash rate — *run `analytics
+pull`* — is the right instruction only once Apple provisions the report. There
+is no request field that asks for it; the report set is Apple's to populate.
+
 Notes on reading them:
 
 - **Only a first-time download is an install.** `Manual update` and
@@ -81,6 +99,14 @@ Store Connect web export instead: **Analytics → Metrics → Search Terms →
 Export**, then `ship analytics pull --file <export.csv>`.
 
 ## Timeouts
+
+`asc analytics requests` is **slow on a cold cache, not down.** First call of a
+session took 2m53s and returned normally; the next was 0.47s. It fails with
+`retry cancelled: context deadline exceeded`, which reads like an outage and is
+not one — bare `asc` behaves identically, so it is not shipkit. `ASC_TIMEOUT`
+is read from the environment and `run()` inherits `process.env`, so
+`ASC_TIMEOUT=300s ship analytics pull …` is the fix. Retry before concluding
+the endpoint is broken.
 
 `asc analytics download` can exceed its own default request timeout on a large
 segment. It says so — *"Hint: Increase the request timeout (e.g. set
