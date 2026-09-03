@@ -18,6 +18,9 @@ import { gateOnLint, lint, pull, apply, migrate, keywords } from '../lib/listing
 import { cpp } from '../lib/cpp-asc.mjs';
 import { strOf } from '../lib/util.mjs';
 
+/** @typedef {import('../lib/util.mjs').Flags} Flags */
+/** @typedef {import('../lib/util.mjs').SubCtx} SubCtx */
+
 export const help = `
 ${c.bold('ship meta')} ${c.dim('— App Store listing metadata')}
 
@@ -50,8 +53,13 @@ ${c.dim('Keyword research lives in `ship aso`; this command only enforces the fi
 `;
 
 /** Expand staged/<locale>.json into the tree `asc metadata apply --dir` consumes. */
+/**
+ * @param {SubCtx} ctx
+ * @returns {Promise<number>}
+ */
 async function stage({ flags }) {
 	const cfg = await loadConfig();
+	if (!cfg) throw new ShipError('no ship.config.json found', { hint: 'run `ship init` inside the app repo to create one' });
 	const version = await resolveVersion(cfg, strOf(flags.version));
 	heading(`${cfg.name} ${version} — stage`);
 	await gateOnLint(cfg, flags);
@@ -68,8 +76,13 @@ async function stage({ flags }) {
 	return 0;
 }
 
+/** @type {Record<string, (ctx: SubCtx) => Promise<number>>} */
 const SUB = { lint, stage, pull, apply, migrate, keywords, cpp };
 
+/**
+ * @param {SubCtx} ctx
+ * @returns {Promise<number>}
+ */
 export async function run({ args, flags }) {
 	const [sub = 'lint', ...rest] = args;
 	const fn = SUB[sub];

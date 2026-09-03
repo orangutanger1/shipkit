@@ -20,9 +20,204 @@ import { existsSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { ShipError } from '../log.mjs';
 
-export const MODES = ['device-frame', 'caption-band'];
+/** Canvas size in pixels; every other number in a spec is in this coordinate space. */
+/** @typedef {{w: number, h: number}} Canvas */
+
+/** A rect in mockup coordinates: the screen group and the artboard. */
+/** @typedef {{x: number, y: number, w: number, h: number}} Rect */
+
+/**
+ * A caption box as the renderer consumes it: the top edge the block grows from,
+ * the centre it stays on, and the width wrapping may use.
+ * @typedef {{y: number, centre: number, wrap: number}} CaptionBox
+ */
+
+/**
+ * A font entry resolved at load: `file` absolute, `variation` the variable-font
+ * instance when the spec states one.
+ * @typedef {{file: string|null, variation: Record<string, number>|null}} FontEntry
+ */
+
+/** The spec's font block with entries resolved to {@link FontEntry}. */
+/** @typedef {{default: FontEntry, byLocale: Record<string, FontEntry>}} SpecFonts */
+
+/** A font entry as written in the spec: a store-relative path or `{file, variation}`. */
+/** @typedef {string|{file?: string|null, variation?: Record<string, number>|null}} RawFontEntry */
+
+/** The font block as written. */
+/** @typedef {{default?: RawFontEntry, byLocale?: Record<string, RawFontEntry>}} RawFonts */
+
+/**
+ * Caption typesetting, shared by both modes.
+ * @typedef {Object} SpecType
+ * @property {number} size
+ * @property {number} lineHeight
+ * @property {string} colour
+ * @property {'balanced'|'greedy'} wrap
+ * @property {number} targetMinSize
+ * @property {number} minSize
+ * @property {number} step
+ * @property {number} gap
+ * @property {number} extraLines
+ * @property {number|null} margin
+ * @property {string[]} perCharacterLocales
+ * @property {SpecSubtitle|null} subtitle
+ */
+
+/**
+ * The optional second run's ramp and baseline gap.
+ * @typedef {Object} SpecSubtitle
+ * @property {number} size
+ * @property {number} lineHeight
+ * @property {string} colour
+ * @property {number} minSize
+ * @property {number} step
+ * @property {number} gap
+ * @property {Record<string, number>|null} variation
+ */
+
+/**
+ * caption-band only: how the band is found, gated and repainted.
+ * @typedef {Object} SpecBand
+ * @property {number} inkTolerance
+ * @property {number} flatMin
+ * @property {number} pad
+ * @property {number} clearance
+ */
+
+/** One mockup layer export, in Figma z-order. */
+/** @typedef {{file: string, x: number, y: number, w: number, h: number}} DeviceLayer */
+
+/**
+ * device-frame only: the mockup rebuilt from committed Figma layer exports.
+ * @typedef {Object} SpecDevice
+ * @property {number} w
+ * @property {number} h
+ * @property {string} [parts]
+ * @property {number} screenIndex
+ * @property {string} screenMask
+ * @property {DeviceLayer[]} layers
+ * @property {Rect} screenGroup
+ * @property {Rect} artboard
+ */
+
+/**
+ * device-frame only: how `ship shots capture` drives the app's web build.
+ * @typedef {Object} SpecCapture
+ * @property {string} [url]
+ * @property {{width: number, height: number, deviceScaleFactor: number}} [viewport]
+ * @property {boolean} [hideScrollbars]
+ * @property {number} [settleMs]
+ * @property {number} [timeoutMs]
+ * @property {string|null} [localeParam]
+ * @property {{seed?: string, default?: import('./util.mjs').JsonObject, byLocale?: Record<string, import('./util.mjs').JsonObject>}} [storage]
+ * @property {Array<{frame: string, path?: string, waitFor?: string, evaluate?: string}>} [screens]
+ */
+
+/** A caption box as written; `centre`/`wrap` are derived at load. */
+/** @typedef {{x?: number, y?: number, w?: number, centre?: number, wrap?: number}} RawCaption */
+
+/**
+ * One frame as written, before the validator fills defaults.
+ * @typedef {Object} RawFrame
+ * @property {string} [key]
+ * @property {string} [src]
+ * @property {string} [out]
+ * @property {string} [node]
+ * @property {string} [bg]
+ * @property {{x: number, y: number}} [phone]
+ * @property {RawCaption} [caption]
+ * @property {number[][]} [crop]
+ * @property {boolean} [cover]
+ * @property {string} [base]
+ * @property {number} [mockTop]
+ * @property {number} [mockH]
+ * @property {string} [captionChanged]
+ */
+
+/** Where this geometry came from in Figma, plus the pinned version. */
+/** @typedef {{figmaFile?: string, frameIds?: Record<string, string>, page?: string, instance?: string, note?: string, version?: string, lastModified?: string, checkedAt?: string}} RawSource */
+
+/** caption-band only: which finished images are repainted, and where from. */
+/** @typedef {{sourceLocale?: string, country?: string, dir?: string}} RawBase */
+
+/** Absolute paths derived from the spec and config at load. */
+/** @typedef {{raw: string, out: string, captions: string, parts: string, ref: string|null, base: string}} SpecPaths */
+
+/**
+ * One frame after normalisation. Mode-required fields are typed as present —
+ * the validator throws before a render reaches the mode that reads them.
+ * @typedef {Object} ShotFrame
+ * @property {string} key
+ * @property {string} src
+ * @property {string} [out]
+ * @property {string} [node]
+ * @property {string} [bg]
+ * @property {{x: number, y: number}} phone
+ * @property {CaptionBox} caption
+ * @property {number[][]} crop
+ * @property {boolean} [cover]
+ * @property {string} base
+ * @property {number} mockTop
+ * @property {number} mockH
+ * @property {string} [captionChanged]
+ */
+
+/**
+ * The normalised spec every renderer consumes: blocks defaulted, paths
+ * absolute, caption boxes carrying centre + wrap. Reached only through
+ * {@link normaliseSpec}, which has validated or filled every field declared here.
+ * @typedef {Object} ShotSpec
+ * @property {'device-frame'|'caption-band'} mode
+ * @property {string} displayType
+ * @property {Canvas} canvas
+ * @property {SpecType} type
+ * @property {SpecBand} band
+ * @property {SpecDevice} device
+ * @property {SpecCapture} capture
+ * @property {SpecFonts} fonts
+ * @property {ShotFrame[]} frames
+ * @property {RawSource} source
+ * @property {RawBase} base
+ * @property {string} [raw]
+ * @property {string} [captions]
+ * @property {string} [ref]
+ * @property {SpecPaths} paths
+ * @property {string} file
+ */
+
+/** One frame's copy: a headline, and the subtitle when the copy carries one. */
+/** @typedef {{headline: string, subtitle: string|null}} CaptionRuns */
+
+/** Caption copy as loaded: `locale → frameKey → copy`. */
+/** @typedef {Record<string, import('./util.mjs').JsonObject>} Captions */
+
+/**
+ * A spec as parsed from JSON, before validation and defaulting. Blocks the
+ * validator fills unconditionally (`type`, `band`, `paths`, `canvas`, `base`,
+ * `source`) are typed as present because every read happens after the fill.
+ * @typedef {Object} RawSpec
+ * @property {string} mode
+ * @property {string} displayType
+ * @property {Canvas} canvas
+ * @property {RawFrame[]} frames
+ * @property {SpecType} type
+ * @property {SpecBand} band
+ * @property {SpecDevice} [device]
+ * @property {SpecCapture} [capture]
+ * @property {RawFonts} [fonts]
+ * @property {RawSource} source
+ * @property {RawBase} base
+ * @property {string} [raw]
+ * @property {string} [captions]
+ * @property {string} [ref]
+ * @property {SpecPaths} paths
+ */
+
+const MODES = ['device-frame', 'caption-band'];
 
 /** Type defaults. Sizes are canvas pixels, matching Figma's own numbers. */
+/** @type {SpecType} */
 const TYPE_DEFAULTS = {
 	size: 128,
 	lineHeight: 160,
@@ -70,6 +265,7 @@ const TYPE_DEFAULTS = {
  * deliberately not derived from the headline: the designer chose a ratio, and
  * guessing one produces a subtitle that is subtly wrong in every frame.
  */
+/** @type {SpecSubtitle} */
 const SUBTITLE_DEFAULTS = {
 	size: 64,
 	lineHeight: 80,
@@ -92,6 +288,7 @@ const SUBTITLE_DEFAULTS = {
 	variation: null,
 };
 
+/** @type {SpecBand} */
 const BAND_DEFAULTS = {
 	/** Per-channel distance from the band background that counts as glyph ink. */
 	inkTolerance: 26,
@@ -110,12 +307,17 @@ const BAND_DEFAULTS = {
 /**
  * Resolve a spec-relative path. Spec paths are relative to the store directory,
  * so a spec can be copied between repos whose app roots differ.
+ * @param {import('../config.mjs').Config} cfg
+ * @returns {(p: string|null|undefined) => string|null}
  */
 const resolver = (cfg) => (p) => (p == null ? null : isAbsolute(p) ? p : join(cfg.paths.store, p));
 
 /**
  * Load `store/<shots.spec>`; `null` when the app has no render pipeline, which
  * is the normal case — most repos bring finished PNGs and only upload them.
+ * @param {import('../config.mjs').Config} cfg
+ * @param {{required?: boolean}} [opts]
+ * @returns {Promise<ShotSpec|null>}
  */
 export async function loadSpec(cfg, { required = false } = {}) {
 	const file = join(cfg.paths.store, cfg.shots.spec);
@@ -125,11 +327,14 @@ export async function loadSpec(cfg, { required = false } = {}) {
 			hint: 'this repo uploads screenshots but does not render them; see `ship shots --help`',
 		});
 	}
+	/** @type {RawSpec} */
 	let raw;
 	try {
 		raw = JSON.parse(await readFile(file, 'utf8'));
 	} catch (err) {
-		throw new ShipError(`${file} is not valid JSON`, { hint: err.message });
+		throw new ShipError(`${file} is not valid JSON`, {
+			hint: err instanceof Error ? err.message : String(err),
+		});
 	}
 	return normaliseSpec(raw, cfg, file);
 }
@@ -138,9 +343,14 @@ export async function loadSpec(cfg, { required = false } = {}) {
  * Validate and fill a spec. Every failure here is one that would otherwise show
  * up as a wrong-looking PNG on the App Store, so they are all fatal.
  */
-/** Validate + default the type block, including the two-run subtitle axes. */
+/**
+ * Validate + default the type block, including the two-run subtitle axes.
+ * @param {RawSpec} spec
+ * @param {string} file
+ * @returns {void}
+ */
 function normaliseType(spec, file) {
-	spec.type = { ...TYPE_DEFAULTS, ...(spec.type ?? {}) };
+	spec.type = { ...TYPE_DEFAULTS, ...spec.type };
 	if (!spec.type.subtitle) return;
 	spec.type.subtitle = { ...SUBTITLE_DEFAULTS, ...spec.type.subtitle };
 	const st = spec.type.subtitle;
@@ -153,30 +363,45 @@ function normaliseType(spec, file) {
 	if (!(st.step > 0)) throw new ShipError(`${file}: type.subtitle.step must be positive`);
 }
 
-/** Resolve font entries (path or `{file, variation}`) and require a default face. */
+/**
+ * Resolve font entries (path or `{file, variation}`) and require a default face.
+ * @param {RawSpec} spec
+ * @param {(p: string|null|undefined) => string|null} abs
+ * @param {string} file
+ * @returns {void}
+ */
 function normaliseFonts(spec, abs, file) {
 	// The variation is not decoration: a variable face opens on its default
 	// instance, which for Noto Sans is Regular, so a design calling for Bold
 	// silently renders light and every caption comes out narrower than the
 	// reference.
+	/** @param {RawFontEntry|undefined} v @returns {FontEntry} */
 	const fontEntry = (v) =>
 		typeof v === 'string' ? { file: abs(v), variation: null } : { file: abs(v?.file), variation: v?.variation ?? null };
-	spec.fonts = {
+	/** @type {SpecFonts} */
+	const fonts = {
 		default: fontEntry(spec.fonts?.default),
 		byLocale: Object.fromEntries(
 			Object.entries(spec.fonts?.byLocale ?? {}).map(([k, v]) => [k, fontEntry(v)]),
 		),
 	};
-	if (!spec.fonts.default.file)
+	spec.fonts = fonts;
+	if (!fonts.default.file)
 		throw new ShipError(`${file}: fonts.default is required`, {
 			hint: 'point it at the same face the design uses; a substitute drifts caption widths',
 		});
 }
 
-/** Caption boxes: record each box's centre and the width wrapping may use. */
+/**
+ * Caption boxes: record each box's centre and the width wrapping may use.
+ * @param {RawSpec} spec
+ * @param {string} file
+ * @returns {void}
+ */
 function normaliseCaptionBoxes(spec, file) {
 	for (const frame of spec.frames) {
 		if (!frame.key) throw new ShipError(`${file}: every frame needs a key`);
+		/** @type {RawCaption} */
 		const box = frame.caption ?? {};
 		const centre = box.x != null && box.w != null ? box.x + box.w / 2 : spec.canvas.w / 2;
 		const room =
@@ -189,10 +414,18 @@ function normaliseCaptionBoxes(spec, file) {
 
 /**
  * Validate and fill a spec. Every failure here is one that would otherwise show
- * up as a wrong-looking PNG on the App Store, so they are all fatal.
+ * up as a wrong-looking PNG on the App Store, so they are all fatal. The return
+ * cast is the normalisation contract: everything {@link ShotSpec} declares has
+ * been checked or filled above, which TS cannot follow through the in-place fills.
+ * @param {RawSpec} raw
+ * @param {import('../config.mjs').Config} cfg
+ * @param {string} [file]
+ * @returns {ShotSpec}
  */
 export function normaliseSpec(raw, cfg, file = '<spec>') {
 	const abs = resolver(cfg);
+	// The paths below always pass a defaulted string, so the resolver never sees null.
+	const absStr = /** @type {(p: string) => string} */ (abs);
 	const spec = { ...raw, file };
 
 	if (!MODES.includes(spec.mode))
@@ -204,16 +437,18 @@ export function normaliseSpec(raw, cfg, file = '<spec>') {
 
 	spec.displayType = spec.displayType ?? 'IPHONE_65';
 	normaliseType(spec, file);
-	spec.band = { ...BAND_DEFAULTS, ...(spec.band ?? {}) };
+	spec.band = { ...BAND_DEFAULTS, ...spec.band };
 	spec.source = spec.source ?? {};
 	normaliseFonts(spec, abs, file);
 
 	spec.paths = {
-		raw: abs(spec.raw ?? 'screenshots-raw'),
+		raw: absStr(spec.raw ?? 'screenshots-raw'),
 		out: join(cfg.paths.store, 'screenshots'),
-		captions: abs(spec.captions ?? 'screenshot-captions.json'),
-		parts: abs(spec.device?.parts ?? 'figma-export/parts'),
+		captions: absStr(spec.captions ?? 'screenshot-captions.json'),
+		parts: absStr(spec.device?.parts ?? 'figma-export/parts'),
 		ref: abs(spec.ref ?? null),
+		// Filled by normaliseBand; device-frame never reads it.
+		base: '',
 	};
 
 	normaliseCaptionBoxes(spec, file);
@@ -221,9 +456,14 @@ export function normaliseSpec(raw, cfg, file = '<spec>') {
 	if (spec.mode === 'device-frame') normaliseDevice(spec, file);
 	else normaliseBand(spec, cfg, file);
 
-	return spec;
+	return /** @type {ShotSpec} */ (spec);
 }
 
+/**
+ * @param {RawSpec} spec
+ * @param {string} file
+ * @returns {void}
+ */
 function normaliseDevice(spec, file) {
 	const d = spec.device;
 	if (!d?.w || !d?.h) throw new ShipError(`${file}: device.w and device.h are required`);
@@ -243,11 +483,18 @@ function normaliseDevice(spec, file) {
 			throw new ShipError(`${file}: frame ${frame.key} needs src (the raw capture filename)`);
 }
 
+/**
+ * @param {RawSpec} spec
+ * @param {import('../config.mjs').Config} cfg
+ * @param {string} file
+ * @returns {void}
+ */
 function normaliseBand(spec, cfg, file) {
 	spec.base = spec.base ?? {};
 	spec.base.sourceLocale = spec.base.sourceLocale ?? cfg.asc.primaryLocale;
+	// With `dir` set the resolver always resolves it; its null belongs to absent paths.
 	spec.paths.base = spec.base.dir
-		? resolver(cfg)(spec.base.dir)
+		? /** @type {string} */ (resolver(cfg)(spec.base.dir))
 		: join(spec.paths.raw, spec.base.sourceLocale, spec.displayType);
 	for (const frame of spec.frames) {
 		frame.base = frame.base ?? `${frame.key}.png`;
@@ -264,12 +511,17 @@ function normaliseBand(spec, cfg, file) {
  * Copy is either a plain string — the headline, which is every app today — or
  * `{ headline, subtitle }`. A missing subtitle is not an error: a frame without
  * one renders the headline alone, positioned exactly as it is now.
+ * @param {import('./util.mjs').Json|undefined} entry
+ * @returns {CaptionRuns|null}
  */
 export function captionRuns(entry) {
 	if (entry == null) return null;
 	if (typeof entry === 'string') return { headline: entry, subtitle: null };
-	if (typeof entry === 'object' && typeof entry.headline === 'string')
-		return { headline: entry.headline, subtitle: entry.subtitle || null };
+	if (typeof entry === 'object' && !Array.isArray(entry) && typeof entry.headline === 'string')
+		return {
+			headline: entry.headline,
+			subtitle: typeof entry.subtitle === 'string' ? entry.subtitle : null,
+		};
 	return null;
 }
 
@@ -278,23 +530,37 @@ export function captionRuns(entry) {
  *   { "en-US": { "01": "…" } }                     — flat
  *   { "locales": { "en-US": { "captions": {…} } } } — annotated
  * Both round-trip to `locale → frameKey → string`.
+ * @param {ShotSpec} spec
+ * @returns {Promise<Captions>}
  */
 export async function loadCaptions(spec) {
+	/** @type {import('./util.mjs').Json} */
 	const raw = JSON.parse(await readFile(spec.paths.captions, 'utf8'));
-	const src = raw.locales ?? raw;
+	const src =
+		typeof raw === 'object' && raw !== null && !Array.isArray(raw) && raw.locales != null ? raw.locales : raw;
+	/** @type {Record<string, import('./util.mjs').JsonObject>} */
 	const out = {};
-	for (const [locale, entry] of Object.entries(src)) {
+	for (const [locale, entry] of Object.entries(/** @type {Record<string, import('./util.mjs').Json>} */ (src))) {
 		if (locale.startsWith('_') || locale === 'source' || locale === 'notes' || locale === 'frames')
 			continue;
-		const captions = entry?.captions ?? entry;
-		if (captions && typeof captions === 'object') out[locale] = captions;
+		const captions =
+			entry !== null && typeof entry === 'object' && !Array.isArray(entry)
+				? entry.captions ?? entry
+				: entry;
+		if (captions && typeof captions === 'object' && !Array.isArray(captions)) out[locale] = captions;
 	}
 	if (!Object.keys(out).length)
 		throw new ShipError(`${spec.paths.captions} defines no locales`);
 	return out;
 }
 
-/** Locales to act on: explicit list, else every locale with caption copy. */
+/**
+ * Locales to act on: explicit list, else every locale with caption copy.
+ * @param {import('../config.mjs').Config} cfg
+ * @param {Captions} captions
+ * @param {string[]} [requested]
+ * @returns {string[]}
+ */
 export function localesFor(cfg, captions, requested) {
 	const known = new Set(Object.keys(captions));
 	if (requested?.length) {

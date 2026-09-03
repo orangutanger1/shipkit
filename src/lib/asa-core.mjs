@@ -28,10 +28,36 @@
 import { ShipError } from '../log.mjs';
 import { clamp100, money, num, round2 } from './fmt.mjs';
 
-export const pos = (v) => {
+/** @typedef {import('./util.mjs').Json} Json */
+/** @typedef {import('./util.mjs').JsonObject} JsonObject */
+
+/** The resolved bid model for one plan run: the numbers and where they came from. */
+/** @typedef {{seed: number, min: number, max: number, source: string, observedCpt: number|null, derivation: string}} Bidding */
+/** One keyword's resolved bid: what the model derived and whether the clamp fired. */
+/** @typedef {{amount: number, raw: number, clamped: boolean}} PlannedBid */
+/** One kill-rule threshold, stamped onto every artifact that applies it. */
+/** @typedef {{targetCpi: number, source: string, wasteThreshold: number, minTaps: number, baselineInstallRate: number, confidence: number, breakeven: number|null, retentionMonths: number, condition: string, derivation: string}} KillRule */
+/** Observed campaign: what `snapshot` writes and `reconcile` reads. */
+/** @typedef {{id: string|null, name: string|null, status: string|null, displayStatus: string|null, dailyBudget: number|null, countriesOrRegions: Json, modificationTime: string|null, adGroups: LiveAdGroup[], negativeKeywords: LiveKeyword[]}} LiveCampaign */
+/** @typedef {{id: string|null, name: string|null, status: string|null, displayStatus: string|null, defaultBidAmount: number|null, automatedKeywordsOptIn: boolean, modificationTime: string|null, keywords: LiveKeyword[]}} LiveAdGroup */
+/** @typedef {{id: string|null, text: string|null, matchType: string|null, status: string|null, bidAmount: number|null, modificationTime: string|null}} LiveKeyword */
+
+/**
+ * @param {number|null|undefined} v
+ * @returns {number|null}
+ */
+const pos = (v) => {
 	const n = Number(v);
 	return Number.isFinite(n) && n > 0 ? n : null;
 };
+
+/**
+ * Apple's name/status/time fields are strings or absent; anything else in a
+ * payload reads as absent, so a corrupt row cannot poison the snapshot.
+ * @param {Json|undefined} v
+ * @returns {string|null}
+ */
+const strOrNull = (v) => (typeof v === 'string' ? v : null);
 
 // ─── bids ────────────────────────────────────────────────────────────────────
 
@@ -44,7 +70,11 @@ export const pos = (v) => {
 export const BID = { floor: 0.3, ceiling: 2.0, seed: 0.6 };
 
 /** A term everybody types is a term everybody bids on: demand 0 → 0.75×, 100 → 1.25×. */
-export const demandFactor = (demand) => 0.75 + clamp100(demand) / 200;
+/**
+ * @param {string|number|boolean|null|undefined} demand
+ * @returns {number}
+ */
+const demandFactor = (demand) => 0.75 + clamp100(demand) / 200;
 
 /**
  * Resolve one bid model for a whole plan, from the most trustworthy source that
@@ -52,7 +82,8 @@ export const demandFactor = (demand) => 0.75 + clamp100(demand) / 200;
  * built-in seed, and the answer carries its own provenance so the plan can say
  * where its prices came from instead of asserting a formula.
  *
- * @param {{bid?:number, minBid?:number, maxBid?:number, observedCpt?:number, seedBid?:number}} opts
+ * @param {{bid?: number|null, minBid?: number|null, maxBid?: number|null, observedCpt?: number|null, seedBid?: number|null}} [opts]
+ * @returns {Bidding}
  */
 export function resolveBidding({ bid, minBid, maxBid, observedCpt, seedBid } = {}) {
 	const explicit = pos(bid);
@@ -91,6 +122,10 @@ export function resolveBidding({ bid, minBid, maxBid, observedCpt, seedBid } = {
 /**
  * One keyword's bid. Returns whether the clamp fired, because a plan where the
  * clamp fired for *every* keyword is a plan whose model did nothing.
+ *
+ * @param {string|number|boolean|null|undefined} demand
+ * @param {Bidding} bidding
+ * @returns {PlannedBid}
  */
 export function bidFor(demand, bidding) {
 	const raw = round2(num(bidding.seed) * demandFactor(demand));
@@ -102,9 +137,13 @@ export function bidFor(demand, bidding) {
  * Refuse a plan in which the opportunity model had no effect on a single price.
  * This is the exact failure that put 15 keywords on an identical $0.30 bid: the
  * derivation ran, every result was clamped, and the plan looked deliberate.
+ *
+ * @param {(PlannedBid|null|undefined)[]} bids
+ * @param {Bidding} bidding
+ * @returns {void}
  */
 export function assertBidSpread(bids, bidding) {
-	const list = bids.filter((b) => b);
+	const list = bids.filter(/** @param {PlannedBid|null|undefined} b @returns {b is PlannedBid} */ (b) => Boolean(b));
 	if (!list.length || list.some((b) => !b.clamped)) return;
 	const at = list[0].amount;
 	throw new ShipError(
@@ -121,9 +160,9 @@ export function assertBidSpread(bids, bidding) {
 // ─── the kill rule ───────────────────────────────────────────────────────────
 
 /** Tap→install rate below which a keyword was never going to work anyway. */
-export const BASELINE_INSTALL_RATE = 0.4;
+const BASELINE_INSTALL_RATE = 0.4;
 /** How sure we insist on being that "zero installs" means "will not convert". */
-export const KILL_CONFIDENCE = 0.95;
+const KILL_CONFIDENCE = 0.95;
 
 /**
  * Taps needed before zero installs is evidence rather than noise.
@@ -131,6 +170,10 @@ export const KILL_CONFIDENCE = 0.95;
  * At a 40% rate and 95% confidence that is 6 taps; at 3 taps a perfectly healthy
  * keyword shows nothing 22% of the time, which is how a weekly cycle silently
  * negates two keywords out of nine.
+ *
+ * @param {number|null|undefined} [rate=BASELINE_INSTALL_RATE]
+ * @param {number|null|undefined} [confidence=KILL_CONFIDENCE]
+ * @returns {number}
  */
 export function tapsForConfidence(rate = BASELINE_INSTALL_RATE, confidence = KILL_CONFIDENCE) {
 	const r = Math.min(0.999, Math.max(0.001, num(rate, BASELINE_INSTALL_RATE)));
@@ -144,6 +187,9 @@ export function tapsForConfidence(rate = BASELINE_INSTALL_RATE, confidence = KIL
  * the config that produced it — the three-way disagreement between config
  * ($1.40), plan document ($2.99) and committed artifact ($29.98) was possible
  * only because each recomputed the number from a different input.
+ *
+ * @param {{targetCpi?: number|null, subPrice?: number|null, retentionMonths?: number, baselineInstallRate?: number|null, minTaps?: number|null, confidence?: number|null, source?: string}} [opts]
+ * @returns {KillRule}
  */
 export function resolveKillRule({
 	targetCpi,
@@ -184,6 +230,7 @@ export function resolveKillRule({
  * Config coherence. `targetCpi` and `subPrice` are independently settable into
  * contradiction, and a target CPI above everything a subscriber will ever pay is
  * not a target — it is a decision to lose money, made by arithmetic nobody read.
+ * @param {{targetCpi?: number|null, subPrice?: number|null, retentionMonths?: number|null, seedBid?: number|null}} [ads]
  * @returns {{errors: string[], warnings: string[]}}
  */
 export function checkAdsConfig(ads = {}) {
@@ -209,54 +256,75 @@ export function checkAdsConfig(ads = {}) {
 	}
 	if (cpi && !sub)
 		warnings.push('ads.targetCpi is set without ads.subPrice, so nothing checks it against revenue');
-	if (pos(ads.seedBid) && pos(ads.seedBid) < BID.floor)
-		errors.push(`ads.seedBid ${money(ads.seedBid)} is under Apple's ${money(BID.floor)} minimum bid`);
+	const seedBid = pos(ads.seedBid);
+	if (seedBid !== null && seedBid < BID.floor)
+		errors.push(`ads.seedBid ${money(seedBid)} is under Apple's ${money(BID.floor)} minimum bid`);
 	return { errors, warnings };
 }
 
 // ─── observed state ──────────────────────────────────────────────────────────
 
-const amount = (v) => (v === null || v === undefined ? null : round2(v?.amount ?? v));
+/**
+ * Apple money arrives as `{amount, currency}` or a bare number; `round2` of
+ * anything else stays NaN, so junk can never read as a real price.
+ * @param {Json} v
+ * @returns {number|null}
+ */
+const amount = (v) =>
+	v === null || v === undefined
+		? null
+		: round2(Number(typeof v === 'object' && !Array.isArray(v) ? v.amount ?? v : v));
 
 /**
  * Apple's payloads → the flat shape `snapshot` writes and `reconcile` reads.
  * Both directions go through here so observed state has exactly one shape.
+ *
+ * @param {JsonObject} [raw]
+ * @returns {LiveCampaign}
  */
 export function normaliseCampaign(raw = {}) {
 	return {
 		id: raw.id === undefined || raw.id === null ? null : String(raw.id),
-		name: raw.name ?? null,
-		status: raw.status ?? raw.servingStatus ?? null,
-		displayStatus: raw.displayStatus ?? raw.servingStatus ?? null,
+		name: strOrNull(raw.name),
+		status: strOrNull(raw.status) ?? strOrNull(raw.servingStatus),
+		displayStatus: strOrNull(raw.displayStatus) ?? strOrNull(raw.servingStatus),
 		dailyBudget: amount(raw.dailyBudgetAmount ?? raw.dailyBudget),
 		countriesOrRegions: raw.countriesOrRegions ?? [],
-		modificationTime: raw.modificationTime ?? null,
+		modificationTime: strOrNull(raw.modificationTime),
 		adGroups: [],
 		negativeKeywords: [],
 	};
 }
 
+/**
+ * @param {JsonObject} [raw]
+ * @returns {LiveAdGroup}
+ */
 export function normaliseAdGroup(raw = {}) {
 	return {
 		id: raw.id === undefined || raw.id === null ? null : String(raw.id),
-		name: raw.name ?? null,
-		status: raw.status ?? null,
-		displayStatus: raw.displayStatus ?? raw.servingStatus ?? null,
+		name: strOrNull(raw.name),
+		status: strOrNull(raw.status),
+		displayStatus: strOrNull(raw.displayStatus) ?? strOrNull(raw.servingStatus),
 		defaultBidAmount: amount(raw.defaultBidAmount),
 		automatedKeywordsOptIn: Boolean(raw.automatedKeywordsOptIn),
-		modificationTime: raw.modificationTime ?? null,
+		modificationTime: strOrNull(raw.modificationTime),
 		keywords: [],
 	};
 }
 
+/**
+ * @param {JsonObject} [raw]
+ * @returns {LiveKeyword}
+ */
 export function normaliseKeyword(raw = {}) {
 	return {
 		id: raw.id === undefined || raw.id === null ? null : String(raw.id),
-		text: raw.text ?? null,
-		matchType: raw.matchType ?? null,
-		status: raw.status ?? null,
+		text: strOrNull(raw.text),
+		matchType: strOrNull(raw.matchType),
+		status: strOrNull(raw.status),
 		bidAmount: amount(raw.bidAmount),
-		modificationTime: raw.modificationTime ?? null,
+		modificationTime: strOrNull(raw.modificationTime),
 	};
 }
 
@@ -266,6 +334,9 @@ export function normaliseKeyword(raw = {}) {
  * machine seven hours behind UTC that reads an object modified five hours ago as
  * modified two hours from now — enough to make `sync` refuse a plan that is
  * genuinely newer. The values are UTC, so they are read as UTC.
+ *
+ * @param {Json|undefined} t
+ * @returns {number|null}
  */
 export const parseAppleTime = (t) => {
 	const s = String(t ?? '').trim();
@@ -275,8 +346,13 @@ export const parseAppleTime = (t) => {
 };
 
 /** Most recent `modificationTime` anywhere in an observed account, as epoch ms. */
+/**
+ * @param {{campaigns?: LiveCampaign[]}|null|undefined} account
+ * @returns {number|null}
+ */
 export function lastModified(account) {
 	let latest = 0;
+	/** @param {Json} t */
 	const visit = (t) => {
 		const ms = parseAppleTime(t);
 		if (ms !== null && ms > latest) latest = ms;
@@ -299,15 +375,15 @@ export function lastModified(account) {
  * worth. A CPI target is meaningless without it — $0.70 per install against a 0%
  * install→paid rate is $0.70 per install of nothing.
  *
- * @param {{installs?:number, customers?:number, trials?:number, subscriptions?:number, revenue?:number, mrr?:number}} m
- * @param {{subPrice?:number, retentionMonths?:number}} opts
+ * @param {{installs?: number, customers?: number, trials?: number, subscriptions?: number, revenue?: number, mrr?: number}} m
+ * @param {{subPrice?: number|null, retentionMonths?: number}} opts
  */
 export function monetisation(m = {}, { subPrice = null, retentionMonths = 1 } = {}) {
 	const customers = num(m.customers);
 	const trials = num(m.trials);
 	const subscriptions = num(m.subscriptions);
-	const revenue = round2(m.revenue);
-	const mrr = round2(m.mrr);
+	const revenue = round2(Number(m.revenue));
+	const mrr = round2(Number(m.mrr));
 	// New customers is the closest thing RevenueCat has to installs it saw.
 	const base = pos(m.installs) ?? pos(customers);
 	const installToPaid = base ? subscriptions / base : null;

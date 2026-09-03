@@ -60,7 +60,7 @@ export async function fetchSizes({ all = true } = {}) {
  * with 429s.
  */
 const VERSION_IDS = new Map();
-export async function versionId(appId, version) {
+async function versionId(appId, version) {
 	const key = `${appId}\u0000${version}`;
 	if (!VERSION_IDS.has(key)) {
 		const versions = await asc(
@@ -104,7 +104,7 @@ export async function localizationId(appId, version, locale) {
  * counts too.
  * @returns {Promise<Map<string, {n:number, dims:Set<string>}>>}
  */
-export async function remoteSets(appId, version, locale) {
+async function remoteSets(appId, version, locale) {
 	const vlid = await localizationId(appId, version, locale);
 	const res = await asc(['screenshots', 'list', '--version-localization', vlid], {
 		fallback: null,

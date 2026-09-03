@@ -18,7 +18,7 @@ export const byLength = (a, b) => a.length - b.length || a.localeCompare(b);
 export const scoredTerms = (artifact) => artifact?.terms ?? artifact?.scored ?? [];
 
 /** Scored terms whose every word is already covered by name/subtitle. */
-export function coveredTerms(scored, alreadyIndexed, locale) {
+function coveredTerms(scored, alreadyIndexed, locale) {
 	const indexed = indexedWords(alreadyIndexed, locale);
 	if (!indexed.size) return [];
 	return scored

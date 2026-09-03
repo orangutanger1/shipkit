@@ -2,6 +2,9 @@
 import { ShipError, c, heading } from './log.mjs';
 import { setDryRun, setVerbose } from './exec.mjs';
 
+/** @typedef {import('./lib/util.mjs').Flags} Flags */
+/** @typedef {import('./lib/util.mjs').JsonObject} JsonObject */
+
 /**
  * Command registry. Each entry lazily imports its module so startup stays fast
  * and a broken command can never take down `ship --help`.
@@ -107,7 +110,15 @@ export const COMMANDS = {
 
 const GROUPS = ['Setup', 'Discover', 'Ship', 'Grow'];
 
+/**
+ * Split argv into long/short flags and positionals. `--flag value` consumes the
+ * next token unless it looks like a flag; everything after `--` is positional.
+ *
+ * @param {string[]} argv
+ * @returns {{flags: Flags, positional: string[]}}
+ */
 export function parseArgs(argv) {
+	/** @type {Flags} */
 	const flags = {};
 	const positional = [];
 	for (let i = 0; i < argv.length; i++) {
@@ -160,7 +171,11 @@ ${c.dim('Docs: ' + new URL('../README.md', import.meta.url).pathname)}
 `);
 }
 
-export async function main(argv = process.argv.slice(2)) {
+/**
+ * @param {string[]} [argv]
+ * @returns {Promise<number>}
+ */
+async function main(argv = process.argv.slice(2)) {
 	const { flags, positional } = parseArgs(argv);
 	const [name, ...rest] = positional;
 
@@ -168,7 +183,7 @@ export async function main(argv = process.argv.slice(2)) {
 	// command treats `--version` as the app's marketing version.
 	if (!name && (flags.version || flags.V)) {
 		const { readFile } = await import('node:fs/promises');
-		const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+		const pkg = /** @type {JsonObject} */ (JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')));
 		process.stdout.write(`${pkg.version}\n`);
 		return 0;
 	}
@@ -201,6 +216,11 @@ export async function main(argv = process.argv.slice(2)) {
 	return typeof code === 'number' ? code : 0;
 }
 
+/**
+ * Process entry point, called by `bin/ship`. knip cannot parse the
+ * extensionless bin script, so the export is marked `@public` explicitly.
+ * @public
+ */
 export async function cli() {
 	// `ship status | head` closes the pipe mid-write. That is a normal way to read
 	// a long report, not a crash, so swallow EPIPE instead of letting the
@@ -220,7 +240,9 @@ export async function cli() {
 				for (const line of err.hint.split('\n')) process.stderr.write(`  ${c.dim(line)}\n`);
 			process.exitCode = err.exitCode;
 		} else {
-			process.stderr.write(`\n${c.red('✗ internal error')}\n${err.stack ?? err}\n`);
+			process.stderr.write(
+				`\n${c.red('✗ internal error')}\n${err instanceof Error ? err.stack ?? String(err) : String(err)}\n`,
+			);
 			process.exitCode = 70;
 		}
 	}

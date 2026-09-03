@@ -9,7 +9,7 @@ import { readPages } from '../lib/cpp.mjs';
 import { keywordList, readStaged } from '../lib/locales.mjs';
 import { indexedWords, isCovered } from '../lib/text.mjs';
 import { BID, describeAction, lastModified, reconcile } from '../lib/asa.mjs';
-import { DASH, money, num, pct, round2 } from '../lib/fmt.mjs';
+import { money, num } from '../lib/fmt.mjs';
 import { DAY_MS, isoDay } from '../lib/dates.mjs';
 import { emit } from '../lib/output.mjs';
 import { resolveSubcommand } from '../lib/util.mjs';
@@ -27,6 +27,27 @@ import {
 	buildPlan, convertingTerms, decide, parseSplit, planBindings, printPlan, renderOnly, renderPlan, searchTermRows,
 } from '../lib/ads-plan.mjs';
 export { SPLIT, allocate, buildPlan, convertingTerms, decide, parseSplit, planBindings, planTotals, renderPlan, searchTermRows } from '../lib/ads-plan.mjs';
+/** @typedef {import('../lib/util.mjs').Json} Json */
+/** @typedef {import('../lib/ads-plan.mjs').Num} Num */
+/** @typedef {import('../lib/util.mjs').Flags} Flags */
+/** @typedef {import('../config.mjs').Config} Config */
+/** @typedef {import('../lib/ads-plan.mjs').TermScore} TermScore */
+/** @typedef {import('../lib/ads-plan.mjs').AppRef} AppRef */
+/** @typedef {import('../lib/ads-plan.mjs').PlannedCampaign} PlannedCampaign */
+/** @typedef {import('../lib/ads-plan.mjs').PlanDoc} PlanDoc */
+/** @typedef {import('../lib/ads-plan.mjs').PlanParams} PlanParams */
+/** @typedef {import('../lib/ads-plan.mjs').MonetisationSignal} MonetisationSignal */
+/** @typedef {import('../lib/ads-plan.mjs').SearchTermRow} SearchTermRow */
+/** @typedef {import('../lib/ads-plan.mjs').ConvertingTerm} ConvertingTerm */
+/** @typedef {import('../lib/ads-plan.mjs').MiningArtifact} MiningArtifact */
+/** @typedef {import('../lib/ads-plan.mjs').AppliedMining} AppliedMining */
+/** @typedef {import('../lib/ads-plan.mjs').AdGroupSpec} AdGroupSpec */
+/** @typedef {import('../lib/ads-client.mjs').Row} Row */
+/** @typedef {import('../lib/ads-client.mjs').SnapshotCampaign} SnapshotCampaign */
+/** @typedef {import('../lib/asa-reconcile.mjs').ReconcileResult} ReconcileResult */
+/** Subcommand context: `run` forwards the remaining args alongside the flags. */
+/** @typedef {{args?: string[], flags: Flags}} AdsCtx */
+/** What `planInputs` gathers for `planOptions`. @typedef {{terms: TermScore[], competitors: AppRef[], subPrice: Num, org: string|null, measured: {cpt: number|null, reason: string|null}, money$: MonetisationSignal, scoredFile: string}} PlanInputs */
 export const help = `
 ${c.bold('ship ads')} ${c.dim('— Apple Search Ads (Apple Ads Campaign Management API)')}
 ${c.dim('usage:')} ship ads [subcommand] [flags]
@@ -71,6 +92,16 @@ ${c.dim('`ship ads plan` will not overwrite a plan carrying Apple object ids: --
 const status = adsStatus; // credential UX lives with the auth module that serves it
 const login = adsLogin;
 
+/**
+ * `loadConfig()` only resolves null with `optional`; these subcommands demand one.
+ * @param {Config|null} cfg
+ * @returns {asserts cfg is Config}
+ */
+function requireConfig(cfg) {
+	if (!cfg) throw new ShipError('no ship.config.json found', { hint: 'run `ship init` in the app directory first' });
+}
+
+/** @param {AdsCtx} ctx @returns {Promise<number>} */
 async function campaigns({ flags }) {
 	const cfg = await loadConfig(undefined, { optional: true });
 	await gate(cfg);
@@ -90,6 +121,7 @@ async function campaigns({ flags }) {
 	return 0;
 }
 
+/** @param {AdsCtx} ctx @returns {Promise<number>} */
 async function keywords({ flags }) {
 	const cfg = await loadConfig(undefined, { optional: true });
 	await gate(cfg);
@@ -111,12 +143,14 @@ async function keywords({ flags }) {
 	return 0;
 }
 
+/** @param {Flags} flags @param {number} days @returns {{from: string, to: string}} */
 function reportWindow(flags, days) {
 	const to = flags.to ? String(flags.to) : isoDay(Date.now());
 	const from = flags.from ? String(flags.from) : isoDay(Date.parse(`${to}T00:00:00Z`) - (days - 1) * DAY_MS);
 	return { from, to };
 }
 
+/** @param {AdsCtx} ctx @returns {Promise<number|void>} */
 async function report({ flags }) {
 	const cfg = await loadConfig(undefined, { optional: true });
 	await gate(cfg);
@@ -127,15 +161,18 @@ async function report({ flags }) {
 	const metrics = (
 		await pullReport(org, level, { from, to, campaign: flags.campaign ?? null, adGroup: flags['ad-group'] ?? flags.adGroup ?? null })
 	).sort((a, b) => b.spend - a.spend);
+	/** @type {MonetisationSignal} */
 	const money$ = cfg ? await monetisationSignal(cfg) : { available: false, reason: 'no ship.config.json' };
 	return printReport({ flags, level, from, to, org, metrics, money$ });
 }
 
+/** @param {string} file @returns {Promise<PlanDoc|null>} */
 async function readJSONFile(file) {
 	return existsSync(file) ? JSON.parse(await readFile(file, 'utf8')) : null;
 }
 
 /** Refuse to replan a plan that carries Apple object ids without --force. */
+/** @param {PlanDoc|null|undefined} onDisk @param {Flags} flags @param {string} planFile @returns {{bound: boolean, objects: number, syncedAt: string|null}} */
 function assertUnbound(onDisk, flags, planFile) {
 	const bound = planBindings(onDisk);
 	if (bound.bound && !flags.force)
@@ -152,6 +189,7 @@ function assertUnbound(onDisk, flags, planFile) {
 }
 
 /** Everything buildPlan needs, read and guarded. */
+/** @param {Config} cfg @param {Flags} flags @param {string} locale @returns {Promise<PlanInputs>} */
 async function planInputs(cfg, flags, locale) {
 	const scoredFile = join(cfg.paths.aso, locale, 'scored.json');
 	if (!existsSync(scoredFile))
@@ -165,11 +203,13 @@ async function planInputs(cfg, flags, locale) {
 	const subPrice = flags['sub-price'] ?? flags.subPrice ?? cfg.ads?.subPrice ?? null;
 	const org = cfg.ads?.orgId ?? null;
 	const measured = flags.bid ? { cpt: null, reason: '--bid overrides it' } : await realisedCpt(cfg, org);
+	/** @type {MonetisationSignal} */
 	const money$ = flags['no-ltv-check'] ? { available: false, reason: '--no-ltv-check' } : await monetisationSignal(cfg, { subPrice });
 	return { terms, competitors, subPrice, org, measured, money$, scoredFile };
 }
 
 /** Map CLI flags + config onto buildPlan's inputs. */
+/** @param {Config} cfg @param {Flags} flags @param {PlanInputs & {locale: string}} inputs @returns {{app: {name: string, bundleId: string, appId: string|null}, locale: string, market: string, terms: TermScore[], competitors: AppRef[], budget: number, split: Record<string, number>, top: number, subPrice: number|null, targetCpi: Num, retentionMonths: number, baselineInstallRate: number, minTaps: Num, bid: Num, minBid: Num, maxBid: Num, observedCpt: number|null, seedBid: number|null, monetisation: MonetisationSignal, minVolume: number, org: string|null, source: string}} */
 function planOptions(cfg, flags, { locale, terms, competitors, subPrice, org, measured, money$, scoredFile }) {
 	return {
 		app: { name: cfg.name, bundleId: cfg.bundleId, appId: cfg.asc?.appId ?? null },
@@ -186,6 +226,7 @@ function planOptions(cfg, flags, { locale, terms, competitors, subPrice, org, me
 }
 
 /** Back up a bound plan before overwriting it, so --force is never lossy. */
+/** @param {Config} cfg @param {PlanDoc|null|undefined} onDisk @param {{bound: boolean, objects: number, syncedAt: string|null}} bound @returns {Promise<string|null>} */
 async function backupBoundPlan(cfg, onDisk, bound) {
 	if (!onDisk || !bound.bound) return null;
 	const backup = join(cfg.paths.asa, 'campaign-plan.prev.json');
@@ -193,8 +234,10 @@ async function backupBoundPlan(cfg, onDisk, bound) {
 	return backup;
 }
 
+/** @param {AdsCtx} ctx @returns {Promise<number>} */
 async function plan({ flags }) {
 	const cfg = await loadConfig();
+	requireConfig(cfg);
 	for (const w of cfg.warnings ?? []) warn(w);
 	const planFile = join(cfg.paths.asa, 'campaign-plan.json');
 	const mdFile = join(cfg.paths.asa, 'campaign-plan.md');
@@ -217,16 +260,19 @@ async function plan({ flags }) {
 	return 0;
 }
 
+/** @param {AdsCtx} ctx @returns {Promise<number>} */
 async function snapshot({ flags }) {
 	const cfg = await loadConfig();
+	requireConfig(cfg);
 	await gate(cfg);
 	const org = requireOrg(cfg, flags);
 	const { from, to } = reportWindow(flags, 30);
 	const account = await readAccount(org, { performance: flags.performance !== false, from, to });
+	const at = lastModified(account);
 	const doc = {
 		generatedAt: new Date().toISOString(), org: String(org), window: { from, to },
 		params: { org: String(org), window: { from, to }, performance: flags.performance !== false },
-		lastModified: lastModified(account) ? new Date(lastModified(account)).toISOString() : null,
+		lastModified: at ? new Date(at).toISOString() : null,
 		campaigns: account.campaigns,
 	};
 	const file = await writeArtifact(cfg, 'snapshot.json', doc);
@@ -236,6 +282,7 @@ async function snapshot({ flags }) {
 	return 0;
 }
 
+/** @param {Config} cfg @returns {Promise<{planFile: string, p: PlanDoc, planned: PlannedCampaign[]}>} */
 async function loadSyncPlan(cfg) {
 	const planFile = join(cfg.paths.asa, 'campaign-plan.json');
 	if (!existsSync(planFile))
@@ -252,6 +299,7 @@ async function loadSyncPlan(cfg) {
 }
 
 /** Org, adamId, and the --force/--adopt contract. */
+/** @param {Config} cfg @param {PlanDoc} p @param {Flags} flags @returns {{org: string, adamId: number, force: boolean, adopt: boolean, currency: string}} */
 function syncTargets(cfg, p, flags) {
 	const org = requireOrg(cfg, { org: flags.org ?? p.org });
 	const adamId = num(cfg.asc?.appId ?? p.app?.appId, 0);
@@ -265,7 +313,8 @@ function syncTargets(cfg, p, flags) {
 }
 
 /** A plan older than the account means somebody edited Apple Ads by hand. */
-function assertFresh({ p, planFile, liveAt, force, adopt }) {
+/** @param {{p: PlanDoc, planFile?: string, liveAt: number|null, force: boolean, adopt: boolean}} opts @returns {void} */
+function assertFresh({ p, liveAt, force, adopt }) {
 	const planAt = Date.parse(p.generatedAt ?? '');
 	if (!(liveAt && planAt && liveAt > planAt) || force || adopt) return;
 	throw new ShipError(
@@ -276,8 +325,10 @@ function assertFresh({ p, planFile, liveAt, force, adopt }) {
 	);
 }
 
+/** @param {AdsCtx} ctx @returns {Promise<number>} */
 async function sync({ flags }) {
 	const cfg = await loadConfig();
+	requireConfig(cfg);
 	for (const w of cfg.warnings ?? []) warn(w);
 	const { planFile, p, planned } = await loadSyncPlan(cfg);
 	await gate(cfg);
@@ -290,6 +341,7 @@ async function sync({ flags }) {
 	printReconciliation(plan$, { verbose: Boolean(flags.verbose) });
 	for (const u of plan$.unmanaged) note(`unmanaged campaign left alone: ${u.name} (${u.id}, ${u.status ?? '—'})`);
 	for (const a of plan$.preserved) info(`keeping the manual value on ${a.path}: ${describeAction(a)}`);
+	/** @type {MonetisationSignal} */
 	const money$ = flags['no-ltv-check'] ? { available: false, reason: '--no-ltv-check' } : await monetisationSignal(cfg, { subPrice: cfg.ads?.subPrice });
 	process.stdout.write('\n');
 	reportMonetisation(money$, { budget: p.budget?.daily ?? null });
@@ -315,6 +367,7 @@ async function sync({ flags }) {
 }
 
 /** Conflicts and unplanned objects abort the run before any mutation. */
+/** @param {ReconcileResult} plan$ @returns {ShipError|null} */
 function syncBlockers(plan$) {
 	if (plan$.conflicts.length)
 		return new ShipError(`${plan$.conflicts.length} object(s) were changed outside ship and would be overwritten`, {
@@ -331,6 +384,7 @@ function syncBlockers(plan$) {
 	return null;
 }
 
+/** @param {Config} cfg @param {string} locale @param {ConvertingTerm[]} converting @returns {Promise<{staged: boolean, missing: string[]}>} */
 async function organicGap(cfg, locale, converting) {
 	const listing = (await readStaged(cfg)).find((l) => (l.data?.locale ?? l.locale) === locale) ?? null;
 	if (!listing) return { staged: false, missing: converting.map((t) => t.term) };
@@ -339,12 +393,14 @@ async function organicGap(cfg, locale, converting) {
 	return { staged: true, missing: converting.filter((t) => !isCovered(t.term, indexed, locale)).map((t) => t.term) };
 }
 
+/** @param {{cfg: Config, org: Json|null, artifact: MiningArtifact, flags: Flags}} opts @returns {Promise<AppliedMining>} */
 async function applyMining({ cfg, org, artifact, flags }) {
 	await gate(cfg);
 	const resolvedOrg = requireOrg(cfg, { org: org ?? flags.org });
 	const live = await listCampaigns(resolvedOrg);
 	const plan = await readJSONFile(join(cfg.paths.asa, 'campaign-plan.json'));
 	const currency = plan?.currency ?? 'USD';
+	/** @param {string} role @returns {Row|null} */
 	const forRole = (role) => {
 		const named = plan?.campaigns?.find((cp) => cp.role === role)?.name;
 		return ((named ? live.find((r) => r.name === named) : null) ?? live.find((r) => String(r.name ?? '').toLowerCase().includes(role))) ?? null;
@@ -358,6 +414,8 @@ async function applyMining({ cfg, org, artifact, flags }) {
 	return { at: new Date().toISOString(), org: resolvedOrg, dryRun: isDryRun(), negativesAdded: negatives.added, promoted, skipped, unplaced: negatives.unplaced };
 }
 
+/** @typedef {import('../lib/ads-plan.mjs').TermDecision} TermDecision */
+/** @param {{org: string, artifact: MiningArtifact, discovery: Row|null}} opts @returns {Promise<{added: number, unplaced: string[]}>} */
 async function applyNegatives({ org, artifact, discovery }) {
 	const grouped = new Map();
 	const unplaced = [];
@@ -377,12 +435,14 @@ async function applyNegatives({ org, artifact, discovery }) {
 	return { added, unplaced };
 }
 
+/** @param {{org: string, artifact: MiningArtifact, exact: Row|null, currency: string}} opts @returns {Promise<{promoted: number, skipped: string[]}>} */
 async function applyPromotions({ org, artifact, exact, currency }) {
 	const skipped = [];
 	let promoted = 0;
 	if (artifact.promotions.length && !exact?.id) skipped.push(...artifact.promotions.map((p) => p.term));
 	else if (artifact.promotions.length) {
-		const campaignId = String(exact.id);
+		const exactId = exact?.id;
+		const campaignId = String(exactId);
 		const groups = await listAdGroups(org, campaignId);
 		for (const p of artifact.promotions) {
 			const name = `EX · ${p.term}`;
@@ -402,7 +462,8 @@ async function applyPromotions({ org, artifact, exact, currency }) {
 }
 
 /** Search-term rows from --file, or pulled per campaign for the org. */
-async function collectTermRows({ cfg, flags, org, from, to }) {
+/** @param {{cfg: Config, flags: Flags, org: Json|null, from: string, to: string}} opts @returns {Promise<{rows: SearchTermRow[], org: Json|null, source: string}>} */
+async function collectTermRows({ cfg, flags, from, to }) {
 	if (flags.file) {
 		const reportFile = resolve(String(flags.file));
 		if (!existsSync(reportFile)) throw new ShipError(`no such search-term report: ${reportFile}`);
@@ -431,6 +492,7 @@ async function collectTermRows({ cfg, flags, org, from, to }) {
 	return { rows, org: resolvedOrg, source: `asc ads reports search-terms (${from} → ${to})` };
 }
 
+/** @param {Config} cfg @param {Flags} flags @returns {{[k: string]: Json|undefined, retentionMonths?: number}} */
 function killOptions(cfg, flags) {
 	return {
 		targetCpi: flags['target-cpi'] ?? flags.targetCpi ?? cfg.ads?.targetCpi ?? null,
@@ -442,8 +504,10 @@ function killOptions(cfg, flags) {
 	};
 }
 
+/** @param {AdsCtx} ctx @returns {Promise<number>} */
 async function mine({ flags }) {
 	const cfg = await loadConfig();
+	requireConfig(cfg);
 	for (const w of cfg.warnings ?? []) warn(w);
 	const locale = String(flags.locale ?? cfg.asc?.primaryLocale ?? 'en-US');
 	const { from, to } = reportWindow(flags, 30);
@@ -452,6 +516,7 @@ async function mine({ flags }) {
 	const decided = decide(raw, killOptions(cfg, flags));
 	const converting = convertingTerms(raw);
 	const gap = await organicGap(cfg, locale, converting);
+	/** @type {MiningArtifact} */
 	const artifact = {
 		generatedAt: new Date().toISOString(), locale, org: org ?? null,
 		source,
@@ -478,6 +543,7 @@ async function mine({ flags }) {
 
 const SUB = { status, login, campaigns, keywords, report, plan, snapshot, sync, mine };
 
+/** @param {{args: string[], flags: Flags}} ctx @returns {Promise<number|void>} */
 export async function run({ args, flags }) {
 	const { fn, args: rest } = resolveSubcommand({ command: 'ads', args, subs: SUB, fallback: 'status' });
 	return fn({ args: rest, flags });

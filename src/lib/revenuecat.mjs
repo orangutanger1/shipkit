@@ -7,10 +7,38 @@ import { basename, join } from 'node:path';
 import { fetchJSON } from '../exec.mjs';
 import { ShipError } from '../log.mjs';
 
+/** @typedef {import('./util.mjs').Json} Json */
+/** @typedef {import('./util.mjs').JsonObject} JsonObject */
+/** @typedef {import('../config.mjs').Config} Config */
+/**
+ * Anything a RC v2 list endpoint answers with, viewed as a row. `id` is the one
+ * field every catalogue object carries and the only one narrowed here; the rest
+ * stay as loose as the payload allows.
+ * @typedef {JsonObject & {
+ *   id: string, type?: Json, name?: Json, lookup_key?: Json, is_current?: Json,
+ *   display_name?: Json, app_id?: Json, store_identifier?: Json, position?: Json,
+ *   app_store?: JsonObject & {bundle_id?: Json}, bundle_id?: Json,
+ *   keySource?: string,
+ * }} RcRow
+ */
+
 const BASE = 'https://api.revenuecat.com/v2';
 export const KEY_FILE = join(homedir(), '.omp', 'revenuecat.key');
-export const KEY_DIR = join(homedir(), '.omp', 'revenuecat');
+const KEY_DIR = join(homedir(), '.omp', 'revenuecat');
 
+/** @param {Json|undefined} v @returns {v is RcRow} */
+const isRow = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/**
+ * View any JSON value as a {@link RcRow}: objects pass through untouched,
+ * anything else reads as an empty row — exactly what property access on a
+ * scalar would have yielded.
+ * @param {Json|undefined} v
+ * @returns {RcRow}
+ */
+const asRow = (v) => (isRow(v) ? v : /** @type {RcRow} */ ({}));
+
+/** @type {string|null|undefined} */
 let cachedKey;
 /**
  * Secret v2 key from the environment, else the ambient `~/.omp/revenuecat.key`.
@@ -20,6 +48,9 @@ let cachedKey;
  * is how a wrong-account credential stays invisible instead of being validated.
  * This function does not know which project it is for; anything project-scoped
  * must go through {@link useKeyForProject}.
+ *
+ * @param {{optional?: boolean}} [opts]
+ * @returns {Promise<string|null>}
  */
 export async function apiKey({ optional = false } = {}) {
 	if (cachedKey !== undefined) return cachedKey;
@@ -43,8 +74,11 @@ export async function apiKey({ optional = false } = {}) {
  * Where this repo's key is expected to live. `revenuecat.key` in
  * ship.config.json names it; otherwise the repo directory name is the only
  * honest guess, and naming the guess is what makes the failure actionable.
+ *
+ * @param {Config} cfg
+ * @returns {string}
  */
-export function expectedKeyFile(cfg) {
+function expectedKeyFile(cfg) {
 	const named = cfg?.revenuecat?.key;
 	if (named) return named.includes('/') ? named : join(KEY_DIR, `${named}.key`);
 	const repo = basename(cfg?.root ?? '') || 'project';
@@ -67,11 +101,18 @@ export function expectedKeyFile(cfg) {
  * and each candidate is *validated* against the configured project before it is
  * used. An explicitly named key that cannot see the project is a hard failure
  * naming the file, not a silent 403 fifty lines later.
+ *
+ * @param {Config} cfg
+ * @returns {Promise<{key: string|null, source: string, switched: boolean}>}
  */
 export async function useKeyForProject(cfg) {
 	const want = cfg?.revenuecat?.projectId;
 	if (!want) return { key: await apiKey(), source: 'ambient', switched: false };
 
+	/**
+	 * @param {string} file
+	 * @returns {Promise<string>}
+	 */
 	const read = async (file) => {
 		try {
 			return (await readFile(file, 'utf8')).trim();
@@ -105,6 +146,7 @@ export async function useKeyForProject(cfg) {
 	const ambient = await apiKey({ optional: true });
 	if (ambient && (await keySees(ambient, want))) return { key: ambient, source: 'ambient', switched: false };
 
+	/** @type {string[]} */
 	let names = [];
 	try {
 		names = (await readdir(KEY_DIR)).filter((f) => f.endsWith('.key')).sort();
@@ -126,18 +168,30 @@ export async function useKeyForProject(cfg) {
 	});
 }
 
-/** Can this key see that project? Wrong-account keys 401 rather than answer. */
+/**
+ * Can this key see that project? Wrong-account keys 401 rather than answer.
+ *
+ * @param {string} key
+ * @param {string} projectId
+ * @returns {Promise<boolean>}
+ */
 async function keySees(key, projectId) {
 	try {
 		const page = await fetchJSON(`${BASE}/projects`, {
 			headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
 		});
-		return (page.items ?? []).some((p) => p.id === projectId || p.name === projectId);
+		const items = typeof page === 'object' && page !== null && Array.isArray(page.items) ? page.items : [];
+		return items.some((p) => asRow(p).id === projectId || asRow(p).name === projectId);
 	} catch {
 		return false;
 	}
 }
 
+/**
+ * @param {string} path
+ * @param {RequestInit} [init]
+ * @returns {Promise<Json|string|null>}
+ */
 async function rc(path, init = {}) {
 	const key = await apiKey();
 	return fetchJSON(`${BASE}${path}`, {
@@ -152,31 +206,77 @@ async function rc(path, init = {}) {
  * `https://api.revenuecat.com/v2https://…` and a TypeError on page 2, so any
  * project past one page of products failed. Relative values (if a payload ever
  * carries one) are joined with BASE as before.
+ *
+ * @param {string} path
+ * @returns {Promise<RcRow[]>}
  */
 async function all(path) {
+	/** @type {RcRow[]} */
 	const items = [];
+	/** @type {Json|null} */
 	let next = path;
 	while (next) {
-		const url = /^https?:\/\//i.test(next) ? next : `${BASE}${next}`;
+		const url = typeof next === 'string' && /^https?:\/\//i.test(next) ? next : `${BASE}${next}`;
 		const page = await fetchJSON(url, {
 			headers: { Authorization: `Bearer ${await apiKey()}`, 'Content-Type': 'application/json' },
 		});
-		items.push(...(page.items ?? []));
-		next = page.next_page ?? null;
+		const pageRow = asRow(page);
+		for (const item of Array.isArray(pageRow.items) ? pageRow.items : []) {
+			const row = rcRowOf(item);
+			if (row) items.push(row);
+		}
+		next = pageRow.next_page ?? null;
 	}
 	return items;
 }
 
+/**
+ * One RC v2 catalogue object. A row without a string `id` cannot be addressed
+ * by anything downstream, so it is dropped rather than guessed at.
+ * @param {Json} r
+ * @returns {RcRow|null}
+ */
+const rcRowOf = (r) => {
+	const row = asRow(r);
+	return typeof row.id === 'string' ? { ...row, id: row.id } : null;
+};
+
+/** @returns {Promise<RcRow[]>} */
 export const listProjects = () => all('/projects');
+/**
+ * @param {string} projectId
+ * @returns {Promise<RcRow[]>}
+ */
 export const listApps = (projectId) => all(`/projects/${projectId}/apps`);
+/**
+ * @param {string} projectId
+ * @returns {Promise<RcRow[]>}
+ */
 export const listEntitlements = (projectId) => all(`/projects/${projectId}/entitlements`);
+/**
+ * @param {string} projectId
+ * @returns {Promise<RcRow[]>}
+ */
 export const listOfferings = (projectId) => all(`/projects/${projectId}/offerings`);
+/**
+ * @param {string} projectId
+ * @returns {Promise<RcRow[]>}
+ */
 export const listProducts = (projectId) => all(`/projects/${projectId}/products`);
+/**
+ * @param {string} projectId
+ * @param {string} offeringId
+ * @returns {Promise<RcRow[]>}
+ */
 export const listPackages = (projectId, offeringId) =>
 	all(`/projects/${projectId}/offerings/${offeringId}/packages`);
 
-/** v2 nests the store identity under the store block; older payloads flatten it. */
-export const bundleOf = (app) => app?.app_store?.bundle_id ?? app?.bundle_id ?? '';
+/**
+ * v2 nests the store identity under the store block; older payloads flatten it.
+ * @param {RcRow|undefined} [app]
+ * @returns {Json}
+ */
+export const bundleOf = (app) => asRow(app).app_store?.bundle_id ?? asRow(app).bundle_id ?? '';
 
 /**
  * The project's own money, from `/metrics/overview` — the only endpoint in the
@@ -187,26 +287,34 @@ export const bundleOf = (app) => app?.app_store?.bundle_id ?? app?.bundle_id ?? 
  * every metric is looked up by several plausible ids and a miss is `null` rather
  * than 0: "no data" and "zero revenue" lead to opposite decisions about whether
  * to keep buying installs.
+ *
+ * @param {string} projectId
+ * @returns {Promise<{project: string, period: Json|null, customers: number|null, trials: number|null, subscriptions: number|null, revenue: number|null, mrr: number|null, metrics: Json}>}
  */
 export async function overviewMetrics(projectId) {
 	const body = await rc(`/projects/${projectId}/metrics/overview`);
-	const by = new Map((body?.metrics ?? []).map((m) => [m.id, Number(m.value)]));
+	const metrics = asRow(body).metrics;
+	const by = new Map((Array.isArray(metrics) ? metrics : []).map((m) => [asRow(m).id, Number(asRow(m).value)]));
+	/**
+	 * @param {...string} ids
+	 * @returns {number|null}
+	 */
 	const pick = (...ids) => {
 		for (const id of ids) {
 			const v = by.get(id);
-			if (Number.isFinite(v)) return v;
+			if (typeof v === 'number' && Number.isFinite(v)) return v;
 		}
 		return null;
 	};
 	return {
 		project: projectId,
-		period: body?.metrics?.[0]?.period ?? null,
+		period: asRow(Array.isArray(metrics) ? metrics[0] : undefined).period ?? null,
 		customers: pick('new_customers', 'active_users', 'active_subscribers'),
 		trials: pick('active_trials', 'new_trials'),
 		subscriptions: pick('active_subscriptions', 'new_subscriptions'),
 		revenue: pick('revenue'),
 		mrr: pick('mrr'),
-		metrics: body?.metrics ?? [],
+		metrics: metrics ?? [],
 	};
 }
 
@@ -216,6 +324,9 @@ export async function overviewMetrics(projectId) {
  * Selecting the credential is part of resolving the project, not a separate
  * step a caller can forget: every `ship rc` subcommand and `ship preflight`
  * reaches the right account without knowing that more than one exists.
+ *
+ * @param {Config} cfg
+ * @returns {Promise<RcRow|null>}
  */
 export async function resolveProject(cfg) {
 	const want = cfg.revenuecat?.projectId;
@@ -230,6 +341,9 @@ export async function resolveProject(cfg) {
 
 /**
  * Monetisation wiring audit: the checks that actually break paywalls in production.
+ *
+ * @param {Config} cfg
+ * @param {RcRow} project
  * @returns {Promise<{level:'ok'|'warn'|'fail', name:string, detail:string}[]>}
  */
 export async function auditProject(cfg, project) {

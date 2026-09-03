@@ -13,6 +13,13 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { ShipError } from '../log.mjs';
 
+/**
+ * A required native module as `require()` hands it over: sharp is callable,
+ * fontkit/puppeteer are namespaces of functions. What those functions return is
+ * the libraries' own surface, which shipkit does not re-declare.
+ * @typedef {Function & { [key: string]: Function }} NativeModule
+ */
+/** @type {Map<string, NativeModule>} */
 const CACHE = new Map();
 
 /**
@@ -32,6 +39,7 @@ const PROVIDES = {
  * resolver so a globally linked install still works. Anything else and we would
  * be silently rendering with a different sharp than the one that produced the
  * committed reference.
+ * @param {import('../config.mjs').Config} cfg
  */
 function resolvers(cfg) {
 	const roots = [cfg?.paths?.app, cfg?.root].filter(Boolean);
@@ -45,12 +53,13 @@ function resolvers(cfg) {
  * Load an optional native dependency from the app repo.
  * @param {import('../config.mjs').Config} cfg
  * @param {'sharp'|'fontkit'|'puppeteer'} name
- * @returns {Promise<any>} the module's default export when it has one
+ * @returns {Promise<NativeModule>} the module's default export when it has one
  */
 export async function appDep(cfg, name) {
 	const key = `${cfg?.root ?? ''}:${name}`;
-	if (CACHE.has(key)) return CACHE.get(key);
+	if (CACHE.has(key)) return /** @type {NativeModule} */ (CACHE.get(key));
 
+	/** @type {Error|undefined} */
 	let last;
 	for (const require of resolvers(cfg)) {
 		try {
@@ -59,7 +68,7 @@ export async function appDep(cfg, name) {
 			CACHE.set(key, value);
 			return value;
 		} catch (err) {
-			last = err;
+			last = err instanceof Error ? err : undefined;
 		}
 	}
 

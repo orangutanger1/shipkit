@@ -3,12 +3,21 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, relative } from 'node:path';
-import { CONFIG_NAME, SHIPKIT_ROOT, saveConfig } from '../config.mjs';
+import { SHIPKIT_ROOT } from '../config.mjs';
 import { isDryRun } from '../exec.mjs';
 import { ShipError, c, good, info, note, warn } from '../log.mjs';
 import { readJSONOrNull } from './jsonio.mjs';
 
-export const NPM_SCRIPTS = {
+/** @typedef {import('./util.mjs').Json} Json */
+/** @typedef {import('./util.mjs').JsonObject} JsonObject */
+/** A ship.config.json field mergeFill filled in. */
+/** @typedef {{path: string, from: Json, to: Json}} ConfigChange */
+
+/** @param {Json|undefined} v @returns {v is JsonObject} */
+const isJsonObject = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/** @type {Record<string, string>} */
+const NPM_SCRIPTS = {
 	ship: 'ship',
 	'ship:doctor': 'ship doctor',
 	'ship:status': 'ship status',
@@ -23,14 +32,22 @@ export const NPM_SCRIPTS = {
 
 const GITIGNORE_LINES = ['.asc/reports/', 'aso/**/candidates.json'];
 
+/** @param {string} text @returns {void} */
 export function preview(text) {
 	for (const line of text.replace(/\n$/, '').split('\n')) process.stdout.write(`    ${c.dim(line)}\n`);
 }
 
+/** @param {Json|undefined} v @returns {string} */
 export const shown = (v) =>
 	v === null || v === undefined || v === '' ? c.dim('—') : Array.isArray(v) ? v.join(', ') : String(v);
 
-/** Single write funnel so --dry-run cannot be forgotten at a call site. */
+/** Single write funnel so --dry-run cannot be forgotten at a call site.
+ * @param {string} file
+ * @param {string} content
+ * @param {string} root
+ * @param {{intent?: 'write'|'create'}} [opts]
+ * @returns {Promise<boolean>}
+ */
 async function put(file, content, root, { intent = 'write' } = {}) {
 	const label = relative(root, file) || basename(file);
 	if (isDryRun()) {
@@ -46,6 +63,12 @@ async function put(file, content, root, { intent = 'write' } = {}) {
 /**
  * Fill holes in `existing` from `detected`, recording every change.
  * A hole is null / undefined / '' / []. Anything else a human decided.
+ *
+ * @param {JsonObject} existing
+ * @param {JsonObject} detected
+ * @param {ConfigChange[]} changes
+ * @param {string[]} [path]
+ * @returns {JsonObject}
  */
 export function mergeFill(existing, detected, changes, path = []) {
 	const out = { ...existing };
@@ -69,30 +92,40 @@ export function mergeFill(existing, detected, changes, path = []) {
 	return out;
 }
 
-/** Servers shipkit owns and therefore refreshes; anything else in the file survives. */
+/** Servers shipkit owns and therefore refreshes; anything else in the file survives.
+ * @returns {Promise<{file: string, servers: JsonObject, schema: Json}>}
+ */
 export async function shipkitServers() {
 	const file = join(SHIPKIT_ROOT, 'mcp', 'servers.json');
 	const doc = await readJSONOrNull(file);
-	if (!doc?.mcpServers) throw new ShipError(`${file} has no "mcpServers" block`, { hint: 'shipkit install looks incomplete' });
-	return { file, servers: doc.mcpServers, schema: doc.$schema };
+	if (!isJsonObject(doc) || !doc.mcpServers)
+		throw new ShipError(`${file} has no "mcpServers" block`, { hint: 'shipkit install looks incomplete' });
+	return { file, servers: /** @type {JsonObject} */ (doc.mcpServers), schema: doc.$schema };
 }
 
-/** Detect a JSON file's own indentation so a merge does not reformat the diff. */
+/** Detect a JSON file's own indentation so a merge does not reformat the diff.
+ * @param {string|null|undefined} text
+ * @param {string} [fallback]
+ * @returns {string}
+ */
 function indentOf(text, fallback = '\t') {
 	const m = /\n([\t ]+)"/.exec(text ?? '');
 	return m ? m[1] : fallback;
 }
+
+/** @param {string} root @param {JsonObject} servers @param {Json} schema @returns {Promise<void>} */
 export async function writeMcpServers(root, servers, schema) {
 	const ompFile = join(root, '.omp', 'mcp.json');
 	const ompRaw = await readMcpFile(ompFile);
 	const ompIndent = ompRaw == null ? '\t' : indentOf(ompRaw);
-	const ompDoc = (await readJSONOrNull(ompFile)) ?? {};
-	const kept = Object.keys(ompDoc.mcpServers ?? {}).filter((k) => !(k in servers));
+	/** @type {JsonObject} */
+	const ompDoc = /** @type {JsonObject} */ ((await readJSONOrNull(ompFile)) ?? {});
+	const kept = Object.keys(/** @type {JsonObject} */ (ompDoc.mcpServers) ?? {}).filter((k) => !(k in servers));
 	// Shipkit-owned entries are refreshed; anything the operator added stays.
 	const ompNext = {
 		$schema: ompDoc.$schema ?? schema,
 		...ompDoc,
-		mcpServers: { ...ompDoc.mcpServers, ...servers },
+		mcpServers: { .../** @type {JsonObject} */ (ompDoc.mcpServers), ...servers },
 	};
 	const ompText = `${JSON.stringify(ompNext, null, ompIndent)}\n`;
 	info(`${Object.keys(servers).join(', ')}${kept.length ? ` ${c.dim(`(keeping ${kept.join(', ')})`)}` : ''}`);
@@ -106,14 +139,16 @@ export async function writeMcpServers(root, servers, schema) {
 	const claudeFile = join(root, '.mcp.json');
 	const claudeRaw = await readMcpFile(claudeFile);
 	const claudeIndent = claudeRaw == null ? ompIndent : indentOf(claudeRaw);
-	const claudeDoc = (await readJSONOrNull(claudeFile)) ?? {};
-	const claudeNext = { ...claudeDoc, mcpServers: { ...claudeDoc.mcpServers, ...servers } };
+	/** @type {JsonObject} */
+	const claudeDoc = /** @type {JsonObject} */ ((await readJSONOrNull(claudeFile)) ?? {});
+	const claudeNext = { ...claudeDoc, mcpServers: { .../** @type {JsonObject} */ (claudeDoc.mcpServers), ...servers } };
 	const claudeText = `${JSON.stringify(claudeNext, null, claudeIndent)}\n`;
 	if (claudeText === `${JSON.stringify(claudeDoc, null, claudeIndent)}\n`) note('.mcp.json unchanged');
 	else if (isDryRun()) note(`${c.yellow('would write')} .mcp.json ${c.dim('(same mcpServers block)')}`);
 	else await put(claudeFile, claudeText, root);
 }
 
+/** @param {string} file @returns {Promise<string|null>} */
 async function readMcpFile(file) {
 	try {
 		return await readFile(file, 'utf8');
@@ -122,6 +157,7 @@ async function readMcpFile(file) {
 	}
 }
 
+/** @param {string} appPath @param {string} root @param {boolean} force @returns {Promise<void>} */
 export async function writeNpmScripts(appPath, root, force) {
 	const pkgFile = join(appPath, 'package.json');
 	let pkgText;
@@ -131,9 +167,10 @@ export async function writeNpmScripts(appPath, root, force) {
 		warn(`no package.json in ${relative(root, pkgFile)} — skipping scripts`);
 		return;
 	}
-	const pkg = JSON.parse(pkgText);
 	// JSON.parse preserves insertion order for string keys, so mutating in
 	// place and re-stringifying keeps the operator's diff to the new lines.
+	/** @type {{scripts?: Record<string, string>}} */
+	const pkg = JSON.parse(pkgText);
 	pkg.scripts ??= {};
 	const added = [];
 	const clashes = [];
@@ -158,6 +195,7 @@ export async function writeNpmScripts(appPath, root, force) {
 	} else await put(pkgFile, text, root);
 }
 
+/** @param {string} root @param {string} storeDir @returns {Promise<void>} */
 export async function ensureDirectories(root, storeDir) {
 	const dirs = [join(storeDir, 'staged'), join(root, 'aso'), join(root, '.asc', 'reports')];
 	const missing = dirs.filter((d) => !existsSync(d));
@@ -174,6 +212,7 @@ export async function ensureDirectories(root, storeDir) {
 	}
 }
 
+/** @param {string} root @returns {Promise<void>} */
 export async function updateGitignore(root) {
 	const giFile = join(root, '.gitignore');
 	let giText = '';

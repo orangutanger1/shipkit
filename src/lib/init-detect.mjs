@@ -12,7 +12,7 @@ import { readJSONOrNull } from './jsonio.mjs';
 import { parseStrings } from './locales.mjs';
 
 /** Directories that are either generated, vendored, or another repo entirely. */
-export const SKIP_DIRS = new Set([
+const SKIP_DIRS = new Set([
 	'node_modules',
 	'.git',
 	'.expo',
@@ -45,12 +45,33 @@ const ENTITLEMENT_PATTERNS = [
 
 const KEY_ENV_RE = /\bEXPO_PUBLIC_(?:[A-Z0-9_]*RC[A-Z0-9_]*KEY|REVENUECAT[A-Z0-9_]*)\b/g;
 
+/** @type {['privacyUrl'|'supportUrl'|'marketingUrl', string][]} */
 const URL_KEYS = [
 	['privacyUrl', 'privacyPolicyUrl'],
 	['supportUrl', 'supportUrl'],
 	['marketingUrl', 'marketingUrl'],
 ];
 
+/** @typedef {import('./util.mjs').Json} Json */
+/** @typedef {import('./util.mjs').JsonObject} JsonObject */
+/** A source-scan hit: one value, an ambiguous list, or nothing. */
+/** @typedef {{value: string|null, ambiguous: boolean, all?: string[]}} ScanHit */
+
+/** @param {Json|undefined} v @returns {v is JsonObject} */
+const isJsonObject = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/**
+ * JSON:API row → its attributes block, or the row itself when asc answers flat.
+ * @param {Json|undefined} row
+ * @returns {JsonObject}
+ */
+const attrsOf = (row) => {
+	if (!isJsonObject(row)) return {};
+	const attrs = row.attributes;
+	return isJsonObject(attrs) ? attrs : row;
+};
+
+/** @param {string} file @returns {Promise<string|null>} */
 async function readTextOrNull(file) {
 	try {
 		return await readFile(file, 'utf8');
@@ -59,6 +80,7 @@ async function readTextOrNull(file) {
 	}
 }
 
+/** @param {string} dir */
 export async function listDir(dir) {
 	try {
 		return await readdir(dir, { withFileTypes: true });
@@ -67,7 +89,11 @@ export async function listDir(dir) {
 	}
 }
 
-/** Recursive file walk, depth- and skip-list-bounded. */
+/** Recursive file walk, depth- and skip-list-bounded.
+ * @param {string} dir
+ * @param {number} [depth]
+ * @returns {AsyncGenerator<string, void, undefined>}
+ */
 async function* walk(dir, depth = 0) {
 	if (depth > 6) return;
 	for (const ent of await listDir(dir)) {
@@ -82,6 +108,8 @@ async function* walk(dir, depth = 0) {
  * Locate the Expo app directory: the one holding app.json, at the repo root or
  * exactly one level below it. One level is deliberate — deeper searches start
  * finding example apps inside node_modules clones.
+ *
+ * @param {string} root
  * @returns {Promise<string>} '.' or a subdirectory name
  */
 export async function findAppDir(root) {
@@ -99,13 +127,19 @@ export async function findAppDir(root) {
 	// Several app.json files (a docs site, an example) — the real app depends on expo.
 	for (const name of candidates) {
 		const pkg = await readJSONOrNull(join(root, name, 'package.json'));
-		const deps = { ...pkg?.dependencies, ...pkg?.devDependencies };
+		const deps = {
+			...(isJsonObject(pkg) && isJsonObject(pkg.dependencies) ? pkg.dependencies : null),
+			...(isJsonObject(pkg) && isJsonObject(pkg.devDependencies) ? pkg.devDependencies : null),
+		};
 		if (deps.expo) return name;
 	}
 	return candidates[0];
 }
 
-/** app.config.js/ts/mjs, which overrides app.json at evaluation time. */
+/** app.config.js/ts/mjs, which overrides app.json at evaluation time.
+ * @param {string} appPath
+ * @returns {Promise<{file: string, name: string, text: string}|null>}
+ */
 export async function findDynamicConfig(appPath) {
 	for (const name of ['app.config.ts', 'app.config.js', 'app.config.mjs', 'app.config.cjs']) {
 		const p = join(appPath, name);
@@ -120,6 +154,9 @@ export async function findDynamicConfig(appPath) {
  * costs nothing and is correct for the only shape that matters — a hardcoded
  * identifier. Two different literals means a variant-switching config
  * (idea6 suffixes `.dev`), so we refuse to guess and let app.json win.
+ *
+ * @param {string} text
+ * @param {string} key
  * @returns {string|null}
  */
 export function literalFromConfig(text, key) {
@@ -129,7 +166,10 @@ export function literalFromConfig(text, key) {
 	return found.size === 1 ? [...found][0] : null;
 }
 
-/** Every scannable source file under the app dir, plus its committed env samples. */
+/** Every scannable source file under the app dir, plus its committed env samples.
+ * @param {string} appPath
+ * @returns {Promise<string[]>}
+ */
 export async function sourceFiles(appPath) {
 	const out = [];
 	for await (const file of walk(appPath)) {
@@ -145,9 +185,14 @@ export async function sourceFiles(appPath) {
  * Entitlement + key env var, read out of the app's own source. Ambiguity stays
  * null: a wrong entitlement id renders an empty paywall to a paying customer,
  * which is strictly worse than an unset field `ship rc audit` will flag.
+ *
+ * @param {string[]} files
+ * @returns {Promise<{entitlement: ScanHit, keyEnv: ScanHit}>}
  */
 export async function scanSources(files) {
+	/** @type {Map<string, number>} */
 	const entitlements = new Map();
+	/** @type {Map<string, number>} */
 	const keyEnvs = new Map();
 	for (const file of files) {
 		const text = await readTextOrNull(file);
@@ -164,6 +209,7 @@ export async function scanSources(files) {
 				entitlements.set(v, (entitlements.get(v) ?? 0) + 1);
 			}
 	}
+	/** @param {Map<string, number>} map @returns {ScanHit} */
 	const pick = (map) => {
 		if (map.size === 0) return { value: null, ambiguous: false };
 		if (map.size === 1) return { value: [...map.keys()][0], ambiguous: false };
@@ -176,7 +222,11 @@ export async function scanSources(files) {
 	return { entitlement: pick(entitlements), keyEnv };
 }
 
-/** Locale basenames from a directory of `<locale>.json` / `<locale>.strings`. */
+/** Locale basenames from a directory of `<locale>.json` / `<locale>.strings`.
+ * @param {string} dir
+ * @param {string} [ext]
+ * @returns {Promise<string[]>}
+ */
 export async function localesIn(dir, ext = '.json') {
 	return (await listDir(dir))
 		.filter((e) => e.isFile() && extname(e.name) === ext)
@@ -188,6 +238,11 @@ export async function localesIn(dir, ext = '.json') {
  * Legal URLs, from whatever listing form this repo already has. Prefer the
  * primary locale; these URLs are shared across locales in practice and ASC
  * rejects a version that is missing them.
+ *
+ * @param {string} root
+ * @param {string} storeDir
+ * @param {string} primaryLocale
+ * @returns {Promise<{legal: Record<'privacyUrl'|'supportUrl'|'marketingUrl', string|null>, from: Record<string, string>}>}
  */
 export async function detectLegal(root, storeDir, primaryLocale) {
 	const sources = [];
@@ -209,11 +264,13 @@ export async function detectLegal(root, storeDir, primaryLocale) {
 	}
 	sources.sort((a, b) => (a.locale === primaryLocale ? -1 : b.locale === primaryLocale ? 1 : 0));
 
+	/** @type {Record<'privacyUrl'|'supportUrl'|'marketingUrl', string|null>} */
 	const legal = { privacyUrl: null, supportUrl: null, marketingUrl: null };
+	/** @type {Record<string, string>} */
 	const from = {};
 	for (const src of sources)
 		for (const [field, key] of URL_KEYS) {
-			const v = src.data?.[key];
+			const v = isJsonObject(src.data) ? src.data[key] : undefined;
 			if (legal[field] || typeof v !== 'string' || !v.startsWith('http')) continue;
 			legal[field] = v;
 			from[field] = src.from;
@@ -225,6 +282,8 @@ export async function detectLegal(root, storeDir, primaryLocale) {
  * Resolve the ASC app id from the bundle id. Never fatal: adopting a repo whose
  * App Store Connect record does not exist yet is a completely normal first day,
  * and the next-steps block tells the operator how to create one.
+ *
+ * @param {string} bundleId
  * @returns {Promise<string|null>}
  */
 export async function ascAppIdFor(bundleId) {
@@ -232,10 +291,10 @@ export async function ascAppIdFor(bundleId) {
 		allowFail: true,
 		fallback: null,
 	});
-	const match = rowsOf(payload, { allowSingle: false }).find(
-		(a) => (a?.attributes?.bundleId ?? a?.bundleId) === bundleId,
-	);
-	return match ? String(match.id ?? match.attributes?.id ?? '') || null : null;
+	const match = rowsOf(payload, { allowSingle: false }).find((a) => attrsOf(a).bundleId === bundleId);
+	if (!match) return null;
+	const id = (isJsonObject(match) ? match.id : undefined) ?? attrsOf(match).id ?? '';
+	return id === '' ? null : String(id);
 }
 
 /**
@@ -244,9 +303,15 @@ export async function ascAppIdFor(bundleId) {
  * which a dynamic config routinely rewrites per variant ("Glovebox (dev)"), and
  * static analysis cannot tell which branch ships. Never fatal: no record yet is
  * the normal first day.
+ *
+ * @param {string|null} appId
+ * @returns {Promise<JsonObject|null>}
  */
 export async function ascAppRecord(appId) {
 	if (!appId) return null;
 	const payload = await asc(['apps', 'view', '--id', String(appId)], { allowFail: true, fallback: null });
-	return payload?.data?.attributes ?? payload?.attributes ?? null;
+	const data = isJsonObject(payload) ? payload.data : null;
+	const attrs = isJsonObject(data) ? data.attributes : null;
+	const found = attrs ?? (isJsonObject(payload) ? payload.attributes : null);
+	return isJsonObject(found) ? found : null;
 }

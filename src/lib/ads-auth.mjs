@@ -3,16 +3,40 @@
 // before that layer can run.
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { loadConfig } from '../config.mjs';
 import { ShipError, c, good, heading, info, note, step, table, warn } from '../log.mjs';
 import { ASC, asc, run as exec } from '../exec.mjs';
 import { rowsOf } from './asc-report.mjs';
 import { emit } from './output.mjs';
 import { expandTilde } from './util.mjs';
+/** @typedef {import('../config.mjs').Config} Config */
+/** @typedef {import('./util.mjs').Json} Json */
+/** @typedef {import('./util.mjs').JsonObject} JsonObject */
+/** @typedef {import('./util.mjs').Flags} Flags */
+/** @typedef {import('./asc-report.mjs').JsonArray} JsonArray */
 
+/**
+ * View any JSON value as an object: objects pass through, scalars and arrays
+ * read as empty — exactly what property access on them would have yielded.
+ * @param {Json|undefined} v
+ * @returns {JsonObject}
+ */
+const asObj = (v) => (typeof v === 'object' && v !== null && !Array.isArray(v) ? v : {});
+/** @param {Json|undefined} v @returns {v is JsonObject} */
+const isObj = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
+/** @param {Json|undefined} v @returns {JsonArray} */
+const asArr = (v) => (Array.isArray(v) ? v : []);
+
+/**
+ * The org a run targets: --org wins, then config, then the environment.
+ * @param {Config|null|undefined} cfg
+ * @param {{org?: Json}} flags
+ * @returns {Json|null}
+ */
 export const orgOf = (cfg, flags) => flags.org ?? cfg?.ads?.orgId ?? process.env.ASC_ADS_ORG_ID ?? null;
 
+/** @param {Config|null|undefined} cfg @param {{org?: Json}} flags @returns {string} */
 export function requireOrg(cfg, flags) {
 	const org = orgOf(cfg, flags);
 	if (!org)
@@ -20,7 +44,7 @@ export function requireOrg(cfg, flags) {
 	return String(org);
 }
 
-export const LOGIN_LINE = [
+const LOGIN_LINE = [
 	'asc ads auth login \\',
 	'  --name "<profile name>" \\',
 	'  --client-id "SEARCHADS.xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" \\',
@@ -30,6 +54,7 @@ export const LOGIN_LINE = [
 	'  --org "<organization id>"',
 ];
 
+/** @returns {Promise<{configured: boolean, text: string}>} */
 export async function authState() {
 	const res = await exec(ASC, ['ads', 'auth', 'status'], { allowFail: true });
 	const text = `${res.stdout}${res.stderr}`.trim();
@@ -37,7 +62,7 @@ export async function authState() {
 	return { configured, text };
 }
 
-export function setupGuide() {
+function setupGuide() {
 	heading('Not configured — how to fix it');
 	process.stdout.write('\n');
 	for (const line of LOGIN_LINE) process.stdout.write(`  ${c.cyan(line)}\n`);
@@ -60,6 +85,7 @@ export function setupGuide() {
 	note('`ship ads plan` works right now without any of this.');
 }
 
+/** @param {{flags: Flags}} ctx @returns {Promise<number>} */
 export async function status({ flags }) {
 	const cfg = await loadConfig(undefined, { optional: true });
 	const { configured, text } = await authState();
@@ -71,23 +97,24 @@ export async function status({ flags }) {
 		return 0;
 	}
 	const [me, acls] = await Promise.all([asc(['ads', 'me'], { fallback: null, allowFail: true }), asc(['ads', 'acls'], { fallback: null, allowFail: true })]);
-	const orgs = rowsOf(acls, { allowSingle: false });
-	if (flags.json) return emit({ configured: true, me: me?.data ?? me, orgs });
+	const orgs = rowsOf(acls, { allowSingle: false }).map(asObj);
+	if (flags.json) return emit({ configured: true, me: isObj(me) ? (me.data ?? me) : (me ?? null), orgs });
 	heading('Apple Search Ads');
 	for (const line of text.split('\n')) note(line);
-	const user = me?.data ?? me ?? {};
-	if (user.parentOrgId || user.userId) info(`user ${c.bold(user.userId ?? '?')} · parent org ${c.bold(user.parentOrgId ?? '?')}`);
+	const user = asObj((isObj(me) ? me.data : me) ?? {});
+	if (user.parentOrgId || user.userId) info(`user ${c.bold(String(user.userId ?? '?'))} · parent org ${c.bold(String(user.parentOrgId ?? '?'))}`);
 	heading(`Organizations (${orgs.length})`);
 	table(orgs, [
 		{ header: 'orgId', get: (o) => o.orgId ?? o.id ?? '' }, { header: 'name', get: (o) => o.orgName ?? o.parentOrgName ?? o.name ?? '' },
-		{ header: 'currency', get: (o) => o.currency ?? '' }, { header: 'roles', get: (o) => (o.roleNames ?? o.roles ?? []).join(',') },
+		{ header: 'currency', get: (o) => o.currency ?? '' }, { header: 'roles', get: (o) => asArr(o.roleNames ?? o.roles).join(',') },
 	]);
 	const selected = orgOf(cfg, flags);
-	if (selected) info(`ads.orgId = ${c.bold(selected)}`);
+	if (selected) info(`ads.orgId = ${c.bold(String(selected))}`);
 	else warn('no ads.orgId in ship.config.json — campaigns/report need --org');
 	return 0;
 }
 
+/** @param {string|boolean|undefined} keyPath @returns {Promise<string>} */
 async function resolvePrivateKey(keyPath) {
 	const abs = resolve(expandTilde(String(keyPath)));
 	if (!existsSync(abs))
@@ -102,6 +129,7 @@ async function resolvePrivateKey(keyPath) {
 	return abs;
 }
 
+/** @param {{flags: Flags}} ctx @returns {Promise<number>} */
 export async function login({ flags }) {
 	const cfg = await loadConfig(undefined, { optional: true });
 	const keyPath = flags['private-key'] ?? flags.privateKey;
@@ -131,6 +159,7 @@ export async function login({ flags }) {
 	return 0;
 }
 
+/** @param {Config|null} [cfg] @returns {Promise<void>} */
 export async function gate(cfg = null) {
 	const { configured, text } = await authState();
 	if (!configured)
@@ -140,10 +169,10 @@ export async function gate(cfg = null) {
 	const want = cfg?.ads?.orgId;
 	if (!want) return;
 	const auth = await asc(['ads', 'auth', 'status'], { fallback: null });
-	const active = auth?.active ?? {};
+	const active = asObj(isObj(auth) ? auth.active : undefined);
 	const live = String(active.org_id ?? active.orgId ?? '');
 	if (live && live !== String(want))
 		throw new ShipError(`the active Apple Ads profile is org ${live}, but ads.orgId is ${want}`, {
-			hint: `profile "${active.profile ?? '?'}" is the default — pass --org ${want}, switch the default with \`asc ads auth use\`, or correct ads.orgId in ${cfg.file}`,
+			hint: `profile "${String(active.profile ?? '?')}" is the default — pass --org ${want}, switch the default with \`asc ads auth use\`, or correct ads.orgId in ${cfg.file}`,
 		});
 }

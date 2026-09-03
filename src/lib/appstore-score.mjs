@@ -32,7 +32,7 @@ const seedsOf = (entry) => (Array.isArray(entry) ? entry : (entry?.seeds ?? []))
 const rankOf = (entry) => (Array.isArray(entry) || typeof entry?.rank !== 'number' ? null : entry.rank);
 
 /** Whole days since an ISO timestamp; null when the storefront gave us nothing to date. */
-export function ageInDays(iso, now = Date.now()) {
+function ageInDays(iso, now = Date.now()) {
 	const t = Date.parse(iso ?? '');
 	return Number.isFinite(t) ? Math.max(0, Math.floor((now - t) / DAY_MS)) : null;
 }

@@ -93,28 +93,45 @@ ${c.dim('Artifacts: .asc/analytics/<locale>-terms.json · -funnel.json · -onboa
 ${c.dim('`ship aso score` uses the terms file as measured demand; `ship loc draft` as provenance.')}
 `;
 
+/** @typedef {import('../lib/report-parse.mjs').TermRow} TermRow */
+/** @typedef {import('../lib/report-parse.mjs').Counts} Counts */
+/** @typedef {import('../lib/report-parse.mjs').FunnelStep} FunnelStep */
+/** @typedef {import('../lib/util.mjs').Flags} Flags */
+/** @typedef {import('../lib/util.mjs').Json} Json */
+/** @typedef {import('../config.mjs').Config} Config */
+
 /** `--json` prints the payload and nothing else, so `pull` routes progress through here. */
 let QUIET = false;
+/** @type {import('../lib/analytics-api.mjs').Say} */
 const say = {
-	step: (m) => !QUIET && step(m),
-	info: (m) => !QUIET && info(m),
-	good: (m) => !QUIET && good(m),
-	note: (m) => !QUIET && note(m),
-	warn: (m) => !QUIET && warn(m),
+	step: (m) => void (!QUIET && step(m)),
+	info: (m) => void (!QUIET && info(m)),
+	good: (m) => void (!QUIET && good(m)),
+	note: (m) => void (!QUIET && note(m)),
+	warn: (m) => void (!QUIET && warn(m)),
 };
 
+/** @param {Flags} flags @returns {boolean} */
 const dryRun = (flags) => isDryRun() || flags['dry-run'] === true || flags.n === true;
 
 // ─── artifacts ──────────────────────────────────────────────────────────────
 
+/** @param {Config} cfg @param {string} locale @returns {string} */
 const termsFile = (cfg, locale) => join(cfg.paths.analytics, `${locale}-terms.json`);
+/** @param {Config} cfg @param {string} locale @returns {string} */
 const funnelFile = (cfg, locale) => join(cfg.paths.analytics, `${locale}-funnel.json`);
+/** @param {Config} cfg @param {string} locale @returns {string} */
 const onboardingFile = (cfg, locale) => join(cfg.paths.analytics, `${locale}-onboarding.json`);
 
-/** Every locale that has been pulled, in artifact order. */
+/**
+ * Every locale that has been pulled, in artifact order.
+ * @param {Config} cfg
+ * @returns {Promise<string[]>}
+ */
 async function pulledLocales(cfg) {
 	if (!existsSync(cfg.paths.analytics)) return [];
 	const files = await readdir(cfg.paths.analytics);
+	/** @type {Set<string>} */
 	const out = new Set();
 	for (const f of files) {
 		const m = /^(.+)-(terms|funnel)\.json$/.exec(f);
@@ -123,6 +140,7 @@ async function pulledLocales(cfg) {
 	return [...out].sort();
 }
 
+/** @param {Config} cfg @param {Flags} flags @returns {Promise<string[]>} */
 async function targetLocales(cfg, flags) {
 	const only = strOf(flags.locale);
 	const pulled = await pulledLocales(cfg);
@@ -133,6 +151,11 @@ async function targetLocales(cfg, flags) {
 
 // ─── pull ───────────────────────────────────────────────────────────────────
 
+/**
+ * @param {string|undefined} file
+ * @param {{territory?: string}} opts
+ * @returns {Promise<{terms: TermRow[], funnel: Counts, matched: boolean, source: string}>}
+ */
 async function pullFromFile(file, { territory }) {
 	const abs = resolve(String(file).replace(/^~(?=\/|$)/, process.env.HOME ?? '~'));
 	if (!existsSync(abs))
@@ -149,18 +172,20 @@ async function pullFromFile(file, { territory }) {
 	return { ...folded, source: abs };
 }
 
+/** @param {string} text @param {string} file @returns {Array<Record<string, string>>} */
 function jsonRecords(text, file) {
 	let data;
 	try {
 		data = JSON.parse(text);
 	} catch (err) {
-		throw new ShipError(`${file} is not valid JSON`, { hint: err.message });
+		throw new ShipError(`${file} is not valid JSON`, { hint: err instanceof Error ? err.message : String(err) });
 	}
 	const rows = Array.isArray(data) ? data : (data.rows ?? data.data ?? data.records ?? []);
 	if (!Array.isArray(rows)) throw new ShipError(`${file}: expected an array of rows`, { hint: 'or {"rows": [...]}' });
 	return rows;
 }
 
+/** @param {{flags: Flags, args?: string[]}} ctx @returns {Promise<number>} */
 async function pull({ flags }) {
 	QUIET = !!flags.json;
 	const cfg = await loadConfig();
@@ -244,11 +269,14 @@ async function pull({ flags }) {
 
 // ─── terms ──────────────────────────────────────────────────────────────────
 
+/** @param {Config} cfg @param {string} locale @returns {Promise<TermRow[]>} */
 async function termsFor(cfg, locale) {
 	const data = await readJSONIfExists(termsFile(cfg, locale));
-	return (data?.rows ?? []).map(normaliseRow).filter((r) => r.term);
+	const rows = data !== null && !Array.isArray(data) && Array.isArray(data.rows) ? data.rows : [];
+	return rows.map(normaliseRow).filter((r) => r.term);
 }
 
+/** @param {{flags: Flags, args?: string[]}} ctx @returns {Promise<number>} */
 async function terms({ flags }) {
 	const cfg = await loadConfig();
 	const locales = await targetLocales(cfg, flags);
@@ -259,6 +287,7 @@ async function terms({ flags }) {
 	const staged = new Map((await readStaged(cfg)).map((s) => [s.locale, s.data]));
 	const top = Math.max(1, Number(flags.top) || 20);
 
+	/** @type {{locale: string, keywords: string, rows: TermRow[], missing: TermRow[]}[]} */
 	const out = [];
 	for (const locale of locales) {
 		const rows = await termsFor(cfg, locale);
@@ -316,14 +345,17 @@ async function terms({ flags }) {
 
 // ─── funnel ─────────────────────────────────────────────────────────────────
 
+/** @param {Config} cfg @param {string} locale @returns {Promise<Counts|null>} */
 async function funnelFor(cfg, locale) {
 	const data = await readJSONIfExists(funnelFile(cfg, locale));
-	if (data)
+	if (data !== null) {
+		const doc = Array.isArray(data) ? /** @type {Record<string, import('../lib/util.mjs').Json>} */ ({}) : data;
 		return {
-			impressions: parseSpreadsheetNumber(data.impressions),
-			pageViews: parseSpreadsheetNumber(data.pageViews),
-			installs: parseSpreadsheetNumber(data.installs),
+			impressions: parseSpreadsheetNumber(doc.impressions),
+			pageViews: parseSpreadsheetNumber(doc.pageViews),
+			installs: parseSpreadsheetNumber(doc.installs),
 		};
+	}
 	// A terms file without its funnel sibling still totals to the same numbers.
 	const rows = await termsFor(cfg, locale);
 	if (!rows.length) return null;
@@ -337,6 +369,7 @@ async function funnelFor(cfg, locale) {
 	);
 }
 
+/** @param {{flags: Flags, args?: string[]}} ctx @returns {Promise<number>} */
 async function funnel({ flags }) {
 	const cfg = await loadConfig();
 	const locales = await targetLocales(cfg, flags);
@@ -391,6 +424,15 @@ async function funnel({ flags }) {
 // of steps with a count", so that is the only thing parsed here — the analysis
 // lives in `onboardingFunnel`, which is pure and tested.
 
+/** @param {Json} s @returns {s is Record<string, Json>} */
+const isStepObj = (s) => s !== null && typeof s === 'object' && !Array.isArray(s);
+
+/**
+ * @param {Config} cfg
+ * @param {string} locale
+ * @param {Flags} flags
+ * @returns {Promise<{steps: FunnelStep[]|Array<Record<string, Json>>, source: string, imported?: boolean, installs?: number, paid?: number}|null>}
+ */
 async function onboardingFor(cfg, locale, flags) {
 	const file = strOf(flags.file);
 	if (file) {
@@ -400,23 +442,35 @@ async function onboardingFor(cfg, locale, flags) {
 	}
 	const doc = await readJSONIfExists(onboardingFile(cfg, locale));
 	if (!doc) return null;
-	const steps = Array.isArray(doc) ? doc : (doc.steps ?? []);
-	return { steps, source: onboardingFile(cfg, locale), installs: parseSpreadsheetNumber(doc.installs), paid: parseSpreadsheetNumber(doc.paid) };
+	const rawSteps = Array.isArray(doc) ? doc : (Array.isArray(doc.steps) ? doc.steps : []);
+	const steps = rawSteps.filter(isStepObj);
+	return {
+		steps,
+		source: onboardingFile(cfg, locale),
+		installs: parseSpreadsheetNumber(Array.isArray(doc) ? undefined : doc.installs),
+		paid: parseSpreadsheetNumber(Array.isArray(doc) ? undefined : doc.paid),
+	};
 }
 
 /**
  * Installs for the paid-conversion rate. `--installs` wins, then the export
  * itself, then the funnel Apple already gave us for this locale — which is the
  * whole reason the two live under one command.
+ * @param {Config} cfg
+ * @param {string} locale
+ * @param {Flags} flags
+ * @param {{steps: FunnelStep[]|Array<Record<string, Json>>, source: string, imported?: boolean, installs?: number, paid?: number}|null} doc
+ * @returns {Promise<{installs: number, from: string|null}>}
  */
 async function installsFor(cfg, locale, flags, doc) {
 	const flag = parseSpreadsheetNumber(strOf(flags.installs));
 	if (flag > 0) return { installs: flag, from: '--installs' };
-	if (doc?.installs > 0) return { installs: doc.installs, from: 'export' };
+	if ((doc?.installs ?? 0) > 0) return { installs: /** @type {number} */ (doc?.installs), from: 'export' };
 	const apple = await funnelFor(cfg, locale);
-	return apple?.installs > 0 ? { installs: apple.installs, from: 'App Store funnel' } : { installs: 0, from: null };
+	return (apple?.installs ?? 0) > 0 ? { installs: /** @type {Counts} */ (apple).installs, from: 'App Store funnel' } : { installs: 0, from: null };
 }
 
+/** @param {{flags: Flags, args?: string[]}} ctx @returns {Promise<number>} */
 async function onboarding({ flags }) {
 	const cfg = await loadConfig();
 	const locale = strOf(flags.locale) ?? (await targetLocales(cfg, flags))[0] ?? cfg.asc?.primaryLocale ?? 'en-US';
@@ -451,7 +505,7 @@ async function onboarding({ flags }) {
 	]);
 
 	const report = new Report(`Gates ${c.dim(`(reach ≥ ${fraction(ONBOARDING.paywallReach)}, ${ONBOARDING.minScreens}-${ONBOARDING.maxScreens} screens, ≤ ${ONBOARDING.maxQuizScreens} quiz)`)}`);
-	for (const f of analysis.findings) report[f.level === 'skip' ? 'skip' : f.level](f.name, f.detail);
+	for (const f of analysis.findings) report[f.level](f.name, f.detail);
 
 	if (installs > 0) {
 		const detail = `${paid}/${installs} = ${fraction(tier.rate)} ${c.dim(`(floor ${fraction(CONVERSION.floor)} · healthy ${fraction(CONVERSION.healthy)} · excellent ${fraction(CONVERSION.excellent)}; installs from ${from})`)}`;
@@ -466,8 +520,10 @@ async function onboarding({ flags }) {
 	return report.code;
 }
 
+/** @type {Record<string, (ctx: {flags: Flags, args?: string[]}) => Promise<number>>} */
 const SUB = { funnel, onboarding, terms, pull };
 
+/** @param {{args: string[], flags: Flags}} ctx @returns {Promise<number|void>} */
 export async function run({ args, flags }) {
 	const [sub = 'funnel', ...rest] = args;
 	const fn = SUB[sub];

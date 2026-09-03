@@ -3,7 +3,7 @@
 // where a release is broken while every ASC console looks green.
 import { asc } from '../exec.mjs';
 import { LIMITS } from '../config.mjs';
-import { ShipError, c, note, table } from '../log.mjs';
+import { ShipError, c, note } from '../log.mjs';
 import { metric, reportRows } from './asc-report.mjs';
 import { DASH } from './fmt.mjs';
 import { keywordList, readStaged } from './locales.mjs';

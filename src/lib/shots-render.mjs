@@ -20,13 +20,10 @@
 //   shots-verify.mjs    — calibration + safety vs the design reference
 export {
 	bandBounds,
-	captionBudget,
-	captionRect,
 	frameFile,
 	glassRect,
 	measureBand,
 	parseColour,
-	sourceLineCounts,
 } from './shots-geometry.mjs';
 export { renderLocales } from './shots-composite.mjs';
 export { verify } from './shots-verify.mjs';

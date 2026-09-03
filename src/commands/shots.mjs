@@ -303,7 +303,7 @@ async function figma({ args, flags }) {
 
 	if (flags.pin) {
 		const raw = JSON.parse(await readFile(spec.file, 'utf8'));
-		raw.source = { ...(raw.source ?? {}), version: meta.version, lastModified: meta.lastModified, checkedAt: new Date().toISOString() };
+		raw.source = { ...raw.source, version: meta.version, lastModified: meta.lastModified, checkedAt: new Date().toISOString() };
 		await writeFile(spec.file, `${JSON.stringify(raw, null, '\t')}\n`);
 		note(`pinned ${relative(cfg.root, spec.file)} to version ${meta.version}`);
 	}

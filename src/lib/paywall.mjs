@@ -44,7 +44,7 @@ export const CONVERSION = { floor: 0.03, healthy: 0.05, excellent: 0.1 };
  * The reference ladder. Not a recommendation to copy — a set of edges that cost
  * money when crossed, derived from what the category leaders converged on.
  */
-export const LADDER = {
+const LADDER = {
 	annualUsd: 49.99,
 	monthlyUsd: 14.99,
 	weeklyUsd: 7.99,
@@ -55,11 +55,14 @@ export const LADDER = {
 /** Offering lookup keys that mean "this is the save offer, not the paywall". */
 export const WINBACK_PATTERN = /win.?back|retention|exit|save|downsell|cancel/i;
 
+/** @param {import('./util.mjs').Json|null|undefined} v */
 const num = (v) => {
 	const n = typeof v === 'string' ? Number(v.replace(/[^0-9.-]/g, '')) : Number(v);
 	return Number.isFinite(n) ? n : 0;
 };
+/** @param {number} top @param {number} bottom */
 const rate = (top, bottom) => (bottom > 0 ? top / bottom : 0);
+/** @param {number} n */
 export const pct = (n) => `${(n * 100).toFixed(1)}%`;
 
 // ─── install → paid ──────────────────────────────────────────────────────────
@@ -87,6 +90,7 @@ const TIER = {
 /**
  * Where an install → paid rate sits against the tiers that decide what to fix.
  * @param {number} r installs-to-paid rate as a fraction
+ * @returns {{rate: number, tier: string, means: string, fix: string, healthy: boolean}}
  */
 export function conversionTier(r) {
 	const value = Math.max(0, num(r));
@@ -105,6 +109,8 @@ export function conversionTier(r) {
  * A step's role. `paywall` terminates the onboarding funnel; `quiz` steps are
  * counted separately because a long quiz is the most common source of drop-off
  * that feels productive to build.
+ * @param {{name?: import('./util.mjs').Json, kind?: import('./util.mjs').Json, type?: import('./util.mjs').Json, step?: import('./util.mjs').Json, event?: import('./util.mjs').Json}|null|undefined} s
+ * @returns {string}
  */
 const roleOf = (s) => {
 	const kind = String(s?.kind ?? s?.type ?? '').toLowerCase();
@@ -115,6 +121,9 @@ const roleOf = (s) => {
 	return 'screen';
 };
 
+/** One folded funnel step: measured counts plus the derived drop numbers. */
+/** @typedef {{name: string, users: number, role: string, dropRate: number, reach: number}} FunnelStep */
+
 /**
  * Fold ordered funnel steps into per-step drop-off plus the three numbers that
  * decide whether the onboarding is the problem: how many reach the paywall, how
@@ -124,14 +133,17 @@ const roleOf = (s) => {
  * Non-monotonic counts (a step showing more users than the one before it) are a
  * broken export, not a funnel, and are reported rather than smoothed.
  *
- * @param {Array<{name?:string, users?:number, kind?:string}>} input
+ * @param {Array<{name?: import('./util.mjs').Json, step?: import('./util.mjs').Json, event?: import('./util.mjs').Json, users?: import('./util.mjs').Json, count?: import('./util.mjs').Json, value?: import('./util.mjs').Json, kind?: import('./util.mjs').Json, type?: import('./util.mjs').Json}>} input
+ * @returns {{entered: number, steps: FunnelStep[], screens: number, quizScreens: number, reach: number, worst: FunnelStep|null, healthy: boolean, findings: {level: 'ok'|'warn'|'fail', name: string, detail: string}[]}}
  */
 export function onboardingFunnel(input) {
-	const steps = (Array.isArray(input) ? input : []).map((s, i) => ({
-		name: String(s?.name ?? s?.step ?? s?.event ?? `step ${i + 1}`),
-		users: num(s?.users ?? s?.count ?? s?.value),
-		role: roleOf(s),
-	}));
+	/** @type {FunnelStep[]} */
+	const steps = (Array.isArray(input) ? input : []).map((s, i) =>
+		/** @type {FunnelStep} */ ({
+			name: String(s?.name ?? s?.step ?? s?.event ?? `step ${i + 1}`),
+			users: num(s?.users ?? s?.count ?? s?.value),
+			role: roleOf(s),
+		}));
 
 	const entered = steps.length ? steps[0].users : 0;
 	let prev = entered;
@@ -153,9 +165,11 @@ export function onboardingFunnel(input) {
 	// Only steps before the paywall are onboarding problems; drop-off *on* the
 	// paywall is a pricing and copy problem and has its own tier scale.
 	const body = steps.slice(1, screens);
-	const worst = body.reduce((a, b) => (b.dropRate > (a?.dropRate ?? -1) ? b : a), null);
+	const worst = body.reduce((a, b) => (b.dropRate > (a?.dropRate ?? -1) ? b : a), /** @type {FunnelStep|null} */ (null));
 
+	/** @type {{level: 'ok'|'warn'|'fail', name: string, detail: string}[]} */
 	const findings = [];
+	/** @param {'ok'|'warn'|'fail'} level @param {string} name @param {string} detail */
 	const add = (level, name, detail) => findings.push({ level, name, detail });
 	funnelFindings({ steps, paywall, reach, screens, quizScreens, worst, regressed, add });
 
@@ -172,6 +186,7 @@ export function onboardingFunnel(input) {
 }
 
 /** Every audit rule for one onboarding funnel, in report order. */
+/** @param {{steps: FunnelStep[], paywall: FunnelStep|null, reach: number, screens: number, quizScreens: number, worst: FunnelStep|null, regressed: boolean, add: (level: 'ok'|'warn'|'fail', name: string, detail: string) => void}} ctx @returns {void} */
 function funnelFindings({ steps, paywall, reach, screens, quizScreens, worst, regressed, add }) {
 	if (!steps.length) add('fail', 'instrumentation', 'no onboarding funnel recorded — an uninstrumented onboarding cannot be tuned in either direction');
 	if (regressed) add('fail', 'export', 'a step reports more users than the step before it — this is not an ordered funnel export');
@@ -210,6 +225,7 @@ function funnelFindings({ steps, paywall, reach, screens, quizScreens, worst, re
 // ─── the price ladder ────────────────────────────────────────────────────────
 
 /** ASC enums and ISO 8601 durations, collapsed to the four periods that price. */
+/** @type {[RegExp, 'weekly'|'monthly'|'other'|'annual'][]} */
 const PERIODS = [
 	[/^(P1W|ONE_WEEK|WEEKLY?)$/i, 'weekly'],
 	[/^(P1M|ONE_MONTH|MONTHLY?)$/i, 'monthly'],
@@ -218,6 +234,7 @@ const PERIODS = [
 ];
 
 /** @returns {'weekly'|'monthly'|'annual'|'other'|null} */
+/** @param {import('./util.mjs').Json|null|undefined} raw */
 export function normalisePeriod(raw) {
 	const s = String(raw ?? '').trim();
 	if (!s) return null;
@@ -225,18 +242,21 @@ export function normalisePeriod(raw) {
 	return null;
 }
 
+/** @param {Array<{label: string, period: import('./util.mjs').Json|null, priceUsd: number|null, trialDays: number}>} subs @param {'weekly'|'monthly'|'annual'|'other'} period @returns {Array<{label: string, period: import('./util.mjs').Json|null, priceUsd: number|null, trialDays: number}>} */
 const byPeriod = (subs, period) => subs.filter((s) => normalisePeriod(s.period) === period);
 
 /**
  * Audit the shape of the ladder — not the per-territory numbers (`ship price`
  * owns those), the edges that cost money regardless of storefront.
  *
- * @param {{subscriptions?:Array<{name?:string, productId?:string, period?:string, priceUsd?:number, trialDays?:number}>,
- *          offerings?:Array<{lookup_key?:string, is_current?:boolean}>}} input
- * @returns {{level:'ok'|'warn'|'fail', name:string, detail:string}[]}
+ * @param {{subscriptions?:Array<{name?: string|null, productId?: string|null, period?: import('./util.mjs').Json|null, priceUsd?: number|null, trialDays?: number|null}>,
+ *          offerings?:Array<{id?: import('./util.mjs').Json, lookup_key?: import('./util.mjs').Json, is_current?: import('./util.mjs').Json}>}} input
+ * @returns {{level:'ok'|'warn'|'fail'|'skip', name:string, detail:string}[]}
  */
 export function auditLadder({ subscriptions = [], offerings = [] } = {}) {
+	/** @type {{level:'ok'|'warn'|'fail'|'skip', name:string, detail:string}[]} */
 	const rows = [];
+	/** @param {'ok'|'warn'|'fail'|'skip'} level @param {string} name @param {string} [detail] */
 	const add = (level, name, detail = '') => rows.push({ level, name, detail });
 	const subs = (Array.isArray(subscriptions) ? subscriptions : []).map((s) => ({
 		label: s?.name ?? s?.productId ?? '(unnamed)',
@@ -288,7 +308,7 @@ export function auditLadder({ subscriptions = [], offerings = [] } = {}) {
 			`no win-back offering — "manage subscription" should ask why first and then offer ~$${LADDER.winbackUsd}/year to subscribers not already on the yearly`,
 		);
 	else if (winback.some((o) => o.is_current))
-		add('fail', 'retention offer', `${winback.find((o) => o.is_current).lookup_key} is marked current — the save offer is being served as the main paywall`);
+		add('fail', 'retention offer', `${winback.find((o) => o.is_current)?.lookup_key} is marked current — the save offer is being served as the main paywall`);
 	else add('ok', 'retention offer', winback.map((o) => o.lookup_key).join(', '));
 
 	return rows;

@@ -48,7 +48,7 @@ const CAPTURE_DEFAULTS = {
  *   {{month-1}}      the previous calendar month
  *   {{now}} {{now-2}} full ISO timestamps
  */
-export function resolveDates(value, now = new Date()) {
+function resolveDates(value, now = new Date()) {
 	if (typeof value === 'string')
 		return value.replaceAll(/\{\{(today|month|now)(?:([-+])(\d+))?\}\}/g, (_, kind, sign, n) => {
 			const d = new Date(now);
@@ -95,7 +95,7 @@ export function seedFor(seed, locale, now = new Date()) {
  * @returns {Promise<Array<{locale:string, frame:string, file:string}>>}
  */
 export async function captureWeb(cfg, spec, locales, { onFrame } = {}) {
-	const capture = { ...CAPTURE_DEFAULTS, ...(spec.capture ?? {}) };
+	const capture = { ...CAPTURE_DEFAULTS, ...spec.capture };
 	if (!capture.url)
 		throw new ShipError('spec.capture.url is not set', {
 			hint: 'start the web build (`npx expo start --web`) and point capture.url at it',

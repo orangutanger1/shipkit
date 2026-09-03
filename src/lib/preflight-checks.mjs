@@ -3,15 +3,34 @@
 // cost of that is a bounced submission.
 import { SYM } from '../log.mjs';
 
+/** @typedef {import('./util.mjs').Json} Json */
+/** @typedef {import('./util.mjs').JsonObject} JsonObject */
+/** @typedef {import('./util.mjs').JsonArray} JsonArray */
+/** What a {@link import('../log.mjs').Report} method is named after. */
+/** @typedef {'ok'|'warn'|'fail'|'skip'} Level */
+/** How an asc probe turned out; `unavailable` is added by the live wrappers. */
+/** @typedef {'empty'|'ok'|'unsupported'|'unauthorized'|'error'|'unavailable'} AscState */
+/** @typedef {{state: AscState, payload: Json|null, detail: string}} AscResult */
+
+/** @param {Json|undefined} v @returns {v is JsonObject} */
+const isJsonObject = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
+
 export const ENCRYPTION_KEY = 'ITSAppUsesNonExemptEncryption';
 export const COMPLIANCE_CODE_KEY = 'ITSEncryptionExportComplianceCode';
 
 const LEVELS = new Set(['ok', 'warn', 'fail', 'skip']);
 
-/** asc/revenuecat severity words → Report methods. Unknown severities are failures. */
+/** @param {string} s @returns {s is Level} */
+const isLevel = (s) => LEVELS.has(s);
+
+/** asc/revenuecat severity words → Report methods. Unknown severities are failures.
+ * @param {string} raw
+ * @param {Level} [fallback]
+ * @returns {Level}
+ */
 export function levelOf(raw, fallback = 'fail') {
 	const s = String(raw ?? '').toLowerCase();
-	if (LEVELS.has(s)) return s;
+	if (isLevel(s)) return s;
 	if (s === 'error' || s === 'invalid' || s === 'blocker' || s === 'critical') return 'fail';
 	if (s === 'warning' || s === 'caution') return 'warn';
 	if (s === 'info' || s === 'notice' || s === 'passed' || s === 'pass' || s === 'valid') return 'ok';
@@ -19,6 +38,7 @@ export function levelOf(raw, fallback = 'fail') {
 	return fallback;
 }
 
+/** @param {Json|undefined} s @returns {string} */
 export const clean = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
 
 /**
@@ -26,21 +46,33 @@ export const clean = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
  * `remediation.steps` is `checks` already sorted into fix order (blocking first, then
  * by `order`), so it is what we fold in — the first row is the next thing to do.
  * We still fall back to `checks` in case a future asc drops the plan.
+ * @param {Json|undefined} payload
+ * @returns {JsonArray}
  */
 export function validationItems(payload) {
-	const root = payload?.data?.attributes ?? payload?.data ?? payload;
+	const obj = isJsonObject(payload) ? payload : null;
+	const data = isJsonObject(obj?.data) ? obj.data : null;
+	const root = data?.attributes ?? data ?? payload;
 	if (!root) return [];
 	if (Array.isArray(root)) return root;
-	if (Array.isArray(root.remediation?.steps) && root.remediation.steps.length) return root.remediation.steps;
+	if (!isJsonObject(root)) return [];
+	const plan = isJsonObject(root.remediation) ? root.remediation.steps : undefined;
+	if (Array.isArray(plan) && plan.length) return plan;
 	for (const key of ['checks', 'problems', 'issues', 'errors', 'results']) {
-		if (Array.isArray(root[key]) && root[key].length) return root[key];
+		const rows = root[key];
+		if (Array.isArray(rows) && rows.length) return rows;
 	}
 	return [];
 }
 
-/** One validation step/check → {level, name, detail}. */
+/** One validation step/check → {level, name, detail}.
+ * @param {Json|undefined} item
+ * @param {number} i
+ * @returns {{level: Level, name: string, detail: string}}
+ */
 export function validationRow(item, i) {
 	if (typeof item === 'string') return { level: 'fail', name: `#${i + 1}`, detail: clean(item) };
+	if (!isJsonObject(item)) return { level: 'fail', name: `#${i + 1}`, detail: '' };
 	const name = clean(item.checkId ?? item.id ?? item.check ?? item.field) || `#${i + 1}`;
 	const subject = item.resourceType && item.resourceId ? `${item.resourceType} ${item.resourceId}` : null;
 	const detail = clean(
@@ -55,15 +87,27 @@ export function validationRow(item, i) {
 	return { level, name, detail };
 }
 
-const infoPlist = (expo) => (expo?.expo ?? expo)?.ios?.infoPlist ?? null;
+/** @param {Json|undefined} expo @returns {JsonObject|null} */
+const infoPlist = (expo) => {
+	const root = isJsonObject(expo) ? (expo.expo ?? expo) : expo;
+	const plist = isJsonObject(root) ? root.ios : null;
+	const entries = isJsonObject(plist) ? plist.infoPlist : null;
+	return isJsonObject(entries) ? entries : null;
+};
 
-/** True when the Expo config never answers Apple's export compliance question. */
+/** True when the Expo config never answers Apple's export compliance question.
+ * @param {Json|undefined} expo
+ * @returns {boolean}
+ */
 export function missingEncryptionKey(expo) {
 	const value = infoPlist(expo)?.[ENCRYPTION_KEY];
 	return value === undefined || value === null || value === '';
 }
 
-/** True when the app claims non-exempt encryption but files no compliance code. */
+/** True when the app claims non-exempt encryption but files no compliance code.
+ * @param {Json|undefined} expo
+ * @returns {boolean}
+ */
 export function missingComplianceCode(expo) {
 	const plist = infoPlist(expo);
 	const value = plist?.[ENCRYPTION_KEY];
@@ -82,12 +126,18 @@ export const EU_LOCALES = new Set([
 	'nl-nl', 'pl', 'pl-pl', 'pt-pt', 'ro', 'ro-ro', 'sk', 'sk-sk', 'sl', 'sv', 'sv-se',
 ]);
 
-/** The EU-storefront locales in a store.locales list, in the order given. */
+/** The EU-storefront locales in a store.locales list, in the order given.
+ * @param {string[]|undefined} locales
+ * @returns {string[]}
+ */
 export function euLocalesIn(locales) {
 	return (Array.isArray(locales) ? locales : []).filter((l) => EU_LOCALES.has(String(l).trim().toLowerCase()));
 }
 
-/** True when shipping these locales requires a declared EU trader. */
+/** True when shipping these locales requires a declared EU trader.
+ * @param {string[]|undefined} locales
+ * @returns {boolean}
+ */
 export function euTraderRequired(locales) {
 	return euLocalesIn(locales).length > 0;
 }
@@ -97,32 +147,48 @@ export function euTraderRequired(locales) {
 const AGE_RATING_IGNORED = /override|kidsAgeBand|^(type|id|data|links|relationships)$/i;
 
 /**
+ * @param {Json|undefined} payload
  * @returns {null|string[]} null when the app has no declaration at all, otherwise
  * the unanswered question names — `[]` means the questionnaire is complete.
  */
 export function ageRatingGaps(payload) {
-	const attrs = payload?.data?.attributes ?? payload?.attributes ?? payload?.data ?? payload;
+	const obj = isJsonObject(payload) ? payload : null;
+	const data = isJsonObject(obj?.data) ? obj.data : null;
+	const attrs = data?.attributes ?? obj?.attributes ?? data ?? payload;
 	if (!attrs || typeof attrs !== 'object' || Array.isArray(attrs)) return null;
 	const questions = Object.keys(attrs).filter((k) => !AGE_RATING_IGNORED.test(k));
 	if (!questions.length) return null;
 	return questions.filter((k) => attrs[k] === null || attrs[k] === undefined || attrs[k] === '');
 }
 
-/** The answered content rights value, or null when the question is unanswered. */
+/** The answered content rights value, or null when the question is unanswered.
+ * @param {Json|undefined} payload
+ * @returns {string|null}
+ */
 export function contentRightsAnswer(payload) {
-	const root = payload?.data?.attributes ?? payload?.data ?? payload;
-	const value = String(root?.contentRightsDeclaration ?? root?.content_rights_declaration ?? '')
+	const obj = isJsonObject(payload) ? payload : null;
+	const data = isJsonObject(obj?.data) ? obj.data : null;
+	const root = data?.attributes ?? data ?? payload;
+	const value = String(
+		isJsonObject(root) ? ((root.contentRightsDeclaration ?? root.content_rights_declaration) ?? '') : '',
+	)
 		.trim()
 		.toUpperCase();
 	return value && value !== 'NOT_ANSWERED' && value !== 'NONE' ? value : null;
 }
 
-/** How many data usages the app declares. Zero is an empty privacy label. */
+/** How many data usages the app declares. Zero is an empty privacy label.
+ * @param {Json|undefined} payload
+ * @returns {number}
+ */
 export function privacyDeclarationCount(payload) {
-	const root = payload?.data ?? payload;
+	const data = isJsonObject(payload) ? payload.data : undefined;
+	const root = data ?? payload;
 	if (Array.isArray(root)) return root.length;
-	for (const key of ['declarations', 'dataUsages', 'dataTypes', 'purposes', 'categories', 'privacyDetails'])
-		if (Array.isArray(root?.[key])) return root[key].length;
+	for (const key of ['declarations', 'dataUsages', 'dataTypes', 'purposes', 'categories', 'privacyDetails']) {
+		const rows = isJsonObject(root) ? root[key] : undefined;
+		if (Array.isArray(rows)) return rows.length;
+	}
 	return 0;
 }
 
@@ -130,14 +196,17 @@ const UNSUPPORTED = /unknown (sub)?command|unrecognized (sub)?command|not a vali
 const UNAUTHORIZED =
 	/\b40[13]\b|unauthori[sz]ed|forbidden|not authenticated|authentication (failed|required)|no (stored |valid )?credentials|no active session|session (has )?expired|auth login/i;
 
-/** Salvage JSON from asc stdout the way runJSON does, but never throwing. */
-export function parseSalvagedJSON(text) {
+/** Salvage JSON from asc stdout the way runJSON does, but never throwing.
+ * @param {Json|undefined} text
+ * @returns {Json|null}
+ */
+function parseSalvagedJSON(text) {
 	const body = String(text ?? '').trim();
 	if (!body) return null;
 	for (const start of [0, body.search(/[[{]/), body.indexOf('{')]) {
 		if (start < 0) continue;
 		try {
-			return JSON.parse(body.slice(start));
+			return /** @type {Json} */ (JSON.parse(body.slice(start)));
 		} catch {
 			/* asc occasionally prefixes a banner; try the next candidate */
 		}
@@ -150,6 +219,8 @@ export function parseSalvagedJSON(text) {
  * subcommand) and `unauthorized` (no key for it) are answers, not failures: a
  * preflight that hard-fails because the CLI is a version behind is one nobody runs.
  * Pure, so the tests never spawn asc.
+ * @param {{code?: number, stdout?: string, stderr?: string}} [ascResult]
+ * @returns {AscResult}
  */
 export function classifyAsc({ code = 0, stdout = '', stderr = '' } = {}) {
 	const payload = parseSalvagedJSON(stdout);

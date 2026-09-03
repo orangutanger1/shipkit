@@ -48,6 +48,34 @@ import { keywordList, readStaged } from '../lib/locales.mjs';
 import { indexedWords, isCovered, keywordFieldLength } from '../lib/text.mjs';
 import { resolveSubcommand, strOf } from '../lib/util.mjs';
 
+/** @typedef {import('../lib/util.mjs').Json} Json */
+/** @typedef {import('../lib/util.mjs').JsonObject} JsonObject */
+/** @typedef {import('../lib/util.mjs').Flags} Flags */
+/** @typedef {import('../lib/util.mjs').SubCtx} SubCtx */
+/** @typedef {import('../config.mjs').Config} Config */
+/** @typedef {import('../lib/locales.mjs').ListingData} ListingData */
+/** @typedef {import('../lib/locales.mjs').StagedListing} StagedListing */
+/** @typedef {import('../lib/listing-audit.mjs').Glossary} Glossary */
+/** @typedef {import('../lib/listing-audit.mjs').Finding} Finding */
+/** @typedef {import('../lib/loc-index.mjs').HarvestIndex} HarvestIndex */
+
+/**
+ * View any JSON value as an object: objects pass through untouched, anything
+ * else reads as an empty row — exactly what property access on a scalar would
+ * have yielded.
+ *
+ * @param {Json|undefined} v
+ * @returns {JsonObject}
+ */
+const asObject = (v) => (typeof v === 'object' && v !== null && !Array.isArray(v) ? v : {});
+
+/** One locale's seed pass result. */
+/** @typedef {{market: Json, seeds: string[], from: Record<string, string>, titles: number}} SeedRow */
+/** One locale's draft pass result. */
+/** @typedef {{locale: string, file: string, created: boolean, generated: string[], notes: Record<string, string>, keywords: string, provenance: Record<string, 'analytics'|'harvest'|'manual'>, todo: string[]}} DraftRow */
+/** One locale's readiness row for `ship loc status`. */
+/** @typedef {{locale: string, staged: boolean, drafted: boolean, review: string, fails: number, seeds: number, harvested: number, shots: number}} StatusRow */
+
 // The audit is the shared contract (`review` prints it, `status` counts it);
 // re-exported so consumers can keep importing it from the command.
 export { auditListing, isEuLocale };
@@ -77,23 +105,44 @@ ${c.dim('Order: lock → seed → ship aso harvest/score → draft → review �
 ${c.dim('Artifacts: aso.seedsByLocale in ship.config.json · store/glossary.json · store/staged/<locale>.json')}
 `;
 
+/** @param {string|boolean|undefined} v @returns {string[]} */
 const csv = (v) => (strOf(v) ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+/** @param {Flags} flags @returns {boolean} */
 const dryRun = (flags) => isDryRun() || flags['dry-run'] === true || flags.n === true;
 
 /** The locale everything is authored in. `loc.sourceLocale` overrides the ASC primary. */
+/** @param {Config} cfg @returns {string} */
 const sourceOf = (cfg) => cfg.loc.sourceLocale ?? cfg.asc.primaryLocale;
 
 /** Fields a listing must fill before it is submittable. */
 const REQUIRED = ['name', 'subtitle', 'keywords', 'description'];
 
+/** @param {Config} cfg @param {string} locale @returns {string} */
 const stagedFile = (cfg, locale) => join(cfg.paths.staged, `${locale}.json`);
+/** @param {Config} cfg @param {string} locale @returns {string} */
 const shotsDir = (cfg, locale) => join(cfg.paths.store, 'screenshots', locale);
 
-async function seed({ flags }) {
+/**
+ * The non-optional loadConfig throws before it can return null; this narrows
+ * the type so callers do not repeat the check.
+ *
+ * @returns {Promise<Config>}
+ */
+async function requireConfig() {
 	const cfg = await loadConfig();
+	if (!cfg) throw new ShipError('no ship.config.json found', { hint: 'run `ship init` inside the app repo to create one' });
+	return cfg;
+}
+
+/**
+ * @param {SubCtx} ctx
+ * @returns {Promise<number>}
+ */
+async function seed({ flags }) {
+	const cfg = await requireConfig();
 	const source = sourceOf(cfg);
 	const staged = await readStaged(cfg);
-	const sourceData = staged.find((s) => s.locale === source)?.data ?? {};
+	const sourceData = staged.find((s) => s.locale === source)?.data ?? /** @type {ListingData} */ ({});
 	const glossary = await readGlossary(cfg, source);
 	const only = strOf(flags.locale);
 	const locales = (only ? [only] : (cfg.store.locales ?? [])).filter((l) => l !== source);
@@ -118,12 +167,13 @@ async function seed({ flags }) {
 		info(`probing with ${c.cyan(probes.join(', '))}`);
 	}
 
+	/** @type {Record<string, SeedRow>} */
 	const out = {};
 	for (const locale of locales) {
 		const row = await seedLocale({ cfg, locale, probes, ids, glossary, brand, extra, top, json: !!flags.json });
 		if (!row) continue;
 		out[locale] = row;
-		cfg.aso.seedsByLocale = { ...(cfg.aso.seedsByLocale ?? {}), [locale]: row.seeds };
+		cfg.aso.seedsByLocale = { ...cfg.aso.seedsByLocale, [locale]: row.seeds };
 	}
 
 	if (!dry) await saveConfig(cfg);
@@ -139,8 +189,11 @@ async function seed({ flags }) {
  * One locale's seed pass: probe its storefront with the source terms, look up
  * the source-locale competitors abroad, then mine the titles into seed terms.
  * Returns null (after a warning) when no App Store market is known.
+ *
+ * @param {{locale: string, probes: string[], ids: string[], glossary: Glossary, brand: string[], extra: string[], top: number, json: boolean}} p
+ * @returns {Promise<SeedRow|null>}
  */
-async function seedLocale({ cfg, locale, probes, ids, glossary, brand, extra, top, json }) {
+async function seedLocale({ locale, probes, ids, glossary, brand, extra, top, json }) {
 	const market = marketFor(locale);
 	if (!market) {
 		warn(`no App Store market known for ${locale} — skipped`);
@@ -168,6 +221,10 @@ async function seedLocale({ cfg, locale, probes, ids, glossary, brand, extra, to
 }
 
 /** Titles from the storefront's own top results, one probe term at a time. */
+/**
+ * @param {{probes: string[], market: {country: Json, lang: Json}, locale: string, json: boolean}} p
+ * @returns {Promise<string[]>}
+ */
 async function probeTitles({ probes, market, locale, json }) {
 	const titles = [];
 	for (const term of probes) {
@@ -178,15 +235,31 @@ async function probeTitles({ probes, market, locale, json }) {
 	return titles;
 }
 
-async function draft({ flags }) {
-	const cfg = await loadConfig();
+/**
+ * Load the config and the staged listing for the source locale — the prologue
+ * every subcommand that derives from the authored listing shares.
+ *
+ * @param {string} hint what to do when the source listing is missing
+ * @returns {Promise<{cfg: Config, source: string, staged: StagedListing[], src: StagedListing}>}
+ */
+async function sourceListing(hint) {
+	const cfg = await requireConfig();
 	const source = sourceOf(cfg);
 	const staged = await readStaged(cfg);
 	const src = staged.find((s) => s.locale === source);
 	if (!src)
 		throw new ShipError(`no staged listing for the source locale ${source}`, {
-			hint: `author ${stagedFile(cfg, source)} first — everything else is derived from it`,
+			hint: `author ${stagedFile(cfg, source)} first — ${hint}`,
 		});
+	return { cfg, source, staged, src };
+}
+
+/**
+ * @param {SubCtx} ctx
+ * @returns {Promise<number>}
+ */
+async function draft({ flags }) {
+	const { cfg, source, staged, src } = await sourceListing('everything else is derived from it');
 	const glossary = await readGlossary(cfg, source);
 	const only = strOf(flags.locale);
 	const locales = (only ? [only] : [...new Set([...(cfg.store.locales ?? []), ...staged.map((s) => s.locale)])])
@@ -200,6 +273,7 @@ async function draft({ flags }) {
 	const force = flags.force === true;
 	const dry = dryRun(flags);
 	const brand = new Set((glossary.neverTranslate ?? []).map((t) => String(t).toLocaleLowerCase()));
+	/** @type {DraftRow[]} */
 	const results = [];
 	for (const locale of locales)
 		results.push(await draftLocale({ cfg, src, glossary, brand, source, locale, force, dry }));
@@ -210,6 +284,11 @@ async function draft({ flags }) {
 }
 
 /** The human summary after a draft pass: one table row per locale, then per-field notes. */
+/**
+ * @param {DraftRow[]} results
+ * @param {{source: string, dry: boolean}} p
+ * @returns {void}
+ */
 function printDraft(results, { source, dry }) {
 	heading(`Draft from ${source} ${dry ? c.dim('(dry run)') : ''}`);
 	table(results, [
@@ -231,14 +310,26 @@ function printDraft(results, { source, dry }) {
 }
 
 /** Derive every un-held field of one locale: glossary, brand rule, local research, or a marked TODO. */
+/**
+ * @param {{cfg: Config, src: StagedListing, glossary: Glossary, brand: Set<string>, source: string, locale: string, force: boolean, dry: boolean}} p
+ * @returns {Promise<DraftRow>}
+ */
 async function draftLocale({ cfg, src, glossary, brand, source, locale, force, dry }) {
 	const file = stagedFile(cfg, locale);
-	const existing = (await readJSONIfExists(file)) ?? {};
+	const existing = /** @type {Partial<ListingData>} */ ((await readJSONIfExists(file)) ?? {});
+	/** @type {JsonObject} */
 	const notes = existing.notes && typeof existing.notes === 'object' ? { ...existing.notes } : {};
 	if (typeof existing.notes === 'string') notes.note = existing.notes;
 
+	/** @type {JsonObject} */
 	const out = { ...existing, locale };
+	/** @type {Record<string, string>} */
 	const why = {};
+	/**
+	 * @param {string} field
+	 * @param {Json} value
+	 * @param {string} reason
+	 */
 	const settle = (field, value, reason) => {
 		out[field] = value;
 		why[field] = reason;
@@ -246,10 +337,11 @@ async function draftLocale({ cfg, src, glossary, brand, source, locale, force, d
 	};
 	// A field a human filled in is the whole point of the exercise; only an
 	// empty one or one still carrying our own marker is ours to rewrite.
+	/** @param {string} field @returns {boolean} */
 	const human = (field) => !force && String(existing[field] ?? '').trim() && !hasTodo(existing[field]);
 	const marker = todoMarker(locale);
 
-	for (const field of ['name', 'subtitle']) {
+	for (const field of /** @type {('name'|'subtitle')[]} */ (['name', 'subtitle'])) {
 		if (human(field)) continue;
 		const plan = copyFieldPlan({
 			field,
@@ -277,7 +369,7 @@ async function draftLocale({ cfg, src, glossary, brand, source, locale, force, d
 		);
 
 	const provenance = provenanceFor(keywordList(out.keywords), { harvest, analytics, locale });
-	out.provenance = { ...(existing.provenance ?? {}), keywords: provenance };
+	out.provenance = { ...existing.provenance, keywords: provenance };
 	out.notes = notes;
 	const data = order(out);
 	const created = !existsSync(file);
@@ -297,6 +389,9 @@ async function draftLocale({ cfg, src, glossary, brand, source, locale, force, d
 /**
  * How one copy field (name/subtitle) is derived when no human wrote it: the
  * glossary agreement, the brand passthrough, or a marked TODO for a translator.
+ *
+ * @param {{field: string, sourceText: string, locale: string, glossary: Glossary, brand: Set<string>, cfg: Config, marker: string}} p
+ * @returns {{value: string, reason: string}}
  */
 function copyFieldPlan({ field, sourceText, locale, glossary, brand, cfg, marker }) {
 	const agreed = glossary.terms?.[sourceText]?.[locale];
@@ -310,6 +405,10 @@ function copyFieldPlan({ field, sourceText, locale, glossary, brand, cfg, marker
 }
 
 /** Keywords packed from this locale's own scored terms around what Apple already indexes, or a marker. */
+/**
+ * @param {{cfg: Config, locale: string, out: JsonObject, marker: string}} p
+ * @returns {Promise<{value: string, reason: string}>}
+ */
 async function keywordsPlan({ cfg, locale, out, marker }) {
 	const terms = await scoredTerms(cfg, locale);
 	if (!terms.length)
@@ -328,8 +427,12 @@ async function keywordsPlan({ cfg, locale, out, marker }) {
 	};
 }
 
+/**
+ * @param {SubCtx} ctx
+ * @returns {Promise<number>}
+ */
 async function review({ flags }) {
-	const cfg = await loadConfig();
+	const cfg = await requireConfig();
 	const source = sourceOf(cfg);
 	const staged = await readStaged(cfg);
 	if (!staged.length)
@@ -337,7 +440,7 @@ async function review({ flags }) {
 			hint: 'run `ship loc draft` to derive them from the source listing',
 		});
 	const only = strOf(flags.locale);
-	const sourceData = staged.find((s) => s.locale === source)?.data ?? {};
+	const sourceData = staged.find((s) => s.locale === source)?.data ?? /** @type {ListingData} */ ({});
 	const glossary = await readGlossary(cfg, source);
 	const report = new Report(`Localization review (source ${source})`);
 
@@ -357,24 +460,22 @@ async function review({ flags }) {
 		else for (const r of rows) report[r.level](r.name, r.detail);
 	}
 	if (!report.rows.length) report.skip(only ?? '(all)', 'no staged listing matched');
-	return report.print({ json: flags.json });
+	return report.print({ json: !!flags.json });
 }
 
+/**
+ * @param {SubCtx} ctx
+ * @returns {Promise<number>}
+ */
 async function lock({ flags }) {
-	const cfg = await loadConfig();
-	const source = sourceOf(cfg);
-	const staged = await readStaged(cfg);
-	const src = staged.find((s) => s.locale === source);
-	if (!src)
-		throw new ShipError(`no staged listing for the source locale ${source}`, {
-			hint: `author ${stagedFile(cfg, source)} first — the glossary is seeded from it`,
-		});
-	const existing = await readJSONIfExists(cfg.paths.glossary);
+	const { cfg, source, staged, src } = await sourceListing('the glossary is seeded from it');
+	const existing = /** @type {Glossary} */ ((await readJSONIfExists(cfg.paths.glossary)) ?? {});
 	const targets = [...new Set([...(cfg.store.locales ?? []), ...staged.map((s) => s.locale)])]
 		.filter((l) => l !== source)
 		.sort();
 
 	const neverTranslate = [...new Set([...(existing?.neverTranslate ?? []), ...brandNouns(cfg, src.data)])];
+	/** @type {{[srcTerm: string]: {[locale: string]: string}}} */
 	const terms = {};
 	for (const [key, row] of Object.entries(existing?.terms ?? {})) terms[key] = { ...row };
 	for (const key of productNouns(src.data, { locale: source, exclude: neverTranslate })) terms[key] ??= {};
@@ -411,6 +512,11 @@ async function lock({ flags }) {
 
 const IMAGE = /\.(png|jpe?g)$/i;
 
+/**
+ * @param {Config} cfg
+ * @param {string} locale
+ * @returns {Promise<number>}
+ */
 async function shotCount(cfg, locale) {
 	const root = shotsDir(cfg, locale);
 	if (!existsSync(root)) return 0;
@@ -418,6 +524,7 @@ async function shotCount(cfg, locale) {
 	const stack = [root];
 	while (stack.length) {
 		const dir = stack.pop();
+		if (dir === undefined) continue;
 		for (const entry of await readdir(dir, { withFileTypes: true })) {
 			if (entry.isDirectory()) stack.push(join(dir, entry.name));
 			else if (IMAGE.test(entry.name)) n++;
@@ -426,18 +533,24 @@ async function shotCount(cfg, locale) {
 	return n;
 }
 
+/**
+ * @param {SubCtx} ctx
+ * @returns {Promise<number>}
+ */
 async function status({ flags }) {
-	const cfg = await loadConfig();
+	const cfg = await requireConfig();
 	const source = sourceOf(cfg);
 	const staged = await readStaged(cfg);
+	/** @type {Map<string, ListingData>} */
 	const byLocale = new Map(staged.map((s) => [s.locale, s.data]));
-	const sourceData = byLocale.get(source) ?? {};
+	const sourceData = byLocale.get(source) ?? /** @type {ListingData} */ ({});
 	const glossary = await readGlossary(cfg, source);
 	const only = strOf(flags.locale);
 	const locales = [...new Set([source, ...(cfg.store.locales ?? []), ...byLocale.keys()])]
 		.filter((l) => !only || l === only)
 		.sort();
 
+	/** @type {StatusRow[]} */
 	const rows = [];
 	for (const locale of locales) {
 		const data = byLocale.get(locale);
@@ -467,9 +580,11 @@ async function status({ flags }) {
 		});
 	}
 
+	/** @param {StatusRow} r @returns {boolean} */
 	const green = (r) => r.staged && r.drafted && r.review === 'clean' && r.shots > 0;
 	if (flags.json) return emit({ source, locales: rows.map((r) => ({ ...r, green: green(r) })) });
 
+	/** @param {boolean} ok @returns {string} */
 	const mark = (ok) => (ok ? c.green('yes') : c.red('no'));
 	heading(`Localization status ${c.dim(`(source ${source})`)}`);
 	table(rows, [
@@ -487,8 +602,13 @@ async function status({ flags }) {
 	return flags.strict && blocked.length ? 1 : 0;
 }
 
+/** @type {Record<string, (ctx: SubCtx) => Promise<number>>} */
 const SUB = { status, seed, draft, review, lock };
 
+/**
+ * @param {SubCtx} ctx
+ * @returns {Promise<number>}
+ */
 export async function run({ args, flags }) {
 	const { fn, args: rest } = resolveSubcommand({ command: 'loc', args, subs: SUB, fallback: 'status' });
 	return fn({ args: rest, flags });

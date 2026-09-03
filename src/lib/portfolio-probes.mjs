@@ -27,7 +27,7 @@ const RC_METRICS = (projectId) => `https://api.revenuecat.com/v2/projects/${proj
  * in-flight work never exceeds `limit`.
  */
 export async function pool(items, limit, worker) {
-	const out = new Array(items.length);
+	const out = Array.from({ length: items.length });
 	const width = Math.max(1, Math.min(num(limit, DEFAULT_CONCURRENCY) | 0 || DEFAULT_CONCURRENCY, items.length));
 	let next = 0;
 	const runner = async () => {

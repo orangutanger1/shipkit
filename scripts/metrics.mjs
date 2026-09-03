@@ -23,6 +23,27 @@ const LIMITS = {
 	fileLOC: 500,
 };
 
+/** A source location as acorn emits it (with `locations: true`). */
+/** @typedef {{start: {line: number}, end: {line: number}}} AcornLoc */
+/**
+ * A minimal acorn AST node: `type` plus child fields the walkers traverse.
+ * @typedef {{type: string, loc: AcornLoc, [key: string]: AstValue}} AstNode
+ */
+/** Anything an AST node property can hold. */
+/** @typedef {string|number|boolean|null|AstNode|AstNode[]|AcornLoc} AstValue */
+
+/**
+ * Narrow an AST property to a node (properties that are not nodes never reach
+ * the recursive walk — the checks below mirror what `child.type` did before).
+ * @param {AstValue} v
+ * @returns {AstNode|null}
+ */
+const asNode = (v) => (v !== null && typeof v === 'object' && !Array.isArray(v) && 'type' in v ? v : null);
+
+/**
+ * @param {string} dir
+ * @returns {string[]}
+ */
 function listMJS(dir) {
 	const out = [];
 	for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -43,23 +64,36 @@ const FUNCTION_NODES = new Set([
 	'FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression',
 ]);
 
+/**
+ * @param {AstNode} node
+ * @returns {number}
+ */
 function cyclomaticOf(node) {
 	if (DECISION_KEYS.has(node.type)) return 1;
 	if (node.type === 'SwitchCase' && node.test !== null) return 1;
 	if (node.type === 'LogicalExpression') return 1;
-	if (node.type === 'AssignmentExpression' && ['&&=', '||=', '??='].includes(node.operator)) return 1;
+	if (node.type === 'AssignmentExpression' && typeof node.operator === 'string' && ['&&=', '||=', '??='].includes(node.operator)) return 1;
 	return 0;
 }
 
+/**
+ * @param {AstNode} node
+ * @param {{cyclomatic: number}} fnAcc
+ * @param {{line: number, node: AstNode, acc: {cyclomatic: number}}[]} functions
+ * @param {{cyclomatic: number}} complexityAcc
+ * @returns {void}
+ */
 function walkCyclomatic(node, fnAcc, functions, complexityAcc) {
 	if (!node || typeof node.type !== 'string') return;
 
 	if (FUNCTION_NODES.has(node.type)) {
 		const inner = { cyclomatic: 1 };
 		functions.push({ line: node.loc.start.line, node, acc: inner });
-		for (const param of node.params ?? []) walkCyclomatic(param, fnAcc, functions, complexityAcc);
+		const params = Array.isArray(node.params) ? node.params : [];
+		for (const param of params) walkCyclomatic(param, fnAcc, functions, complexityAcc);
 		// decision points inside the body belong to the innermost function
-		walkCyclomatic(node.body, inner, functions, complexityAcc);
+		const body = asNode(node.body);
+		if (body) walkCyclomatic(body, inner, functions, complexityAcc);
 		return;
 	}
 	const branch = cyclomaticOf(node);
@@ -74,10 +108,12 @@ function walkCyclomatic(node, fnAcc, functions, complexityAcc) {
 		const child = node[key];
 		if (Array.isArray(child)) {
 			for (const c of child) {
-				if (c && typeof c.type === 'string') walkCyclomatic(c, fnAcc, functions, complexityAcc);
+				const n = asNode(c);
+				if (n) walkCyclomatic(n, fnAcc, functions, complexityAcc);
 			}
-		} else if (child && typeof child.type === 'string') {
-			walkCyclomatic(child, fnAcc, functions, complexityAcc);
+		} else {
+			const n = asNode(child);
+			if (n) walkCyclomatic(n, fnAcc, functions, complexityAcc);
 		}
 	}
 }
@@ -86,49 +122,71 @@ function walkCyclomatic(node, fnAcc, functions, complexityAcc) {
 
 const NESTED_KEYS = new Set(['consequent', 'alternate', 'block', 'body', 'finalizer', 'cases']);
 
+/**
+ * @param {AstNode} node
+ * @returns {number}
+ */
 function sequenceLength(node) {
 	let length = 1;
+	/** @type {AstNode|null} */
 	let current = node;
 	while (current.type === 'LogicalExpression') {
-		current = current.right;
+		current = asNode(current.right);
+		if (!current) break;
 		length++;
 	}
 	return length;
 }
 
+/**
+ * @param {AstNode} node
+ * @param {number} nesting
+ * @param {{cognitive: number}} env
+ * @param {{line: number, env: {cognitive: number}}[]} functions
+ * @returns {void}
+ */
 function walkCognitive(node, nesting, env, functions) {
 	if (!node || typeof node.type !== 'string') return;
 
 	if (FUNCTION_NODES.has(node.type)) {
 		// a nested function's complexity belongs to the nested function itself
-		for (const param of node.params ?? []) walkCognitive(param, nesting, env, functions);
+		const params = Array.isArray(node.params) ? node.params : [];
+		for (const param of params) walkCognitive(param, nesting, env, functions);
 		const inner = { cognitive: 0 };
 		functions.push({ line: node.loc.start.line, env: inner });
-		walkCognitive(node.body, nesting + 1, inner, functions);
+		const body = asNode(node.body);
+		if (body) walkCognitive(body, nesting + 1, inner, functions);
 		return;
 	}
 	if (node.type === 'LogicalExpression') {
 		// a && b && c: +1 per additional operand in the sequence, un-nested
 		env.cognitive += sequenceLength(node) - 1;
-		walkCognitive(node.left, nesting, env, functions);
-		walkCognitive(node.right, nesting, env, functions);
+		const left = asNode(node.left);
+		const right = asNode(node.right);
+		if (left) walkCognitive(left, nesting, env, functions);
+		if (right) walkCognitive(right, nesting, env, functions);
 		return;
 	}
 	if (node.type === 'IfStatement') {
 		env.cognitive += 1;
-		walkCognitive(node.test, nesting, env, functions);
-		walkCognitive(node.consequent, nesting + 1, env, functions);
-		if (node.alternate) walkCognitive(node.alternate, nesting + 1, env, functions);
+		const test = asNode(node.test);
+		const consequent = asNode(node.consequent);
+		const alternate = asNode(node.alternate);
+		if (test) walkCognitive(test, nesting, env, functions);
+		if (consequent) walkCognitive(consequent, nesting + 1, env, functions);
+		if (alternate) walkCognitive(alternate, nesting + 1, env, functions);
 		return;
 	}
 	if (node.type === 'SwitchCase') {
 		env.cognitive += 1;
-		for (const child of node.consequent) walkCognitive(child, nesting + 1, env, functions);
+		const cons = Array.isArray(node.consequent) ? node.consequent : [];
+		for (const child of cons) walkCognitive(child, nesting + 1, env, functions);
 		return;
 	}
 	if (node.type === 'CatchClause') {
 		env.cognitive += 1;
-		walkCognitive(node.body, nesting + 1, env, functions);
+		const body = asNode(node.body);
+		if (body) walkCognitive(body, nesting + 1, env, functions);
 		return;
 	}
 
@@ -138,34 +196,62 @@ function walkCognitive(node, nesting, env, functions) {
 		const nested = NESTED_KEYS.has(key) ? nesting + 1 : nesting;
 		if (Array.isArray(child)) {
 			for (const c of child) {
-				if (c && typeof c.type === 'string') walkCognitive(c, nested, env, functions);
+				const n = asNode(c);
+				if (n) walkCognitive(n, nested, env, functions);
 			}
-		} else if (child && typeof child.type === 'string') {
-			walkCognitive(child, nested, env, functions);
+		} else {
+			const n = asNode(child);
+			if (n) walkCognitive(n, nested, env, functions);
 		}
 	}
 }
 
 // --- Halstead (AST-based, per function — the standard scope for difficulty) --
 
+/**
+ * @param {AstNode} root
+ * @returns {number}
+ */
 function halsteadFromNode(root) {
+	/** @type {Map<string, number>} */
 	const operators = new Map();
+	/** @type {Map<string, number>} */
 	const operands = new Map();
+	/** @param {Map<string, number>} map @param {string} value */
 	const bump = (map, value) => map.set(value, (map.get(value) ?? 0) + 1);
 
+	/**
+	 * @param {AstNode} node
+	 * @returns {void}
+	 */
 	function walk(node) {
 		if (!node || typeof node.type !== 'string') return;
 		bump(operators, node.type);
 		if ('operator' in node && typeof node.operator === 'string') bump(operators, node.operator);
-		if (node.type === 'Identifier') bump(operands, node.name);
+		if (node.type === 'Identifier') bump(operands, /** @type {string} */ (node.name));
 		else if (node.type === 'PrivateIdentifier') bump(operands, `#${node.name}`);
 		else if (node.type === 'Literal') bump(operands, `${typeof node.value}:${String(node.value)}`);
-		else if (node.type === 'TemplateElement') bump(operands, node.value.cooked ?? node.value.raw);
+		else if (node.type === 'TemplateElement') {
+			const v = node.value;
+			bump(
+				operands,
+				/** @type {string} */ (
+					v !== null && typeof v === 'object' && !Array.isArray(v) && 'cooked' in v ? v.cooked ?? v.raw : v
+				),
+			);
+		}
 		for (const key of Object.keys(node)) {
 			if (key === 'type' || key === 'loc' || key === 'start' || key === 'end') continue;
 			const child = node[key];
-			if (Array.isArray(child)) for (const c of child) if (c && typeof c.type === 'string') walk(c);
-			else if (child && typeof child.type === 'string') walk(child);
+			if (Array.isArray(child)) {
+				for (const c of child) {
+					const n = asNode(c);
+					if (n) walk(n);
+				}
+			} else {
+				const n = asNode(child);
+				if (n) walk(n);
+			}
 		}
 	}
 	walk(root);
@@ -179,22 +265,33 @@ function halsteadFromNode(root) {
 
 // --- CRAP ---------------------------------------------------------------------
 
+/**
+ * @returns {Map<string, Map<number|undefined, number>>|null}
+ */
 function loadFunctionCoverage() {
 	if (!existsSync(COVERAGE)) return null;
 	const raw = JSON.parse(readFileSync(COVERAGE, 'utf8'));
+	/** @type {Map<string, Map<number|undefined, number>>} */
 	const byFile = new Map();
 	for (const entry of Object.values(raw)) {
+		/** @type {Map<number|undefined, number>} */
 		const lines = new Map();
-		for (const [id, fn] of Object.entries(entry.fnMap ?? {})) {
+		const e = /** @type {{fnMap?: Record<string, {decl?: {start?: {line?: number}}|undefined, line?: number}>, f?: Record<string, number>, path?: string}} */ (entry);
+		for (const [id, fn] of Object.entries(e.fnMap ?? {})) {
 			const line = fn.decl?.start?.line ?? fn.line;
-			const hits = entry.f?.[id] ?? 0;
+			const hits = e.f?.[id] ?? 0;
 			lines.set(line, (lines.get(line) ?? 0) + hits);
 		}
-		byFile.set(entry.path, lines);
+		if (e.path !== undefined) byFile.set(e.path, lines);
 	}
 	return byFile;
 }
 
+/**
+ * @param {number} complexity
+ * @param {number} coveragePercent
+ * @returns {number}
+ */
 function crap(complexity, coveragePercent) {
 	if (coveragePercent >= 100) return complexity;
 	const cov = coveragePercent / 100;
@@ -216,16 +313,21 @@ for (const file of files) {
 	if (!file.endsWith('.mjs')) continue;
 
 	const source = readFileSync(file, 'utf8');
-	const ast = acorn.parse(source, {
+	const parsed = acorn.parse(source, {
 		ecmaVersion: 'latest', sourceType: 'module', locations: true, ranges: true,
 	});
+	// object → AstNode: the parse result is exactly what the walkers traverse.
+	const ast = /** @type {AstNode} */ (/** @type {object} */ (parsed));
 
 	const fileAcc = { cyclomatic: 1 };
+	/** @type {{line: number, node: AstNode, acc: {cyclomatic: number}}[]} */
 	const functions = [];
 	walkCyclomatic(ast, fileAcc, functions, fileAcc);
 
+	/** @type {Map<number, number>} */
 	const cognitive = new Map();
 	{
+		/** @type {{line: number, env: {cognitive: number}}[]} */
 		const cognitiveFunctions = [];
 		const top = { cognitive: 0 };
 		walkCognitive(ast, 0, top, cognitiveFunctions);

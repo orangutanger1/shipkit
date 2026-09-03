@@ -4,7 +4,20 @@ import { captionRuns } from './shots-spec.mjs';
 import { fitCaption } from './shots-type.mjs';
 import { ShipError } from '../log.mjs';
 
-/** #rrggbb → sharp's background object. */
+/** An 8-bit RGB triple. */
+/** @typedef {{r: number, g: number, b: number}} RGB */
+
+/** The bounding box of the ink found in a band, in canvas pixels. */
+/** @typedef {{top: number, bot: number, left: number, right: number, width: number, height: number}} InkBox */
+
+/** Vertical extent of a caption band. */
+/** @typedef {{y0: number, y1: number}} BandBounds */
+
+/**
+ * #rrggbb → sharp's background object.
+ * @param {string|undefined} hex
+ * @returns {{r: number, g: number, b: number, alpha: number}}
+ */
 export function parseColour(hex) {
 	const m = /^#?([\da-f]{6})$/i.exec(String(hex ?? ''));
 	if (!m) throw new ShipError(`not a colour: ${hex}`);
@@ -12,9 +25,15 @@ export function parseColour(hex) {
 	return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255, alpha: 1 };
 }
 
+/** @param {import('./shots-spec.mjs').ShotSpec} spec @param {string} locale @returns {boolean} */
 const perCharacter = (spec, locale) => spec.type.perCharacterLocales.includes(locale);
 
-/** Vertical room a caption may occupy: to the mockup, or to the canvas edge. */
+/**
+ * Vertical room a caption may occupy: to the mockup, or to the canvas edge.
+ * @param {import('./shots-spec.mjs').ShotSpec} spec
+ * @param {import('./shots-spec.mjs').ShotFrame} frame
+ * @returns {number|null} null in caption-band mode, which repaints in place.
+ */
 export function captionBudget(spec, frame) {
 	const { gap } = spec.type;
 	const box = frame.caption;
@@ -26,11 +45,17 @@ export function captionBudget(spec, frame) {
 /**
  * Line counts the source locale settles on. Every other locale aims at these so
  * the set reads with one rhythm, shrinking only when a long string demands it.
+ * @param {import('./shots-spec.mjs').ShotSpec} spec
+ * @param {import('./shots-spec.mjs').Captions} captions
+ * @param {string} sourceLocale
+ * @param {(locale: string) => import('./shots-type.mjs').Font} loadFont
+ * @returns {Record<string, number>}
  */
 export function sourceLineCounts(spec, captions, sourceLocale, loadFont) {
 	const copy = captions[sourceLocale];
 	if (!copy) throw new ShipError(`no caption copy for source locale ${sourceLocale}`);
 	const font = loadFont(sourceLocale);
+	/** @type {Record<string, number>} */
 	const out = {};
 	for (const frame of spec.frames) {
 		const runs = captionRuns(copy[frame.key]);
@@ -49,7 +74,12 @@ export function sourceLineCounts(spec, captions, sourceLocale, loadFont) {
 	return out;
 }
 
-/** Band bounds: everything between the canvas edge and the mockup, less clearance. */
+/**
+ * Band bounds: everything between the canvas edge and the mockup, less clearance.
+ * @param {import('./shots-spec.mjs').ShotSpec} spec
+ * @param {import('./shots-spec.mjs').ShotFrame} frame
+ * @returns {BandBounds}
+ */
 export function bandBounds(spec, frame) {
 	const { clearance } = spec.band;
 	return frame.mockTop > 0
@@ -57,8 +87,15 @@ export function bandBounds(spec, frame) {
 		: { y0: Math.round(frame.mockTop + frame.mockH) + clearance, y1: spec.canvas.h };
 }
 
-/** Most common RGB colour in the band, and its share of all pixels. */
+/**
+ * Most common RGB colour in the band, and its share of all pixels.
+ * @param {{data: Buffer, width: number, channels: number}} band
+ * @param {number} y0
+ * @param {number} y1
+ * @returns {{bg: RGB, best: number, total: number}}
+ */
 function dominantColour({ data, width, channels }, y0, y1) {
+	/** @type {Map<number, number>} */
 	const counts = new Map();
 	for (let y = y0; y < y1; y += 1)
 		for (let x = 0; x < width; x += 1) {
@@ -83,7 +120,15 @@ function dominantColour({ data, width, channels }, y0, y1) {
 	};
 }
 
-/** Bounding box of pixels that differ from the band background by > inkTolerance. */
+/**
+ * Bounding box of pixels that differ from the band background by > inkTolerance.
+ * @param {{data: Buffer, width: number, channels: number}} band
+ * @param {number} y0
+ * @param {number} y1
+ * @param {RGB} bg
+ * @param {number} inkTolerance
+ * @returns {InkBox|null}
+ */
 function inkBox({ data, width, channels }, y0, y1, bg, inkTolerance) {
 	let top = Infinity;
 	let bot = -Infinity;
@@ -106,7 +151,12 @@ function inkBox({ data, width, channels }, y0, y1, bg, inkTolerance) {
 	return Number.isFinite(top) ? { top, bot, left, right, width: right - left, height: bot - top } : null;
 }
 
-/** Where the glass sits on the canvas for one frame: phone offset + screen group. */
+/**
+ * Where the glass sits on the canvas for one frame: phone offset + screen group.
+ * @param {import('./shots-spec.mjs').ShotSpec} spec
+ * @param {import('./shots-spec.mjs').ShotFrame} frame
+ * @returns {{left: number, top: number, width: number, height: number}}
+ */
 export function glassRect(spec, frame) {
 	const g = spec.device.screenGroup;
 	return {
@@ -117,7 +167,13 @@ export function glassRect(spec, frame) {
 	};
 }
 
-/** The full-width strip a fitted caption occupies, with slack for descenders. */
+/**
+ * The full-width strip a fitted caption occupies, with slack for descenders.
+ * @param {import('./shots-spec.mjs').ShotSpec} spec
+ * @param {import('./shots-spec.mjs').ShotFrame} frame
+ * @param {import('./shots-type.mjs').Fit} fit
+ * @returns {{left: number, top: number, width: number, height: number}}
+ */
 export function captionRect(spec, frame, fit) {
 	const slack = Math.round(spec.type.lineHeight / 4);
 	return {
@@ -128,7 +184,13 @@ export function captionRect(spec, frame, fit) {
 	};
 }
 
-/** Output filename for a frame: numbered so ASC keeps the designed order. */
+/**
+ * Output filename for a frame: numbered so ASC keeps the designed order.
+ * @param {import('./shots-spec.mjs').ShotSpec} spec
+ * @param {import('./shots-spec.mjs').ShotFrame} frame
+ * @param {number} index
+ * @returns {string}
+ */
 export const frameFile = (spec, frame, index) =>
 	frame.out ?? (spec.mode === 'device-frame' ? frame.src : `${String(index + 1).padStart(2, '0')}-${frame.key}.png`);
 
@@ -139,6 +201,10 @@ export const frameFile = (spec, frame, index) =>
  * `flat` is the safety gate. A band that is not overwhelmingly one colour holds
  * artwork, and repainting it destroys pixels — so this reports the number and
  * the caller refuses below the threshold. Nothing here guesses.
+ * @param {{data: Buffer, width: number, channels: number}} buffer
+ * @param {BandBounds} bounds
+ * @param {number} inkTolerance
+ * @returns {{bg: RGB, flat: number, ink: InkBox|null}}
  */
 export function measureBand(buffer, bounds, inkTolerance) {
 	const { y0, y1 } = bounds;

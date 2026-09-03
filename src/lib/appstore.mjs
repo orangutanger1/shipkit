@@ -12,12 +12,10 @@ export {
 	hints,
 	lookup,
 	marketFor,
-	stems,
 	topResults,
 	useCache,
 } from './appstore-client.mjs';
 export {
-	ageInDays,
 	brandCollisions,
 	commodity,
 	demand,

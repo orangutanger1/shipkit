@@ -8,6 +8,12 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
+/** @typedef {import('../config.mjs').Config} Config */
+/** @typedef {import('./util.mjs').JsonObject} JsonObject */
+
+/** The `.asc/native-lock.json` fingerprint written after every native build. */
+/** @typedef {{version: string, deps: Record<string, string>, config: JsonObject}} NativeLock */
+
 /** Packages that never contain native code, so their version drift is OTA-safe. */
 const PURE_JS = new Set([
 	'@babel/core', '@types/react', 'typescript', 'jest', 'jest-expo', 'ts-jest',
@@ -18,6 +24,10 @@ const PURE_JS = new Set([
 /** Anything matching these is native by construction. */
 const NATIVE_HINT = /^(expo-|react-native-|@react-native|@expo\/|@stripe\/stripe-react-native|@sentry\/react-native)/;
 
+/**
+ * @param {string} name
+ * @returns {boolean}
+ */
 export function isNativeDep(name) {
 	if (PURE_JS.has(name)) return false;
 	if (name === 'react-native' || name === 'expo' || NATIVE_HINT.test(name)) return true;
@@ -31,6 +41,11 @@ export function isNativeDep(name) {
 }
 
 /** The version actually installed in node_modules, or null when not present. */
+/**
+ * @param {string} appDir
+ * @param {string} name
+ * @returns {Promise<string|null>}
+ */
 async function installedVersion(appDir, name) {
 	try {
 		const pkg = JSON.parse(await readFile(join(appDir, 'node_modules', name, 'package.json'), 'utf8'));
@@ -48,11 +63,16 @@ async function installedVersion(appDir, name) {
  * changing, and a fingerprint of ranges would call the result OTA-safe while
  * the lockfile moved native code under the installed binary. Works for
  * npm/pnpm/bun alike because all three resolve through node_modules.
+ *
+ * @param {string} appDir
+ * @returns {Promise<Record<string, string>>}
  */
 export async function nativeFingerprint(appDir) {
 	const pkgFile = join(appDir, 'package.json');
 	const pkg = JSON.parse(await readFile(pkgFile, 'utf8'));
+	/** @type {Record<string, string>} */
 	const deps = { ...pkg.dependencies };
+	/** @type {Record<string, string>} */
 	const out = {};
 	for (const [name, range] of Object.entries(deps)) {
 		if (!isNativeDep(name)) continue;
@@ -64,27 +84,42 @@ export async function nativeFingerprint(appDir) {
 /** Expo config keys whose change requires a new binary regardless of deps. */
 const NATIVE_CONFIG_KEYS = ['plugins', 'ios', 'android', 'scheme', 'newArchEnabled'];
 
+/**
+ * @param {string} appDir
+ * @returns {Promise<JsonObject>}
+ */
 export async function nativeConfigFingerprint(appDir) {
 	const appJson = join(appDir, 'app.json');
 	if (!existsSync(appJson)) return {};
 	const expo = JSON.parse(await readFile(appJson, 'utf8')).expo ?? {};
+	/** @type {JsonObject} */
 	const out = {};
 	for (const key of NATIVE_CONFIG_KEYS) if (expo[key] !== undefined) out[key] = expo[key];
 	return out;
 }
 
+/** @param {Config} cfg @returns {string} */
 const LOCK_PATH = (cfg) => join(cfg.root, '.asc', 'native-lock.json');
 
+/**
+ * @param {Config} cfg
+ * @returns {Promise<NativeLock|null>}
+ */
 export async function readLock(cfg) {
 	const file = LOCK_PATH(cfg);
 	if (!existsSync(file)) return null;
 	try {
-		return JSON.parse(await readFile(file, 'utf8'));
+		return /** @type {NativeLock} */ (JSON.parse(await readFile(file, 'utf8')));
 	} catch {
 		return null;
 	}
 }
 
+/**
+ * @param {Config} cfg
+ * @param {NativeLock} lock
+ * @returns {Promise<string>}
+ */
 export async function writeLock(cfg, lock) {
 	const file = LOCK_PATH(cfg);
 	await mkdir(dirname(file), { recursive: true });
@@ -94,7 +129,10 @@ export async function writeLock(cfg, lock) {
 
 /**
  * Compare the working tree against the fingerprint captured at the last native build.
- * @returns {Promise<{safe:boolean, reason:string, added:string[], removed:string[], changed:string[], configChanged:string[], lock:object|null}>}
+ *
+ * @param {Config} cfg
+ * @param {string} version
+ * @returns {Promise<{safe: boolean, reason: string, added: string[], removed: string[], changed: string[], configChanged: string[], lock: NativeLock|null, current: {version: string, deps: Record<string, string>, config: JsonObject}}>}
  */
 export async function otaSafety(cfg, version) {
 	const deps = await nativeFingerprint(cfg.paths.app);

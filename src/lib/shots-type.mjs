@@ -12,27 +12,108 @@
 // Everything here takes an injected font object (fontkit's shape) so the layout
 // maths is testable without a binary dependency.
 
+/**
+ * The slice of fontkit's font the typesetter uses. Injected so the layout maths
+ * is testable without the binary dependency.
+ * @typedef {Object} Font
+ * @property {number} unitsPerEm
+ * @property {number} ascent
+ * @property {number} descent
+ * @property {(text: string) => GlyphRun} layout
+ */
+
+/** A shaped run: its total advance and its positioned glyphs. */
+/** @typedef {{advanceWidth: number, glyphs: Glyph[]}} GlyphRun */
+
+/** One positioned glyph: its advance and its outline. */
+/** @typedef {{advanceWidth: number, path: GlyphPath}} Glyph */
+
+/**
+ * A fontkit path: transformable, and serialisable to SVG path data.
+ * @typedef {Object} GlyphPath
+ * @property {(x: number, y: number) => GlyphPath} scale
+ * @property {(x: number, y: number) => GlyphPath} translate
+ * @property {() => string} toSVG
+ */
+
+/** The caption box the fitter wraps into: the centre to stay on, the width to wrap in. */
+/** @typedef {{centre: number, wrap: number}} TypeBox */
+
+/**
+ * The ramp the fitter steps through: design size, floors, decrement, and which
+ * wrap algorithm reproduces the design.
+ * @typedef {{size: number, lineHeight: number, wrap: 'balanced'|'greedy', targetMinSize: number, minSize: number, step: number}} TypeRamp
+ */
+
+/**
+ * The type block plus what only the layout driver needs: ink colour and the
+ * optional subtitle ramp. A full spec type block satisfies this.
+ * @typedef {TypeRamp & {colour: string, subtitle: import('./shots-spec.mjs').SpecSubtitle|null}} LayoutType
+ */
+
+/**
+ * One fitted caption: the wrapped lines, the size they settled at, the line
+ * height that follows, and whether an explicit newline was honoured verbatim.
+ * @typedef {Object} Fit
+ * @property {string[]} lines
+ * @property {number} size
+ * @property {number} lineHeight
+ * @property {boolean} forced
+ */
+
+/**
+ * One run as the SVG writer consumes it. `top` may be unresolved (null) on the
+ * single-run path, where the writer falls back to the box's own top.
+ * @typedef {{fit: Fit, colour: string, top: number|null, font?: Font}} CaptionRunInput
+ */
+
+/** A run inside {@link layoutCaption}'s result, with its position resolved. */
+/** @typedef {{fit: Fit, colour: string, top: number, font: Font}} CaptionRun */
+
+/**
+ * The full layout of one caption: the runs to paint, the headline fit callers
+ * position the block by, the subtitle fit when one survived, and the height.
+ * @typedef {{runs: CaptionRun[], fit: Fit, subtitle: Fit|null, height: number}} LayoutResult
+ */
+
 /** Font metrics scale for a given pixel size. */
+/** @param {Font} font @param {number} size @returns {number} */
 const scaleFor = (font, size) => size / font.unitsPerEm;
 
 /**
  * Baseline of the first line inside a line box, matching how a design tool
  * centres the em box in the line height rather than sitting text on the top.
+ * @param {Font} font
+ * @param {number} size
+ * @param {number} lineHeight
+ * @returns {number}
  */
-export function firstBaseline(font, size, lineHeight) {
+function firstBaseline(font, size, lineHeight) {
 	const s = scaleFor(font, size);
 	const ascent = font.ascent * s;
 	const descent = font.descent * s;
 	return (lineHeight - (ascent - descent)) / 2 + ascent;
 }
 
-export function runWidth(font, text, size) {
+/**
+ * @param {Font} font
+ * @param {string} text
+ * @param {number} size
+ * @returns {number}
+ */
+function runWidth(font, text, size) {
 	return font.layout(text).advanceWidth * scaleFor(font, size);
 }
 
 /**
  * Greedy wrap — fill each line until the next token will not fit.
  * This is what Figma does, so it is what reproduces a designer's line breaks.
+ * @param {Font} font
+ * @param {string[]} tokens
+ * @param {string} joiner
+ * @param {number} size
+ * @param {number} maxWidth
+ * @returns {string[]|null}
  */
 export function wrapGreedy(font, tokens, joiner, size, maxWidth) {
 	const lines = [];
@@ -53,12 +134,19 @@ export function wrapGreedy(font, tokens, joiner, size, maxWidth) {
  * Balanced wrap — the fewest lines greedy could achieve, then the split of that
  * line count minimising summed squared slack, so no line is left holding one
  * orphan word. Returns null when a single token cannot fit at this size.
+ * @param {Font} font
+ * @param {string[]} tokens
+ * @param {string} joiner
+ * @param {number} size
+ * @param {number} maxWidth
+ * @returns {string[]|null}
  */
 export function wrapBalanced(font, tokens, joiner, size, maxWidth) {
 	const widths = tokens.map((t) => runWidth(font, t, size));
 	if (widths.some((w) => w > maxWidth)) return null;
 	const sep = joiner ? runWidth(font, joiner, size) : 0;
 
+	/** @param {number} i @param {number} j @returns {number} */
 	const span = (i, j) => {
 		let w = 0;
 		for (let k = i; k <= j; k += 1) w += widths[k];
@@ -78,8 +166,8 @@ export function wrapBalanced(font, tokens, joiner, size, maxWidth) {
 	}
 
 	const N = tokens.length;
-	const cost = Array.from({ length: min + 1 }, () => new Array(N + 1).fill(Infinity));
-	const cut = Array.from({ length: min + 1 }, () => new Array(N + 1).fill(-1));
+	const cost = Array.from({ length: min + 1 }, () => Array.from({ length: N + 1 }, () => Infinity));
+	const cut = Array.from({ length: min + 1 }, () => Array.from({ length: N + 1 }, () => -1));
 	cost[0][0] = 0;
 	for (let l = 1; l <= min; l += 1) {
 		for (let j = l; j <= N; j += 1) {
@@ -116,7 +204,12 @@ export function wrapBalanced(font, tokens, joiner, size, maxWidth) {
  */
 const NO_LINE_START = '。、，．！？：；）］｝〉》」』】〕・ー〜…';
 
-/** Split a caption into wrappable tokens. CJK captions carry no spaces. */
+/**
+ * Split a caption into wrappable tokens. CJK captions carry no spaces.
+ * @param {string} text
+ * @param {{perCharacter?: boolean}} [opts]
+ * @returns {{tokens: string[], joiner: string}}
+ */
 export function tokenise(text, { perCharacter = false } = {}) {
 	const t = text.trim();
 	if (perCharacter && !/\s/.test(t)) {
@@ -144,12 +237,18 @@ export function tokenise(text, { perCharacter = false } = {}) {
  *
  * @throws when nothing down to `minSize` fits; a clipped caption is worse than
  *         a failed build.
+ * @param {Font} font
+ * @param {string} text
+ * @param {{box: TypeBox, budget: number, targetLines?: number|null, type: TypeRamp, perCharacter?: boolean}} opts
+ * @returns {Fit}
  */
 export function fitCaption(font, text, { box, budget, targetLines = null, type, perCharacter = false }) {
 	const ratio = type.lineHeight / type.size;
+	/** @param {number} size @returns {number} */
 	const lhOf = (size) => size * ratio;
 	const maxWidth = box.wrap;
 	const wrapFn = type.wrap === 'greedy' ? wrapGreedy : wrapBalanced;
+	/** @param {string[]|null} lines @param {number} size @returns {boolean|null} */
 	const fits = (lines, size) => lines && lines.length * lhOf(size) <= budget;
 
 	if (text.includes('\n')) {
@@ -169,21 +268,29 @@ export function fitCaption(font, text, { box, budget, targetLines = null, type, 
 	if (targetLines) {
 		for (let size = type.size; size >= type.targetMinSize; size -= type.step) {
 			const lines = wrapFn(font, tokens, joiner, size, maxWidth);
-			if (fits(lines, size) && lines.length <= targetLines)
+			if (fits(lines, size) && lines && lines.length <= targetLines)
 				return { lines, size, lineHeight: lhOf(size), forced: false };
 		}
 	}
 	for (let size = type.size; size >= type.minSize; size -= type.step) {
 		const lines = wrapFn(font, tokens, joiner, size, maxWidth);
-		if (fits(lines, size)) return { lines, size, lineHeight: lhOf(size), forced: false };
+		if (lines && fits(lines, size)) return { lines, size, lineHeight: lhOf(size), forced: false };
 	}
 	throw new Error(`caption will not fit: ${JSON.stringify(text)}`);
 }
 
+/**
+ * @param {Font} font
+ * @param {Fit} fit
+ * @param {TypeBox} box
+ * @param {number} y0
+ * @returns {string[]}
+ */
 function runPaths(font, fit, box, y0) {
 	const { lines, size, lineHeight } = fit;
 	const s = scaleFor(font, size);
 	const base = firstBaseline(font, size, lineHeight);
+	/** @type {string[]} */
 	const paths = [];
 	lines.forEach((line, i) => {
 		const run = font.layout(line);
@@ -208,8 +315,12 @@ function runPaths(font, fit, box, y0) {
  * headline and its subtitle are set in different colours; a single group could
  * only paint one of them. A one-element array emits byte-identical SVG to the
  * single-run call, so nothing about the existing pipeline moves.
+ * @param {Font} font
+ * @param {Fit|CaptionRunInput[]} fit
+ * @param {{box: import('./shots-spec.mjs').CaptionBox, canvas: import('./shots-spec.mjs').Canvas, colour: string, top?: number|null}} opts
+ * @returns {string}
  */
-export function captionSvg(font, fit, { box, canvas, colour, top = null } = {}) {
+export function captionSvg(font, fit, { box, canvas, colour, top = null }) {
 	const runs = Array.isArray(fit) ? fit : [{ fit, colour, top }];
 	const groups = runs.map(
 		(r) => `<g fill="${r.colour}">${runPaths(r.font ?? font, r.fit, box, r.top ?? box.y).join('')}</g>`,
@@ -221,18 +332,24 @@ export function captionSvg(font, fit, { box, canvas, colour, top = null } = {}) 
 }
 
 /** Height of one fitted run's line boxes. */
-export const blockHeight = (fit) => fit.lines.length * fit.lineHeight;
+/** @param {Fit} fit @returns {number} */
+const blockHeight = (fit) => fit.lines.length * fit.lineHeight;
 
-/** The type ramp a subtitle is fitted with, derived from its spec block. */
-const subtitleRamp = (type) => ({
-	size: type.subtitle.size,
-	lineHeight: type.subtitle.lineHeight,
+/**
+ * The type ramp a subtitle is fitted with, derived from its spec block.
+ * @param {import('./shots-spec.mjs').SpecSubtitle} subtitle
+ * @param {TypeRamp} type
+ * @returns {TypeRamp}
+ */
+const subtitleRamp = (subtitle, type) => ({
+	size: subtitle.size,
+	lineHeight: subtitle.lineHeight,
 	// The subtitle breaks with the same algorithm as the headline: `wrap` is a
 	// statement about which design tool authored the art, not a per-run taste.
 	wrap: type.wrap,
-	targetMinSize: type.subtitle.minSize,
-	minSize: type.subtitle.minSize,
-	step: type.subtitle.step,
+	targetMinSize: subtitle.minSize,
+	minSize: subtitle.minSize,
+	step: subtitle.step,
 });
 
 /**
@@ -250,15 +367,21 @@ const subtitleRamp = (type) => ({
  * A subtitle that will not fit even at its `minSize` is dropped and the
  * headline re-fitted at the full budget — a cramped subtitle reads worse than
  * no subtitle — and `onDrop` is called so the drop is reported, not silent.
+ * @param {Font} font
+ * @param {{headline: string, subtitle?: string|null}} copy
+ * @param {{box: TypeBox, budget: number, targetLines?: number|null, type: LayoutType, perCharacter?: boolean, subtitleFont?: Font|null, onDrop?: ((text: string) => void)|null}} opts
+ * @returns {LayoutResult}
  */
 export function layoutCaption(
 	font,
 	{ headline, subtitle },
 	{ box, budget, targetLines = null, type, perCharacter = false, subtitleFont = null, onDrop = null },
 ) {
+	/** @param {number} b @returns {Fit} */
 	const fitHeadline = (b) =>
 		fitCaption(font, headline, { box, budget: b, targetLines, type, perCharacter });
 
+	/** @returns {LayoutResult} */
 	const single = () => {
 		const fit = fitHeadline(budget);
 		return { runs: [{ fit, colour: type.colour, top: 0, font }], fit, subtitle: null, height: blockHeight(fit) };
@@ -267,7 +390,7 @@ export function layoutCaption(
 
 	const st = type.subtitle;
 	const sFont = subtitleFont ?? font;
-	const ramp = subtitleRamp(type);
+	const ramp = subtitleRamp(st, type);
 	const gap = st.gap;
 
 	// Reserve: how much *further than its own last line box* the headline pushes
@@ -293,6 +416,7 @@ export function layoutCaption(
 			estLines * st.lineHeight,
 	);
 
+	/** @type {Fit|null} */
 	let head;
 	try {
 		head = fitHeadline(Math.max(0, budget - reserve));

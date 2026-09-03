@@ -5,24 +5,38 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { c, ShipError, note } from './log.mjs';
 
+/** @typedef {import('./lib/util.mjs').Json} Json */
+/** @typedef {import('./lib/util.mjs').JsonObject} JsonObject */
+/** @typedef {import('./lib/util.mjs').JsonArray} JsonArray */
+/** What asc (--output json) answers with: an object, an array, or nothing. */
+/** @typedef {JsonObject|JsonArray} AscPayload */
+
 let DRY_RUN = false;
 let VERBOSE = false;
+/** @param {string|boolean|undefined} v */
 export function setDryRun(v) {
 	DRY_RUN = !!v;
 }
+/** @returns {boolean} */
 export function isDryRun() {
 	return DRY_RUN;
 }
+/** @param {string|boolean|undefined} v */
 export function setVerbose(v) {
 	VERBOSE = !!v;
 }
+
+/** Options for {@link run}. */
+/** @typedef {{cwd?: string, env?: Record<string, string>, capture?: boolean, inherit?: boolean, allowFail?: boolean, mutating?: boolean}} RunOpts */
+/** What {@link run} resolves with on a completed (or allowed-failure) process. */
+/** @typedef {{code: number, stdout: string, stderr: string, skipped?: boolean}} RunResult */
 
 /**
  * Run a command.
  * @param {string} cmd
  * @param {string[]} args
- * @param {{cwd?:string, env?:object, capture?:boolean, inherit?:boolean, allowFail?:boolean, mutating?:boolean}} opts
- * @returns {Promise<{code:number, stdout:string, stderr:string, skipped?:boolean}>}
+ * @param {RunOpts} [opts]
+ * @returns {Promise<RunResult>}
  */
 export function run(cmd, args = [], opts = {}) {
 	const { cwd, env, capture = true, inherit = false, allowFail = false, mutating = false } = opts;
@@ -39,7 +53,7 @@ export function run(cmd, args = [], opts = {}) {
 		});
 		let stdout = '';
 		let stderr = '';
-		if (!inherit) {
+		if (!inherit && child.stdout && child.stderr) {
 			child.stdout.on('data', (d) => {
 				stdout += d;
 				if (!capture) process.stdout.write(d);
@@ -50,7 +64,7 @@ export function run(cmd, args = [], opts = {}) {
 			});
 		}
 		child.on('error', (err) =>
-			err.code === 'ENOENT'
+			'code' in err && err.code === 'ENOENT'
 				? reject(new ShipError(`${cmd} not found on PATH`, { hint: `install ${cmd}` }))
 				: reject(err),
 		);
@@ -69,19 +83,21 @@ export function run(cmd, args = [], opts = {}) {
 /**
  * Parse JSON, salvaging output that asc occasionally prefixes with a warning
  * line. `undefined` means unparseable — distinct from a valid `null` body.
+ * @param {string} text
+ * @returns {AscPayload|undefined}
  */
 function parseJSON(text) {
 	const t = String(text).trim();
 	if (!t) return undefined;
 	try {
-		return JSON.parse(t);
+		return /** @type {AscPayload} */ (JSON.parse(t));
 	} catch {
 		/* fall through to salvage */
 	}
 	const start = t.search(/[[{]/);
 	if (start >= 0) {
 		try {
-			return JSON.parse(t.slice(start));
+			return /** @type {AscPayload} */ (JSON.parse(t.slice(start)));
 		} catch {
 			/* unparseable */
 		}
@@ -89,8 +105,14 @@ function parseJSON(text) {
 	return undefined;
 }
 
-/** Run a command whose stdout is JSON. Returns `fallback` on empty/unparseable output. */
-export async function runJSON(cmd, args, opts = {}) {
+/**
+ * Run a command whose stdout is JSON. Returns `fallback` on empty/unparseable output.
+ * @param {string} cmd
+ * @param {string[]} args
+ * @param {RunOpts & {fallback?: AscPayload|null}} [opts]
+ * @returns {Promise<AscPayload|null|undefined>}
+ */
+async function runJSON(cmd, args, opts = {}) {
 	const { fallback, ...rest } = opts;
 	const res = await run(cmd, args, { ...rest, allowFail: rest.allowFail ?? fallback !== undefined });
 	if (res.skipped) return fallback;
@@ -105,9 +127,17 @@ export async function runJSON(cmd, args, opts = {}) {
 	throw new ShipError(`${cmd} returned non-JSON output`, { hint: text.slice(0, 400) });
 }
 
+/** The `asc` binary, overridable for tests via SHIP_ASC_BIN. */
+/** @typedef {string} AscBin */
+/** @type {AscBin} */
 export const ASC = process.env.SHIP_ASC_BIN || 'asc';
 
-/** `asc` with `--output json`. `mutating: true` participates in --dry-run. */
+/**
+ * `asc` with `--output json`. `mutating: true` participates in --dry-run.
+ * @param {string[]} args
+ * @param {RunOpts & {fallback?: AscPayload|null}} [opts]
+ * @returns {Promise<AscPayload|null|undefined>}
+ */
 export function asc(args, opts = {}) {
 	return runJSON(ASC, [...args, '--output', 'json'], opts);
 }
@@ -119,7 +149,9 @@ export function asc(args, opts = {}) {
  * the parsed value cannot tell an upload that happened from one that was
  * refused. Never throws on a non-zero exit — the caller decides whether one
  * failure among N aborts the batch.
- * @returns {Promise<{ok:boolean, skipped:boolean, code:number, data:unknown, stderr:string}>}
+ * @param {string[]} args
+ * @param {RunOpts} [opts]
+ * @returns {Promise<{ok: boolean, skipped: boolean, code: number, data: AscPayload|null, stderr: string}>}
  */
 export async function ascMutate(args, opts = {}) {
 	const res = await run(ASC, [...args, '--output', 'json'], {
@@ -137,11 +169,6 @@ export async function ascMutate(args, opts = {}) {
 	};
 }
 
-/** `asc` with human output streamed to the terminal. */
-export function ascRaw(args, opts = {}) {
-	return run(ASC, args, { inherit: true, capture: false, ...opts });
-}
-
 /**
  * `eas`, preferring the project's own pinned copy.
  *
@@ -151,6 +178,9 @@ export function ascRaw(args, opts = {}) {
  * exactly the 1200 s ceiling and a clock a second fast makes every token 401 —
  * silently disappears. A project that pins eas-cli as a devDependency gets that
  * copy; everyone else still gets npx.
+ * @param {string[]} args
+ * @param {RunOpts} [opts]
+ * @returns {Promise<RunResult>}
  */
 export function eas(args, opts = {}) {
 	const cwd = opts.cwd ?? process.cwd();
@@ -161,7 +191,13 @@ export function eas(args, opts = {}) {
 	return run(spec.command, spec.args, { inherit: true, capture: false, ...opts });
 }
 
-/** Fetch JSON with a clear error surface. */
+/**
+ * Fetch JSON with a clear error surface. A non-JSON body (proxy HTML, empty
+ * 204) comes back as a string so the caller can decide, instead of throwing.
+ * @param {string} url
+ * @param {RequestInit} [init]
+ * @returns {Promise<Json|string|null>}
+ */
 export async function fetchJSON(url, init = {}) {
 	const res = await fetch(url, init);
 	const text = await res.text();
@@ -176,10 +212,14 @@ export async function fetchJSON(url, init = {}) {
 			hint: typeof body === 'string' ? body.slice(0, 300) : JSON.stringify(body)?.slice(0, 300),
 		});
 	}
-	return body;
+	return /** @type {Json|string|null} */ (body);
 }
 
-/** Absolute path of `bin` if it resolves on PATH, else null. */
+/**
+ * Absolute path of `bin` if it resolves on PATH, else null.
+ * @param {string} bin
+ * @returns {Promise<string|null>}
+ */
 export async function which(bin) {
 	if (bin.includes('/')) return existsSync(bin) ? bin : null;
 	for (const dir of (process.env.PATH ?? '').split(':')) {

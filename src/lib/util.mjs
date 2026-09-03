@@ -2,21 +2,48 @@
 import { homedir } from 'node:os';
 import { ShipError } from '../log.mjs';
 
-/** Absolute paths are noise in a report; the reader knows their own home. */
+/**
+ * The shape unvalidated JSON has before a parse/normalise function narrows it.
+ * Every external payload starts here; only `typeof`/`Array.isArray` narrowing
+ * promotes a value into a trusted type — never a cast.
+ * @typedef {string|number|boolean|null|JsonArray|JsonObject} Json
+ */
+/** @typedef {Json[]} JsonArray */
+/** @typedef {{[key: string]: Json}} JsonObject */
+
+/** `--flag` values as parseArgs delivers them: a string payload or a boolean. */
+/** @typedef {Record<string, string|boolean>} Flags */
+/** What a subcommand receives: the parsed flags and the remaining positionals. */
+/** @typedef {{flags: Flags, args: string[]}} SubCtx */
+
+/**
+ * Cache an async call so N callers share one credential check / fetch.
+ * @template T
+ * @param {() => Promise<T>} fn
+ * @returns {() => Promise<T>}
+ */
+export function memo(fn) {
+	let promise;
+	return () => (promise ??= fn());
+}
+
+/**
+ * Absolute paths are noise in a report; the reader knows their own home.
+ * @param {string} p
+ * @returns {string}
+ */
 export function tilde(p) {
 	const home = homedir();
 	return typeof p === 'string' && p.startsWith(home) ? `~${p.slice(home.length)}` : p;
 }
 
-/** Expand a leading `~/` or `~` to the user's home directory. */
+/**
+ * Expand a leading `~/` or `~` to the user's home directory.
+ * @param {string} p
+ * @returns {string}
+ */
 export function expandTilde(p) {
 	return String(p).replace(/^~(?=\/|$)/, homedir());
-}
-
-/** Cache an async call so N callers share one credential check / fetch. */
-export function memo(fn) {
-	let promise;
-	return () => (promise ??= fn());
 }
 
 /**
@@ -30,11 +57,15 @@ export async function settle(fn) {
 	try {
 		return { value: await fn(), error: null };
 	} catch (err) {
-		return { value: null, error: err?.message ?? String(err) };
+		return { value: null, error: err instanceof Error ? err.message : String(err) };
 	}
 }
 
-/** Median of numbers; 0 for an empty list (matching every current caller). */
+/**
+ * Median of numbers; 0 for an empty list (matching every current caller).
+ * @param {number[]} values
+ * @returns {number}
+ */
 export function median(values) {
 	if (!values.length) return 0;
 	const s = [...values].sort((a, b) => a - b);
@@ -42,7 +73,11 @@ export function median(values) {
 	return s.length % 2 ? s[mid] : Math.round((s[mid - 1] + s[mid]) / 2);
 }
 
-/** First real string among the candidates (a bare `--flag` parses as `true`). */
+/**
+ * First real string among the candidates (a bare `--flag` parses as `true`).
+ * @param {...(string|boolean|null|undefined)} candidates
+ * @returns {string|undefined}
+ */
 export function strOf(...candidates) {
 	for (const v of candidates) {
 		if (typeof v === 'string' && v.length) return v;
@@ -50,7 +85,13 @@ export function strOf(...candidates) {
 	return undefined;
 }
 
-/** Resolve a subcommand word. Unknown names raise with the valid set. */
+/**
+ * Resolve a subcommand word. Unknown names raise with the valid set.
+ * @template C
+ * @template R
+ * @param {{command: string, args: string[], subs: Record<string, (ctx: C) => R>, fallback: string}} spec
+ * @returns {{fn: (ctx: C) => R, args: string[]}}
+ */
 export function resolveSubcommand({ command, args, subs, fallback }) {
 	const [name = fallback, ...rest] = args;
 	const fn = subs[name];

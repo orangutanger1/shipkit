@@ -17,7 +17,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { LIMITS, loadConfig, requireAppId, resolveVersion } from '../config.mjs';
 import { asc, isDryRun } from '../exec.mjs';
-import { Report, ShipError, c, good, heading, info, note, step, table, warn } from '../log.mjs';
+import { Report, ShipError, c, good, heading, info, note, step, warn } from '../log.mjs';
 import {
 	CACHE_TTL_MS,
 	demandTable,
@@ -220,7 +220,7 @@ async function volumeOne(cfg, locale, _market, flags) {
 				hint: 'expected {"term": 62}, {"terms": {"term": {"popularity": 62}}}, or a saved /v1/suggestions/keywords or /v1/insights/apps/search-term-popularity response',
 			});
 		// Merge: an MCP dump usually covers one batch of terms, not the whole file.
-		const artifact = { ...imported, terms: { ...(existing?.terms ?? {}), ...imported.terms } };
+		const artifact = { ...imported, terms: { ...existing?.terms, ...imported.terms } };
 		return { locale, file: await writeArtifact(cfg, locale, 'volume', artifact), artifact, imported: Object.keys(imported.terms).length, source };
 	}
 

@@ -9,8 +9,32 @@ import { readJSONIfExists } from './jsonio.mjs';
 import { keywordList } from './locales.mjs';
 import { isNoSpaceLang, stopwordsFor, words } from './text.mjs';
 
+/** @typedef {import('./util.mjs').Json} Json */
+/** @typedef {import('./util.mjs').JsonObject} JsonObject */
+/** @typedef {import('../config.mjs').Config} Config */
+/** @typedef {import('./locales.mjs').ListingData} ListingData */
+/** @typedef {import('./listing-audit.mjs').Glossary} Glossary */
+
+/** A term-evidence index: how many terms fed it, and the token set they produced. */
+/** @typedef {{terms: number, index: Set<string>}} HarvestIndex */
+/** One row of aso/<locale>/scored.json. */
+/** @typedef {{term: string, opportunity: number}} ScoredTerm */
+
+/**
+ * aso/<locale>/scored.json, written by `ship aso score`. Files written before
+ * the rename say `scored`; entries may be bare term strings.
+ * @typedef {string|{term?: string, keyword?: string, opportunity?: number, top3?: {id?: string}[]}} ScoredRow
+ */
+/** @typedef {{terms?: ScoredRow[], scored?: ScoredRow[], [key: string]: Json|undefined}} ScoredFile */
+
+/** aso/<locale>/candidates.json — the harvest artifact; only the `terms` keys matter here. */
+/** @typedef {{terms?: JsonObject, [key: string]: Json|undefined}} CandidatesFile */
+
+/** analytics/<locale>-terms.json, written by `ship aso volume`. */
+/** @typedef {{rows?: {term: string}[], [key: string]: Json|undefined}} AnalyticsFile */
+
 /** Key order for a staged file, so a regenerated draft diffs against the last one. */
-export const FIELD_ORDER = [
+const FIELD_ORDER = [
 	'locale',
 	'name',
 	'subtitle',
@@ -25,11 +49,18 @@ export const FIELD_ORDER = [
 	'notes',
 ];
 
-export const asoFile = (cfg, locale, kind) => join(cfg.paths.aso, locale, `${kind}.json`);
+/** @param {Config} cfg @param {string} locale @param {'scored'|'candidates'} kind */
+const asoFile = (cfg, locale, kind) => join(cfg.paths.aso, locale, `${kind}.json`);
+/** @param {Config} cfg @param {string} locale */
 const analyticsFile = (cfg, locale) => join(cfg.paths.analytics, `${locale}-terms.json`);
 
 /** Re-key a staged file into FIELD_ORDER, keeping any extra keys at the end. */
+/**
+ * @param {JsonObject} data
+ * @returns {JsonObject}
+ */
 export function order(data) {
+	/** @type {JsonObject} */
 	const out = {};
 	for (const k of FIELD_ORDER) if (data[k] !== undefined) out[k] = data[k];
 	for (const k of Object.keys(data)) if (!(k in out)) out[k] = data[k];
@@ -39,9 +70,12 @@ export function order(data) {
 /**
  * `scored.json` is `{terms:[…]}`; files written before the rename say `{scored:[…]}`
  * and entries may be bare strings. Research is expensive — read every shape.
+ * @param {Config} cfg
+ * @param {string} locale
+ * @returns {Promise<ScoredTerm[]>}
  */
 export async function scoredTerms(cfg, locale) {
-	const data = await readJSONIfExists(asoFile(cfg, locale, 'scored'));
+	const data = /** @type {ScoredFile|null} */ (await readJSONIfExists(asoFile(cfg, locale, 'scored')));
 	const rows = data?.terms ?? data?.scored ?? [];
 	return rows
 		.map((r) =>
@@ -49,11 +83,16 @@ export async function scoredTerms(cfg, locale) {
 				? { term: r, opportunity: 0 }
 				: { term: r.term ?? r.keyword, opportunity: r.opportunity ?? 0 },
 		)
-		.filter((r) => r.term);
+		.filter(/** @param {{term: string|undefined, opportunity: number}} r @returns {r is ScoredTerm} */ (r) => r.term);
 }
 
 /** Term strings plus their tokens, so a packed single word still matches the phrase it came from. */
-export function tokenIndex(names, locale) {
+/**
+ * @param {string[]} names
+ * @param {string} locale
+ * @returns {HarvestIndex}
+ */
+function tokenIndex(names, locale) {
 	const index = new Set();
 	for (const name of names) {
 		index.add(String(name).toLocaleLowerCase());
@@ -63,21 +102,38 @@ export function tokenIndex(names, locale) {
 }
 
 /** What `ship aso harvest` actually saw in this locale's own storefront, or null if it never ran. */
+/**
+ * @param {Config} cfg
+ * @param {string} locale
+ * @returns {Promise<HarvestIndex|null>}
+ */
 export async function harvestIndex(cfg, locale) {
-	const data = await readJSONIfExists(asoFile(cfg, locale, 'candidates'));
+	const data = /** @type {CandidatesFile|null} */ (await readJSONIfExists(asoFile(cfg, locale, 'candidates')));
 	// `terms` is `{term: {seeds, rank}}` now and `{term: [seeds]}` in older artifacts;
 	// only the keys matter here, so both read the same.
 	return data ? tokenIndex(Object.keys(data.terms ?? {}), locale) : null;
 }
 
 /** Search terms App Store Connect says real users arrived on. Never required. */
+/**
+ * @param {Config} cfg
+ * @param {string} locale
+ * @returns {Promise<HarvestIndex|null>}
+ */
 export async function analyticsIndex(cfg, locale) {
-	const data = await readJSONIfExists(analyticsFile(cfg, locale));
+	const data = /** @type {AnalyticsFile|null} */ (await readJSONIfExists(analyticsFile(cfg, locale)));
 	if (!data) return null;
 	return tokenIndex((data.rows ?? []).map((r) => r.term).filter(Boolean), locale);
 }
 
 /** Source-locale terms worth probing a foreign storefront with, best research first. */
+/**
+ * @param {Config} cfg
+ * @param {string} source
+ * @param {ListingData} data
+ * @param {number} limit
+ * @returns {Promise<string[]>}
+ */
 export async function probeTerms(cfg, source, data, limit) {
 	const scored = await scoredTerms(cfg, source);
 	if (scored.length)
@@ -94,11 +150,19 @@ export async function probeTerms(cfg, source, data, limit) {
 }
 
 /** Competitor ids the source-locale scoring already found; looked up abroad they answer in that language. */
+/**
+ * @param {Config} cfg
+ * @param {string} source
+ * @returns {Promise<string[]>}
+ */
 export async function competitorIds(cfg, source) {
-	const data = await readJSONIfExists(asoFile(cfg, source, 'scored'));
+	const data = /** @type {ScoredFile|null} */ (await readJSONIfExists(asoFile(cfg, source, 'scored')));
 	const rows = data?.terms ?? data?.scored ?? [];
 	const ids = new Set();
-	for (const row of rows) for (const app of row?.top3 ?? []) if (app?.id) ids.add(app.id);
+	for (const row of rows) {
+		if (row === null || typeof row !== 'object') continue;
+		for (const app of row.top3 ?? []) if (app?.id) ids.add(app.id);
+	}
 	return [...ids];
 }
 
@@ -106,15 +170,19 @@ export async function competitorIds(cfg, source) {
  * Native vocabulary mined from the localized titles of a storefront's incumbents.
  * A word one app uses is that app's branding; a word two apps use is the market's
  * noun for the thing, which is what autocomplete will complete.
- * @returns {{term:string, apps:number}[]}
+ * @param {string[]} titles
+ * @param {{locale?: string, exclude?: string[], top?: number, minApps?: number}} [opts]
+ * @returns {{term: string, apps: number}[]}
  */
-export function seedsFromTitles(titles, { locale = 'en', exclude = [], top = 8, minApps = 2 } = {}) {
+function seedsFromTitles(titles, { locale = 'en', exclude = [], top = 8, minApps = 2 } = {}) {
 	const stop = stopwordsFor(locale);
 	const skip = new Set(exclude.flatMap((e) => words(e, locale)));
 	const joiner = isNoSpaceLang(locale) ? '' : ' ';
 	const minLen = isNoSpaceLang(locale) ? 2 : 3;
+	/** @type {Map<string, number>} */
 	const freq = new Map();
 	for (const title of titles) {
+		/** @type {Set<string>} */
 		const seen = new Set();
 		// Store titles are `Brand: the real pitch` far more often than not.
 		for (const segment of String(title ?? '').split(/[:：|—–,·・、]+|\s-\s/)) {
@@ -135,10 +203,18 @@ export function seedsFromTitles(titles, { locale = 'en', exclude = [], top = 8, 
  * Every seed source in priority order: glossary agreements first, then the
  * vocabulary mined from incumbent titles, then anything passed with --seeds.
  * First sighting of a term wins its origin; keys are lowercased and trimmed.
+ * @param {{titles: string[], glossary: Glossary, locale: string, exclude: string[], extra: string[], top: number}} opts
+ * @returns {{seeds: string[], from: Record<string, string>}}
  */
 export function mineSeeds({ titles, glossary, locale, exclude, extra, top }) {
+	/** @type {Record<string, string>} */
 	const from = {};
+	/** @type {string[]} */
 	const seeds = [];
+	/**
+	 * @param {string} term
+	 * @param {string} origin
+	 */
 	const push = (term, origin) => {
 		const key = String(term).toLocaleLowerCase().trim();
 		if (!key || from[key]) return;
@@ -157,6 +233,9 @@ export function mineSeeds({ titles, glossary, locale, exclude, extra, top }) {
  * Words a translator must leave alone: the app's own name, plus any capitalised
  * token in the source name/subtitle that is not the field's first word. Sentence
  * case makes the first word ambiguous, so it only counts when it is the app name.
+ * @param {Config} cfg
+ * @param {ListingData} data
+ * @returns {string[]}
  */
 export function brandNouns(cfg, data) {
 	const out = new Set();
@@ -174,6 +253,11 @@ export function brandNouns(cfg, data) {
 }
 
 /** The nouns a listing is actually about — what a translator has to agree on once. */
+/**
+ * @param {ListingData} data
+ * @param {{locale: string, exclude: string[]}} opts
+ * @returns {string[]}
+ */
 export function productNouns(data, { locale, exclude }) {
 	const stop = stopwordsFor(locale);
 	const skip = new Set(exclude.flatMap((t) => words(t, locale)));
@@ -187,7 +271,13 @@ export function productNouns(data, { locale, exclude }) {
 }
 
 /** Where each keyword's evidence comes from. `manual` means a human asserted it and nothing corroborates it. */
+/**
+ * @param {string[]} terms
+ * @param {{harvest: HarvestIndex|null, analytics: HarvestIndex|null, locale: string}} opts
+ * @returns {Record<string, 'analytics'|'harvest'|'manual'>}
+ */
 export function provenanceFor(terms, { harvest, analytics, locale }) {
+	/** @type {Record<string, 'analytics'|'harvest'|'manual'>} */
 	const out = {};
 	for (const term of terms) {
 		if (hasTodo(term)) continue;

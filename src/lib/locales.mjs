@@ -14,6 +14,29 @@ import { LIMITS } from '../config.mjs';
 import { ShipError } from '../log.mjs';
 import { charCount, indexedWords, isCovered } from './text.mjs';
 
+/** @typedef {import('./util.mjs').Json} Json */
+/** @typedef {import('./util.mjs').JsonObject} JsonObject */
+/** @typedef {import('../config.mjs').Config} Config */
+
+/**
+ * The authored body of a staged `<locale>.json`: the fields the listing
+ * lifecycle reads, plus whatever else the author kept. Asserted once at the
+ * parse boundary in {@link readStaged}; absent fields read as `null`, and the
+ * index signature keeps every other authored key legal.
+ * @typedef {{
+ *   locale: string|null, name: string|null, subtitle: string|null, keywords: string|null,
+ *   description: string|null, promotionalText: string|null, whatsNew: string|null,
+ *   privacyPolicyUrl: string|null, privacyChoicesUrl: string|null, privacyPolicyText: string|null,
+ *   supportUrl: string|null, marketingUrl: string|null, screenshotDir: string|null,
+ *   notes: Json, provenance: JsonObject,
+ *   [key: string]: Json
+ * }} ListingData
+ */
+/** One staged listing file: the authored body plus where it came from. */
+/** @typedef {{locale: string, file: string, data: ListingData}} StagedListing */
+/** One lint finding against a staged listing. */
+/** @typedef {{level: 'fail'|'warn', field: string, message: string, locale: string, file: string}} ListingProblem */
+
 export const APP_INFO_FIELDS = [
 	'name',
 	'subtitle',
@@ -34,6 +57,10 @@ export const VERSION_FIELDS = [
 const REQUIRED = ['name', 'subtitle', 'keywords', 'description'];
 
 /** ASC counts keywords as a 100-char comma-separated string; spaces after commas waste index slots. */
+/**
+ * @param {Json|undefined} keywords
+ * @returns {string[]}
+ */
 export function keywordList(keywords) {
 	return String(keywords ?? '')
 		.split(',')
@@ -41,6 +68,10 @@ export function keywordList(keywords) {
 		.filter(Boolean);
 }
 
+/**
+ * @param {Json|undefined} keywords
+ * @returns {string}
+ */
 export function normaliseKeywords(keywords) {
 	const seen = new Set();
 	const out = [];
@@ -54,6 +85,10 @@ export function normaliseKeywords(keywords) {
 }
 
 /** Read every staged listing. Returns [{locale, file, data}] sorted by locale. */
+/**
+ * @param {Config} cfg
+ * @returns {Promise<StagedListing[]>}
+ */
 export async function readStaged(cfg) {
 	const dir = cfg.paths.staged;
 	if (!existsSync(dir)) return [];
@@ -63,9 +98,9 @@ export async function readStaged(cfg) {
 		const file = join(dir, f);
 		let data;
 		try {
-			data = JSON.parse(await readFile(file, 'utf8'));
+			data = /** @type {ListingData} */ (JSON.parse(await readFile(file, 'utf8')));
 		} catch (err) {
-			throw new ShipError(`${file} is not valid JSON`, { hint: err.message });
+			throw new ShipError(`${file} is not valid JSON`, { hint: err instanceof Error ? err.message : String(err) });
 		}
 		out.push({ locale: data.locale ?? basename(f, '.json'), file, data });
 	}
@@ -79,24 +114,34 @@ export async function readStaged(cfg) {
  * Apple indexes from `カレンダー 予定` or a German compound are not the ones a
  * whitespace split finds — the "already indexed" rule silently never fires for
  * a third of the store when it splits on /\s+/.
- * @returns {{level:'fail'|'warn', field:string, message:string}[]}
  */
 /** Keyword-specific rules: separator hygiene, dupes (fail) and slot waste (warn). */
+/**
+ * @param {ListingData} data
+ * @param {string} tag
+ * @returns {['fail'|'warn', string, string][]}
+ */
 function keywordProblems(data, tag) {
+	/** @type {['fail'|'warn', string, string][]} */
 	const out = [];
-	if (/,\s/.test(data.keywords)) out.push(['fail', 'keywords', 'contains ", " — spaces after commas waste index characters']);
+	if (/,\s/.test(data.keywords ?? '')) out.push(['fail', 'keywords', 'contains ", " — spaces after commas waste index characters']);
 	const list = keywordList(data.keywords);
 	const dupes = list.filter((k, i) => list.findIndex((o) => o.toLocaleLowerCase() === k.toLocaleLowerCase()) !== i);
 	if (dupes.length) out.push(['fail', 'keywords', `duplicate terms: ${[...new Set(dupes)].join(', ')}`]);
 	const indexed = indexedWords(`${data.name ?? ''} ${data.subtitle ?? ''}`, tag);
 	const wasted = list.filter((k) => isCovered(k, indexed, tag));
 	if (wasted.length)
-		out.push(['warn', 'keywords', `already indexed via name/subtitle: ${wasted.join(', ')} — free up the slots`]);
+		out.push(['warn', 'keywords', `already indexed via name/subtitle: ${wasted.join(', ')}`]);
 	return out;
 }
 
-/** Required-field (fail), length-limit (fail/warn) and URL-shape (fail) rules. */
+/** Required-field (fail), length-limit (fail/warn) and URL-shape (fail) rules; [level, field, message] tuples. */
+/**
+ * @param {ListingData} data
+ * @returns {['fail'|'warn', string, string][]}
+ */
 function fieldProblems(data) {
+	/** @type {['fail'|'warn', string, string][]} */
 	const out = [];
 	for (const field of REQUIRED) {
 		if (!String(data[field] ?? '').trim()) out.push(['fail', field, 'required but empty']);
@@ -111,14 +156,20 @@ function fieldProblems(data) {
 	}
 	for (const field of ['privacyPolicyUrl', 'supportUrl', 'marketingUrl']) {
 		const v = data[field];
-		if (v && !v.startsWith('https://')) out.push(['fail', field, 'must be an https URL']);
+		if (typeof v === 'string' && v && !v.startsWith('https://')) out.push(['fail', field, 'must be an https URL']);
 	}
 	return out;
 }
 
+/**
+ * @param {{locale: string, file: string, data: ListingData}} listing
+ * @returns {ListingProblem[]}
+ */
 export function lintListing({ locale, file, data }) {
 	const tag = data.locale ?? locale ?? 'en';
+	/** @type {ListingProblem[]} */
 	const problems = [];
+	/** @param {'fail'|'warn'} level @param {string} field @param {string} message */
 	const push = (level, field, message) => problems.push({ level, field, message, locale, file });
 
 	if (data.locale && data.locale !== locale)
@@ -133,6 +184,9 @@ export function lintListing({ locale, file, data }) {
 /**
  * Expand staged listings into the canonical tree asc consumes.
  * Shared URLs fall back to the primary locale, then to ship.config legal.*.
+ * @param {Config} cfg
+ * @param {string} version
+ * @param {{write?: boolean}} [opts]
  * @returns {Promise<{written:string[], locales:string[]}>}
  */
 export async function stage(cfg, version, { write = true } = {}) {
@@ -178,7 +232,13 @@ export async function stage(cfg, version, { write = true } = {}) {
 	return { written, locales: listings.map((l) => l.locale) };
 }
 
+/**
+ * @param {JsonObject} obj
+ * @param {string[]} fields
+ * @returns {JsonObject}
+ */
 function pick(obj, fields) {
+	/** @type {JsonObject} */
 	const out = {};
 	for (const f of fields) {
 		const v = obj[f];
@@ -188,7 +248,12 @@ function pick(obj, fields) {
 }
 
 /** Parse a legacy `asc localizations` .strings file into a plain object. */
+/**
+ * @param {string} text
+ * @returns {Record<string, string>}
+ */
 export function parseStrings(text) {
+	/** @type {Record<string, string>} */
 	const out = {};
 	// "key" = "value"; with escaped quotes and newlines inside the value.
 	const re = /"((?:[^"\\]|\\.)*)"\s*=\s*"((?:[^"\\]|\\.)*)"\s*;/g;
@@ -199,8 +264,9 @@ export function parseStrings(text) {
 	return out;
 }
 
+/** @param {string} s */
 function unescapeStrings(s) {
-	return s.replace(/\\(.)/g, (_, ch) =>
+	return s.replace(/\\(.)/g, /** @param {string} _ @param {string} ch */ (_, ch) =>
 		ch === 'n' ? '\n' : ch === 't' ? '\t' : ch === 'r' ? '\r' : ch,
 	);
 }

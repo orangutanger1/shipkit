@@ -18,6 +18,7 @@
 import { readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+// jscpd:ignore-start — import blocks are boilerplate, not copied logic.
 import { LIMITS, loadConfig, optionalAppId, requireAppId, resolveVersion } from '../config.mjs';
 import { asc, ascMutate, isDryRun } from '../exec.mjs';
 import { ShipError, c, good, heading, info, note, step, table, warn } from '../log.mjs';
@@ -27,6 +28,7 @@ import { rowsOf } from './asc-report.mjs';
 import { strOf } from './util.mjs';
 import { charCount } from './text.mjs';
 import { requireApplyableState, stderrTail, stateOf } from './listing-sync.mjs';
+// jscpd:ignore-end
 import {
 	cppDir,
 	cppRoot,
@@ -40,14 +42,43 @@ import {
 	writeMeta,
 } from './cpp.mjs';
 
-const attr = (o, key) => o?.[key] ?? o?.attributes?.[key] ?? null;
+/** @typedef {import('./util.mjs').Json} Json */
+/** @typedef {import('./util.mjs').JsonObject} JsonObject */
+/** @typedef {import('./util.mjs').JsonArray} JsonArray */
+/** @typedef {import('./util.mjs').Flags} Flags */
+/** @typedef {import('./util.mjs').SubCtx} SubCtx */
+/** @typedef {import('../config.mjs').Config} Config */
+/** @typedef {import('./cpp.mjs').CppEntry} CppEntry */
+/** @typedef {import('./cpp.mjs').CppProblem} CppProblem */
+
+/**
+ * View any JSON value as a row: objects pass through untouched, anything else
+ * reads as an empty row — exactly what property access on a scalar would have
+ * yielded.
+ *
+ * @param {Json|undefined} v
+ * @returns {JsonObject}
+ */
+const asRow = (v) => (typeof v === 'object' && v !== null && !Array.isArray(v) ? v : {});
+
+/** @param {Json|undefined} o @param {string} key @returns {Json|null} */
+const attr = (o, key) => {
+	const row = asRow(o);
+	return row[key] ?? asRow(row.attributes)[key] ?? null;
+};
+/** @param {Json|undefined} payload @returns {Json|null} */
 const first = (payload) => rowsOf(payload)[0] ?? null;
+/** @param {Json|undefined} o @returns {string|null} */
 const idOf = (o) => {
-	const id = o?.id ?? attr(o, 'id');
+	const id = asRow(o).id ?? attr(o, 'id');
 	return id == null ? null : String(id);
 };
 
 /** Directory names under a screenshotDir are display types, exactly as `ship shots` lays them out. */
+/**
+ * @param {string} dir
+ * @returns {Promise<string[]>}
+ */
 async function deviceDirs(dir) {
 	if (!existsSync(dir)) return [];
 	return (await readdir(dir, { withFileTypes: true }))
@@ -56,6 +87,11 @@ async function deviceDirs(dir) {
 		.sort();
 }
 
+/**
+ * @param {CppEntry} entry
+ * @param {CppProblem[]} problems
+ * @returns {void}
+ */
 function printCppProblems(entry, problems) {
 	if (!problems.length) return;
 	process.stdout.write(`\n  ${c.bold(entry.slug)}\n`);
@@ -65,6 +101,11 @@ function printCppProblems(entry, problems) {
 	}
 }
 
+/**
+ * @param {Config} cfg
+ * @param {string|undefined} slug
+ * @returns {Promise<CppEntry[]>}
+ */
 async function pagesFor(cfg, slug) {
 	if (slug) {
 		const entry = await readPage(cfg, slugify(slug));
@@ -82,6 +123,11 @@ async function pagesFor(cfg, slug) {
 	return all;
 }
 
+/**
+ * @param {Config} cfg
+ * @param {Flags} flags
+ * @returns {Promise<number>}
+ */
 async function cppList(cfg, flags) {
 	const pages = await readPages(cfg);
 	const local = pages.map((p) => ({
@@ -145,8 +191,15 @@ async function cppList(cfg, flags) {
 	return local.some((p) => p.problems.some((x) => x.level === 'fail')) ? 1 : 0;
 }
 
+/**
+ * @param {Config} cfg
+ * @param {CppEntry[]} entries
+ * @param {Flags} flags
+ * @returns {Promise<number>}
+ */
 async function cppStage(cfg, entries, flags) {
 	const dry = isDryRun();
+	/** @type {{slug: string, locales: string[], written: string[], screenshots: Record<string, string>}[]} */
 	const staged = [];
 	for (const entry of entries) {
 		const problems = lintPage(entry);
@@ -176,11 +229,22 @@ async function cppStage(cfg, entries, flags) {
 	return 0;
 }
 
+/** Shared context for one `cpp apply` run. */
+/** @typedef {{cfg: Config, appId: string, version: string, dry: boolean, flags: Flags, entries: CppEntry[], livePages: JsonArray, screenshotFailures: string[]}} CppRun */
+/** One localization pushed for a page. */
+/** @typedef {{locale: string, action: string, localizationId: string|null}} CppAppliedLocale */
+/** One page's `cpp apply` outcome. */
+/** @typedef {{slug: string, name: Json, pageId: string, versionId: string, locales: CppAppliedLocale[]}} CppApplyResult */
+
 /**
  * Find the page by name in the live list, creating it when ASC has none.
  * Matching by name is what makes a re-run idempotent: ASC will happily create
  * a second page called "Oil change" and then serve whichever one the ad
  * happens to point at.
+ *
+ * @param {CppRun} run
+ * @param {string} name
+ * @returns {Promise<Json|null>}
  */
 async function findOrCreatePage(run, name) {
 	const page = run.livePages.find((p) => attr(p, 'name') === name) ?? null;
@@ -200,6 +264,11 @@ async function findOrCreatePage(run, name) {
  * Versions are append-only and a submitted one is frozen. Prefer the editable
  * draft; fall back to the newest and let ASC reject rather than silently
  * writing into a page nobody is serving.
+ *
+ * @param {CppRun} run
+ * @param {string} name
+ * @param {string} pageId
+ * @returns {Promise<Json|null>}
  */
 async function findOrCreatePageVersion(run, name, pageId) {
 	const versions = rowsOf(
@@ -218,8 +287,14 @@ async function findOrCreatePageVersion(run, name, pageId) {
 }
 
 /** Push one locale's staged promotional text: update the live localization, or create it. */
+/**
+ * @param {CppRun} run
+ * @param {CppEntry} entry
+ * @param {{locale: string, versionId: string, existing: JsonArray, payload: Json}} p
+ * @returns {Promise<CppAppliedLocale>}
+ */
 async function applyCppLocalization(run, entry, { locale, versionId, existing, payload }) {
-	const promo = payload.promotionalText ?? '';
+	const promo = String(asRow(payload).promotionalText ?? '');
 	const live = existing.find((l) => attr(l, 'locale') === locale) ?? null;
 	const localizationId = idOf(live);
 	const written = await ascMutate(
@@ -245,8 +320,15 @@ async function applyCppLocalization(run, entry, { locale, versionId, existing, p
  * and moves on) so one bad device type does not abort the remaining locales.
  * Extracted verbatim from `cpp apply` so a later pass can share it with
  * `ship shots`.
+ *
+ * @param {Config} cfg
+ * @param {Flags} flags
+ * @param {boolean} dry
+ * @param {{entry: CppEntry, locale: string, versionId: string, localizationId: string|null}} p
+ * @param {string[]} failures
+ * @returns {Promise<void>}
  */
-export async function uploadCppScreenshots(cfg, flags, dry, { entry, locale, versionId, localizationId }, failures) {
+async function uploadCppScreenshots(cfg, flags, dry, { entry, locale, versionId, localizationId }, failures) {
 	const shots = entry.locales.find((l) => l.locale === locale)?.data?.screenshotDir;
 	if (!shots) return;
 	if (!flags.screenshots) {
@@ -260,7 +342,7 @@ export async function uploadCppScreenshots(cfg, flags, dry, { entry, locale, ver
 		warn(`${locale}: ${dir} has no <DISPLAY_TYPE>/ subdirectories — pass --device-type`);
 		return;
 	}
-	for (const deviceType of types.length ? types : [explicit]) {
+	for (const deviceType of types.length ? types : [explicit ?? '']) {
 		const path = types.length ? join(dir, deviceType) : dir;
 		const localizationTarget = localizationId ?? idOf(first(
 			await asc(
@@ -286,6 +368,10 @@ export async function uploadCppScreenshots(cfg, flags, dry, { entry, locale, ver
  * push every locale's promotional text, optionally upload screenshots, and
  * record the outcome in cpp.json. Returns the result row, or null when a dry
  * run stopped before anything existed to write against.
+ *
+ * @param {CppRun} run
+ * @param {CppEntry} entry
+ * @returns {Promise<CppApplyResult|null>}
  */
 async function applyCppPage(run, entry) {
 	const { cfg, dry, flags } = run;
@@ -320,6 +406,7 @@ async function applyCppPage(run, entry) {
 		),
 	);
 
+	/** @type {CppAppliedLocale[]} */
 	const applied = [];
 	for (const { locale } of entry.locales) {
 		const payload = await readJSONIfExists(join(generatedDir(entry.dir), `${locale}.json`));
@@ -337,6 +424,11 @@ async function applyCppPage(run, entry) {
 }
 
 /** The human-facing end of `cpp apply`: screenshot failures, then next steps. */
+/**
+ * @param {CppRun} run
+ * @param {CppApplyResult[]} results
+ * @returns {number}
+ */
 function finishCppApply(run, results) {
 	const { appId, version, dry, flags, entries, screenshotFailures } = run;
 	if (flags.json) {
@@ -358,6 +450,12 @@ function finishCppApply(run, results) {
 	return 0;
 }
 
+/**
+ * @param {Config} cfg
+ * @param {CppEntry[]} entries
+ * @param {Flags} flags
+ * @returns {Promise<number>}
+ */
 async function cppApply(cfg, entries, flags) {
 	const appId = requireAppId(cfg);
 	const version = await resolveVersion(cfg, strOf(flags.version));
@@ -366,6 +464,7 @@ async function cppApply(cfg, entries, flags) {
 	await requireApplyableState(cfg, appId, version, flags);
 
 	// Shared context for the per-page steps below.
+	/** @type {CppRun} */
 	const run = {
 		cfg,
 		appId,
@@ -379,6 +478,7 @@ async function cppApply(cfg, entries, flags) {
 		screenshotFailures: [],
 	};
 
+	/** @type {CppApplyResult[]} */
 	const results = [];
 	for (const entry of entries) {
 		const result = await applyCppPage(run, entry);
@@ -387,6 +487,12 @@ async function cppApply(cfg, entries, flags) {
 	return finishCppApply(run, results);
 }
 
+/**
+ * @param {Config} cfg
+ * @param {CppEntry} entry
+ * @param {Flags} flags
+ * @returns {Promise<number>}
+ */
 async function cppLink(cfg, entry, flags) {
 	const adGroup = strOf(flags['ad-group'] ?? flags.adGroup);
 	if (!adGroup)
@@ -424,6 +530,10 @@ async function cppLink(cfg, entry, flags) {
 
 const CPP_SUB = new Set(['list', 'stage', 'apply', 'link']);
 
+/**
+ * @param {SubCtx} ctx
+ * @returns {Promise<number>}
+ */
 export async function cpp({ args, flags }) {
 	const [sub = 'list', ...rest] = args;
 	if (!CPP_SUB.has(sub))
@@ -431,12 +541,14 @@ export async function cpp({ args, flags }) {
 			hint: `try: ${[...CPP_SUB].join(', ')}`,
 		});
 	const cfg = await loadConfig();
+	if (!cfg) throw new ShipError('no ship.config.json found', { hint: 'run `ship init` inside the app repo to create one' });
 	if (sub === 'list') return cppList(cfg, flags);
 
 	const slug = rest[0] ? String(rest[0]) : (strOf(flags.slug) ?? null);
 	if (sub === 'link') {
 		if (!slug) throw new ShipError('meta cpp link: name the page', { hint: 'ship meta cpp link <slug> --ad-group "…"' });
 		const [entry] = await pagesFor(cfg, slug);
+		if (!entry) throw new ShipError(`no custom product page "${slug}"`, { hint: `expected ${cppDir(cfg, slugify(slug))}/` });
 		return cppLink(cfg, entry, flags);
 	}
 	const entries = await pagesFor(cfg, slug);

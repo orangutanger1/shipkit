@@ -194,7 +194,7 @@ export async function hints(term, country = 'US', { hard = false } = {}) {
 }
 
 /** The seed plus two truncations, so autocomplete has room to complete. */
-export function* stems(seed) {
+function* stems(seed) {
 	yield seed;
 	if (seed.length > 6) yield seed.slice(0, -2);
 	if (seed.length > 9) yield seed.slice(0, -4);

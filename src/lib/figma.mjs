@@ -34,7 +34,7 @@ export async function figmaToken() {
 }
 
 /** A 429 is not an error here — it is the expected steady state. Flag it. */
-export class FigmaQuotaError extends Error {
+class FigmaQuotaError extends Error {
 	constructor(endpoint) {
 		super(`Figma rate-limited ${endpoint}`);
 		this.quota = true;

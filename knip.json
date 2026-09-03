@@ -4,9 +4,9 @@
 		"bin/ship",
 		"test/**/*.test.mjs",
 		"test/fixtures/*.mjs",
-		"test/helpers/*.mjs",
 		"scripts/*.mjs"
 	],
 	"project": ["src/**/*.mjs", "bin/**"],
+	"ignoreDependencies": ["@stryker-mutator/command-runner"],
 	"includeEntryExports": false
 }

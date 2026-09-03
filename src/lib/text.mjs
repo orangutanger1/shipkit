@@ -9,12 +9,22 @@
 //
 // Node ≥ 20 ships Intl.Segmenter, which knows the real boundaries. Use it.
 
-/** Languages whose script has no inter-word spacing. */
-export const NO_SPACE_LANGS = new Set(['ja', 'zh', 'ko', 'th', 'lo', 'my', 'km']);
+/** @typedef {import('./util.mjs').Json} Json */
 
-/** ASC locale (`de-DE`, `zh-Hans`) → the BCP-47 language subtag. */
+/** Languages whose script has no inter-word spacing. */
+const NO_SPACE_LANGS = new Set(['ja', 'zh', 'ko', 'th', 'lo', 'my', 'km']);
+
+/**
+ * ASC locale (`de-DE`, `zh-Hans`) → the BCP-47 language subtag.
+ * @param {string|undefined} locale
+ * @returns {string}
+ */
 export const langOf = (locale) => String(locale ?? 'en').split(/[-_]/)[0].toLowerCase();
 
+/**
+ * @param {string} locale
+ * @returns {boolean}
+ */
 export const isNoSpaceLang = (locale) => NO_SPACE_LANGS.has(langOf(locale));
 
 /**
@@ -22,7 +32,8 @@ export const isNoSpaceLang = (locale) => NO_SPACE_LANGS.has(langOf(locale));
  * Per language, because dropping English stop words from a German listing is
  * how `und`/`für` end up eating keyword slots.
  */
-export const STOPWORDS = {
+/** @type {Record<string, Set<string>>} */
+const STOPWORDS = {
 	en: new Set(['and', 'the', 'for', 'with', 'your', 'app', 'you', 'all', 'from', 'that', 'into', 'best', 'free']),
 	de: new Set(['und', 'der', 'die', 'das', 'für', 'mit', 'dein', 'deine', 'app', 'von', 'auf', 'kostenlos']),
 	fr: new Set(['et', 'le', 'la', 'les', 'des', 'pour', 'avec', 'votre', 'application', 'app', 'de', 'du', 'gratuit']),
@@ -37,9 +48,18 @@ export const STOPWORDS = {
 	tr: new Set(['ve', 'ile', 'için', 'bir', 'uygulama', 'ücretsiz']),
 };
 
+/**
+ * @param {string} locale
+ * @returns {Set<string>}
+ */
 export const stopwordsFor = (locale) => STOPWORDS[langOf(locale)] ?? STOPWORDS.en;
 
+/** @type {Map<string, Intl.Segmenter>} */
 let SEGMENTERS = new Map();
+/**
+ * @param {string} lang
+ * @returns {Intl.Segmenter}
+ */
 function segmenter(lang) {
 	let seg = SEGMENTERS.get(lang);
 	if (!seg) {
@@ -69,6 +89,9 @@ export function words(text, locale = 'en') {
  * Tokens Apple already indexes from a piece of listing copy.
  * Single-character tokens are kept for no-space languages (一, 家 are real
  * words) and dropped elsewhere, where they are always noise.
+ * @param {string} text
+ * @param {string} [locale]
+ * @returns {Set<string>}
  */
 export function indexedWords(text, locale = 'en') {
 	const min = isNoSpaceLang(locale) ? 1 : 2;
@@ -76,7 +99,13 @@ export function indexedWords(text, locale = 'en') {
 	return new Set(words(text, locale).filter((w) => w.length >= min && !stop.has(w)));
 }
 
-/** True when every token of `term` is already indexed by name/subtitle. */
+/**
+ * True when every token of `term` is already indexed by name/subtitle.
+ * @param {string} term
+ * @param {ReadonlySet<string>} indexed
+ * @param {string} [locale]
+ * @returns {boolean}
+ */
 export function isCovered(term, indexed, locale = 'en') {
 	const toks = words(term, locale);
 	return toks.length > 0 && toks.every((w) => indexed.has(w));
@@ -86,15 +115,25 @@ export function isCovered(term, indexed, locale = 'en') {
  * Characters as Apple counts them for a field limit: code points, not UTF-16
  * units. An emoji or an astral CJK ideograph is one character to ASC and two
  * to `String.length`.
+ * @param {Json|undefined} s
+ * @returns {number}
  */
 export const charCount = (s) => Array.from(String(s ?? '')).length;
 
-/** Number of code points a keyword string would occupy once packed. */
+/**
+ * Number of code points a keyword string would occupy once packed.
+ * @param {string[]} terms
+ * @returns {number}
+ */
 export const keywordFieldLength = (terms) => charCount(terms.join(','));
 
 /**
  * Shared-token overlap between two phrases, 0-1. Used to detect a "translated"
  * keyword that is really the source phrase with the words swapped one-for-one.
+ * @param {string} a
+ * @param {string} b
+ * @param {string} [locale]
+ * @returns {number}
  */
 export function overlap(a, b, locale = 'en') {
 	const A = new Set(words(a, locale));
@@ -117,7 +156,9 @@ export function overlap(a, b, locale = 'en') {
  * Deliberately publishers only. Screening on "a title token only one app uses"
  * was tried and took `mileage`, `fuel` and `garage` down with the brands: a
  * category word is often owned by one incumbent title and typed by everyone.
- * @param {{name?: string, seller?: string}[]} apps
+ * @param {{name?: string|null, seller?: string|null}[]} apps
+ * @param {string} [locale]
+ * @returns {Set<string>}
  */
 export function brandTokens(apps, locale = 'en') {
 	const brands = new Set();
@@ -129,9 +170,12 @@ export function brandTokens(apps, locale = 'en') {
  * How many distinct queries each token appears in.
  * Support is the only demand-side evidence a token carries on its own, and it
  * is what separates a brand the market types from one it does not.
+ * @param {string[]} phrases
+ * @param {string} [locale]
  * @returns {Map<string, number>}
  */
 export function tokenSupport(phrases, locale = 'en') {
+	/** @type {Map<string, number>} */
 	const support = new Map();
 	for (const phrase of phrases)
 		for (const w of new Set(words(phrase, locale))) support.set(w, (support.get(w) ?? 0) + 1);

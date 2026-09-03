@@ -1,6 +1,6 @@
 ---
 name: shipping-ios
-description: Ship an iOS app with the `ship` CLI — App Store Connect metadata, ASO keyword research, EAS builds, OTA updates, RevenueCat monetization, and Apple Search Ads. Use when the task involves releasing, updating, or growing an iOS app in /home/myen/tour, /home/myen/glovebox, /home/myen/noor, or any repo containing ship.config.json.
+description: Ship an iOS app with the `ship` CLI — App Store Connect metadata, ASO keyword research, EAS builds, OTA updates, RevenueCat monetization, and Apple Search Ads. Use when the task involves releasing, updating, or growing an iOS app in any repo containing ship.config.json.
 ---
 
 # Shipping iOS apps
@@ -44,8 +44,8 @@ identity lives — ASC app id, bundle id, EAS project, RevenueCat project,
 entitlement, store dir, locales, legal URLs. Read it before assuming anything.
 `ship init` creates or repairs it by auto-detection.
 
-`appDir` matters: `/home/myen/tour` keeps its Expo app in `mobile/`, the others
-at the repo root.
+`appDir` matters and is not always the repo root — some repos keep the Expo app
+in a subdirectory. Read it; never assume.
 
 ## Choosing what to build
 
@@ -59,15 +59,12 @@ ship scout names "glovebox"                        # is the brand word taken?
 ship scout new car-maintenance-log --from …        # scaffold the repo
 ```
 
-**Read this before generating ideas.** Glovebox shipped in August 2026 into
-`car maintenance log` and found `Car Maintenance Log - Glovebox` already on the
-storefront: same feature set, same privacy-and-offline angle, same brand word,
-released two weeks earlier. Searching the term returned a page of car
-maintenance logs, all released within a month of each other, several of them
-pitching privacy. Nobody copied anybody. Every one of those developers ran the
-same pipeline — ask a model for high-volume low-competition terms, ask it for an
-app idea, ask it for a name — and models are near-deterministic, so the pipeline
-converged. The output of a popular process is a crowded market.
+**Read this before generating ideas.** Models are near-deterministic, so every
+developer who asks one for high-volume low-competition terms, then an app idea,
+then a name, converges on the same app — a term can return a page of
+near-identical apps released within a month of each other, pitching the same
+angle, with nobody having copied anybody. The output of a popular process is a
+crowded market.
 
 Three concrete rules follow, all enforced by the tool:
 
@@ -253,11 +250,11 @@ ship release          # preflight → meta → build → submit, gated at every 
 ```
 
 `ship ota` refuses when the native dependency graph or native Expo config keys
-drifted since the last `ship build`. Both `tour` and `idea6` recorded the same
-incident: an OTA shipped against changed native deps breaks every installed
-client, because the JS bundle references native modules the installed binary
-does not contain. The baseline lives in `.asc/native-lock.json` and is written
-by `ship build`. `--force` exists; using it is how the incident happened.
+drifted since the last `ship build`. An OTA shipped against changed native deps
+breaks every installed client, because the JS bundle references native modules
+the installed binary does not contain. The baseline lives in
+`.asc/native-lock.json` and is written by `ship build`. `--force` exists; using
+it is how this breaks in production.
 
 For `tour` specifically, backend deploys must land **before** the OTA
 (`supabase db push` → `supabase functions deploy …` → `ship ota`), because old

@@ -14,7 +14,26 @@ import { strOf } from './util.mjs';
 import { charCount } from './text.mjs';
 import { APP_INFO_FIELDS, VERSION_FIELDS, keywordList, lintListing, normaliseKeywords, parseStrings, readStaged, stage as expand } from './locales.mjs';
 
+/** @typedef {import('./util.mjs').Json} Json */
+/** @typedef {import('./util.mjs').JsonObject} JsonObject */
+/** @typedef {import('./util.mjs').Flags} Flags */
+/** @typedef {import('./util.mjs').SubCtx} SubCtx */
+/** @typedef {import('../config.mjs').Config} Config */
+/** @typedef {import('./locales.mjs').ListingData} ListingData */
+/** @typedef {import('./locales.mjs').StagedListing} StagedListing */
+/** @typedef {import('./locales.mjs').ListingProblem} ListingProblem */
+
+/** A staged listing plus its lint result: the row every meta subcommand handles. */
+/** @typedef {StagedListing & {problems: ListingProblem[]}} LintRow */
+/** One .strings file's parse: the mapped ASC fields and the keys nothing maps to. */
+/** @typedef {{fields: Record<string, string>, unknown: string[]}} StringsFile */
+
 /** The tail of an asc stderr is the actionable part; shared with the CPP writer in cpp-asc.mjs. */
+/**
+ * @param {string|undefined} stderr
+ * @param {{lines?: number, fallback?: string}} [opts]
+ * @returns {string}
+ */
 export function stderrTail(stderr, { lines = 6, fallback = 'check asc auth: asc auth status' } = {}) {
 	return (stderr || fallback).split('\n').slice(-lines).join('\n');
 }
@@ -22,8 +41,13 @@ export function stderrTail(stderr, { lines = 6, fallback = 'check asc auth: asc 
 /** App Store states where `asc metadata apply` is accepted; the rest reject the write server-side. */
 const APPLYABLE = new Set(['READY_FOR_SALE', 'PREPARE_FOR_SUBMISSION', 'DEVELOPER_REJECTED', 'REJECTED']);
 
+/** @type {('name'|'subtitle'|'keywords'|'description')[]} */
 const LINT_COLUMNS = ['name', 'subtitle', 'keywords', 'description'];
 
+/**
+ * @param {Config} cfg
+ * @returns {Promise<LintRow[]>}
+ */
 async function listings(cfg) {
 	const found = await readStaged(cfg);
 	if (!found.length)
@@ -31,6 +55,10 @@ async function listings(cfg) {
 	return found.map((l) => ({ ...l, problems: lintListing(l) }));
 }
 
+/**
+ * @param {LintRow[]} rows
+ * @returns {void}
+ */
 function printProblems(rows) {
 	for (const row of rows) {
 		if (!row.problems.length) continue;
@@ -42,13 +70,30 @@ function printProblems(rows) {
 	}
 }
 
-export async function lint({ flags }) {
+/**
+ * The non-optional loadConfig throws before it can return null; this narrows
+ * the type so callers do not repeat the check.
+ *
+ * @returns {Promise<Config>}
+ */
+async function requireConfig() {
 	const cfg = await loadConfig();
+	if (!cfg) throw new ShipError('no ship.config.json found', { hint: 'run `ship init` inside the app repo to create one' });
+	return cfg;
+}
+
+/**
+ * @param {SubCtx} ctx
+ * @returns {Promise<number>}
+ */
+export async function lint({ flags }) {
+	const cfg = await requireConfig();
 	const rows = await listings(cfg);
 	const failures = rows.flatMap((r) => r.problems.filter((p) => p.level === 'fail'));
 	const warnings = rows.flatMap((r) => r.problems.filter((p) => p.level === 'warn'));
 
 	if (flags.json) {
+		/** @param {LintRow} r @returns {Record<string, number>} */
 		const lengths = (r) => Object.fromEntries(LINT_COLUMNS.map((f) => [f, charCount(r.data[f])]));
 		emit({
 			staged: cfg.paths.staged,
@@ -66,6 +111,11 @@ export async function lint({ flags }) {
 	}
 
 	heading(`${cfg.name} — ${rows.length} locale${rows.length === 1 ? '' : 's'}`);
+	/**
+	 * @param {LintRow} row
+	 * @param {'name'|'subtitle'|'keywords'|'description'} field
+	 * @returns {string}
+	 */
 	const cell = (row, field) => `${charCount(row.data[field])}/${LIMITS[field]}`;
 	// Colour lives in the last column only: table() pads on raw string length, so an ANSI escape elsewhere knocks the grid out of alignment.
 	table(rows, [
@@ -85,6 +135,11 @@ export async function lint({ flags }) {
 }
 
 /** Shared gate: lint must be clean before anything writes or uploads. */
+/**
+ * @param {Config} cfg
+ * @param {Flags} flags
+ * @returns {Promise<LintRow[]>}
+ */
 export async function gateOnLint(cfg, flags) {
 	const rows = await listings(cfg);
 	const failures = rows.flatMap((r) => r.problems.filter((p) => p.level === 'fail'));
@@ -100,13 +155,23 @@ export async function gateOnLint(cfg, flags) {
 	return rows;
 }
 
+/**
+ * @param {string} dir
+ * @returns {Promise<string[]>}
+ */
 async function localesIn(dir) {
 	if (!existsSync(dir)) return [];
 	return (await readdir(dir)).filter((f) => f.endsWith('.json')).map((f) => basename(f, '.json'));
 }
 
 /** Authored key order — keeps diffs readable when a pull rewrites a file. */
+/**
+ * @param {string} locale
+ * @param {JsonObject} data
+ * @returns {JsonObject}
+ */
 function authoredOrder(locale, data) {
+	/** @type {JsonObject} */
 	const out = { locale };
 	for (const field of ['name', 'subtitle', 'keywords', 'description', 'promotionalText', 'whatsNew', 'privacyPolicyUrl', 'privacyPolicyText', 'privacyChoicesUrl', 'supportUrl', 'marketingUrl']) {
 		if (data[field] != null && String(data[field]).length) out[field] = data[field];
@@ -115,8 +180,12 @@ function authoredOrder(locale, data) {
 	return out;
 }
 
+/**
+ * @param {SubCtx} ctx
+ * @returns {Promise<number>}
+ */
 export async function pull({ flags }) {
-	const cfg = await loadConfig();
+	const cfg = await requireConfig();
 	const appId = requireAppId(cfg);
 	const version = await resolveVersion(cfg, strOf(flags.version));
 	heading(`${cfg.name} ${version} — pull`);
@@ -152,7 +221,7 @@ export async function pull({ flags }) {
 		const merged = authoredOrder(locale, {
 			...appInfo,
 			...versionData,
-			...(existing?.notes !== undefined ? { notes: existing.notes } : {}),
+			...(existing && !Array.isArray(existing) && existing.notes !== undefined ? { notes: existing.notes } : {}),
 		});
 		if (!dry) await writeFile(target, `${JSON.stringify(merged, null, '\t')}\n`);
 		if (existing) updated++;
@@ -166,12 +235,30 @@ export async function pull({ flags }) {
 }
 
 /** ASC payloads arrive as a bare array, or wrapped in one of a few envelopes. */
-export const stateOf = (v) => v?.appStoreState ?? v?.state ?? v?.attributes?.appStoreState ?? null;
+/**
+ * @param {Json|undefined} v
+ * @returns {string|null}
+ */
+export const stateOf = (v) => {
+	if (typeof v !== 'object' || v === null || Array.isArray(v)) return null;
+	const attr =
+		typeof v.attributes === 'object' && v.attributes !== null && !Array.isArray(v.attributes)
+			? v.attributes.appStoreState
+			: null;
+	const raw = v.appStoreState ?? v.state ?? attr;
+	return raw === null || raw === undefined ? null : String(raw);
+};
 
 /**
  * Shared version-state gate. `apply` and `cpp apply` write against the same
  * version record, so a state that rejects one rejects the other — and ASC
  * rejects server-side, usually after a few locales have already landed.
+ *
+ * @param {Config} cfg
+ * @param {string} appId
+ * @param {string} version
+ * @param {Flags} flags
+ * @returns {Promise<string|null>}
  */
 export async function requireApplyableState(cfg, appId, version, flags) {
 	const live = rowsOf(await asc(['versions', 'list', '--app', appId, '--version', version, '--platform', cfg.asc.platform], { fallback: [] }));
@@ -196,10 +283,15 @@ export async function requireApplyableState(cfg, appId, version, flags) {
  * Count planned mutations without depending on asc's exact plan schema — it has
  * changed shape twice and a hard-coded path silently reports "0 changes" when
  * it moves again, which reads exactly like a no-op release.
+ *
+ * @param {Json|undefined} payload
+ * @returns {{add: number, update: number, delete: number}}
  */
 function planCounts(payload) {
 	const out = { add: 0, update: 0, delete: 0 };
+	/** @param {string} k @returns {'add'|'update'|'delete'|null} */
 	const bucket = (k) => (/^(add|added|create|created|new)/i.test(k) ? 'add' : /^(update|updated|change|changed|modif)/i.test(k) ? 'update' : /^(delete|deleted|remove|removed)/i.test(k) ? 'delete' : null);
+	/** @param {Json|undefined} node @returns {void} */
 	const walk = (node) => {
 		if (!node || typeof node !== 'object') return;
 		if (Array.isArray(node)) {
@@ -222,8 +314,14 @@ function planCounts(payload) {
 }
 
 /** Pull human-readable failures out of an apply payload, whatever it nests them in. */
+/**
+ * @param {Json|undefined} payload
+ * @returns {Json[]}
+ */
 function failureList(payload) {
+	/** @type {Json[]} */
 	const found = [];
+	/** @param {Json|undefined} node @returns {void} */
 	const walk = (node) => {
 		if (!node || typeof node !== 'object') return;
 		if (Array.isArray(node)) {
@@ -233,7 +331,7 @@ function failureList(payload) {
 		for (const [k, v] of Object.entries(node)) {
 			if (/error|failure|failed/i.test(k) && v) {
 				if (typeof v === 'string') found.push(v);
-				else if (Array.isArray(v)) for (const e of v) found.push(typeof e === 'string' ? e : (e?.detail ?? e?.message ?? JSON.stringify(e)));
+				else if (Array.isArray(v)) for (const e of v) found.push(typeof e === 'string' ? e : (typeof e === 'object' && e !== null && !Array.isArray(e) ? e.detail ?? e.message : JSON.stringify(e)));
 				else if (typeof v === 'object') found.push(v.detail ?? v.message ?? JSON.stringify(v));
 			} else walk(v);
 		}
@@ -242,8 +340,12 @@ function failureList(payload) {
 	return found.filter(Boolean);
 }
 
+/**
+ * @param {SubCtx} ctx
+ * @returns {Promise<number>}
+ */
 export async function apply({ flags }) {
-	const cfg = await loadConfig();
+	const cfg = await requireConfig();
 	const appId = requireAppId(cfg);
 	const version = await resolveVersion(cfg, strOf(flags.version));
 	const dry = isDryRun();
@@ -312,15 +414,23 @@ export async function apply({ flags }) {
  * PROMOTIONAL-TEXT all came out of different asc generations.
  */
 const STRINGS_FIELDS = new Map([...APP_INFO_FIELDS, ...VERSION_FIELDS].map((f) => [f.toLowerCase(), f]));
+/** @param {string} key @returns {string|null} */
 const fieldFor = (key) => STRINGS_FIELDS.get(key.toLowerCase().replace(/[^a-z]/g, '')) ?? null;
 
-export async function readStringsDir(dir, label) {
+/**
+ * @param {string} dir
+ * @param {string} label
+ * @returns {Promise<Map<string, StringsFile>>}
+ */
+async function readStringsDir(dir, label) {
 	if (!existsSync(dir)) throw new ShipError(`${label}: ${dir} does not exist`);
 	const files = (await readdir(dir)).filter((f) => f.endsWith('.strings')).sort();
 	if (!files.length) throw new ShipError(`${label}: no .strings files in ${dir}`);
+	/** @type {Map<string, StringsFile>} */
 	const out = new Map();
 	for (const f of files) {
 		const locale = basename(f, '.strings');
+		/** @type {Record<string, string>} */
 		const mapped = {};
 		const unknown = [];
 		for (const [key, value] of Object.entries(parseStrings(await readFile(join(dir, f), 'utf8')))) {
@@ -340,7 +450,13 @@ export async function readStringsDir(dir, label) {
 const DEFAULT_STRINGS_DIRS = { from: 'localizations', appInfo: 'app-info-localizations' };
 
 /** Where `--from`/`--app-info` point: flags win, else those defaults under the repo root. */
-function migrateSourceDirs(cfg, flags) {
+/**
+ * @param {Config} cfg
+ * @param {Flags} flags
+ * @returns {Promise<{from: string|null, appInfoDir: string|null}>}
+ */
+async function migrateSourceDirs(cfg, flags) {
+	/** @param {string} dir @returns {string|null} */
 	const auto = (dir) => {
 		const p = join(cfg.root, dir);
 		return existsSync(p) ? p : null;
@@ -353,6 +469,13 @@ function migrateSourceDirs(cfg, flags) {
 }
 
 /** Merge one locale's .strings fields (plus any authored notes) into staged/<locale>.json. */
+/**
+ * @param {Config} cfg
+ * @param {{versionSrc: Map<string, StringsFile>, appInfoSrc: Map<string, StringsFile>, dry: boolean, force: string|boolean|undefined}} srcs
+ * @param {string} locale
+ * @param {string[]} skipped
+ * @returns {Promise<{locale: string, fields: number, source: string, action: string}|null>}
+ */
 async function convertLocale(cfg, { versionSrc, appInfoSrc, dry, force }, locale, skipped) {
 	const target = join(cfg.paths.staged, `${locale}.json`);
 	const existing = await readJSONIfExists(target);
@@ -363,7 +486,7 @@ async function convertLocale(cfg, { versionSrc, appInfoSrc, dry, force }, locale
 	const merged = authoredOrder(locale, {
 		...appInfoSrc.get(locale)?.fields,
 		...versionSrc.get(locale)?.fields,
-		...(existing?.notes !== undefined ? { notes: existing.notes } : {}),
+		...(existing && !Array.isArray(existing) && existing.notes !== undefined ? { notes: existing.notes } : {}),
 	});
 	if (!dry) await writeFile(target, `${JSON.stringify(merged, null, '\t')}\n`);
 	return {
@@ -375,6 +498,14 @@ async function convertLocale(cfg, { versionSrc, appInfoSrc, dry, force }, locale
 }
 
 /** The human-facing end of migrate: the done table, then warnings and next steps. */
+/**
+ * @param {Config} cfg
+ * @param {{versionSrc: Map<string, StringsFile>, appInfoSrc: Map<string, StringsFile>}} srcs
+ * @param {{locale: string, fields: number, source: string, action: string}[]} done
+ * @param {string[]} skipped
+ * @param {boolean} dry
+ * @returns {void}
+ */
 function reportMigrate(cfg, { versionSrc, appInfoSrc }, done, skipped, dry) {
 	table(done, [
 		{ header: 'locale', get: (r) => r.locale },
@@ -393,8 +524,12 @@ function reportMigrate(cfg, { versionSrc, appInfoSrc }, done, skipped, dry) {
 	if (!dry && done.length) note('next: ship meta lint');
 }
 
+/**
+ * @param {SubCtx} ctx
+ * @returns {Promise<number>}
+ */
 export async function migrate({ flags }) {
-	const cfg = await loadConfig();
+	const cfg = await requireConfig();
 	const { from, appInfoDir } = migrateSourceDirs(cfg, flags);
 
 	heading(`${cfg.name} — migrate .strings → staged/`);
@@ -417,13 +552,21 @@ export async function migrate({ flags }) {
 }
 
 /** The exact set lintListing warns against — keyword terms already indexed by name+subtitle. */
+/**
+ * @param {ListingData} data
+ * @returns {Set<string>}
+ */
 function indexedWords(data) {
 	const words = `${data.name ?? ''} ${data.subtitle ?? ''}`.toLocaleLowerCase().split(/[^\p{L}\p{N}]+/u);
 	return new Set(words.filter((w) => w.length > 2));
 }
 
+/**
+ * @param {SubCtx} ctx
+ * @returns {Promise<number>}
+ */
 export async function keywords({ args, flags }) {
-	const cfg = await loadConfig();
+	const cfg = await requireConfig();
 	const wanted = args[0] ?? cfg.asc.primaryLocale;
 	const found = await readStaged(cfg);
 	const entry = found.find((l) => l.locale === wanted);
@@ -472,6 +615,12 @@ export async function keywords({ args, flags }) {
 	return running > LIMITS.keywords ? 1 : 0;
 }
 
+/**
+ * @param {Config} cfg
+ * @param {StagedListing} entry
+ * @param {Flags} flags
+ * @returns {Promise<number>}
+ */
 async function setKeywords(cfg, entry, flags) {
 	const raw = strOf(flags.set);
 	if (raw === undefined) throw new ShipError('meta keywords --set needs a comma-separated value');

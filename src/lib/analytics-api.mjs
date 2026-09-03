@@ -14,6 +14,32 @@ import { DAY_MS, isoDay } from './dates.mjs';
 import { parseDelimited } from './report-parse.mjs';
 import { strOf } from './util.mjs';
 
+/** @typedef {import('./util.mjs').Json} Json */
+/** @typedef {import('./util.mjs').JsonObject} JsonObject */
+/** @typedef {import('./util.mjs').Flags} Flags */
+/** @typedef {import('../exec.mjs').AscPayload} AscPayload */
+
+/**
+ * The caller's quiet-aware logger: `--json` output routes progress through it
+ * so `downloadSegments` can stay clean without owning the flag.
+ * @typedef {{step: (m: string) => void, info: (m: string) => void, good: (m: string) => void, note: (m: string) => void, warn: (m: string) => void}} Say
+ */
+/**
+ * One JSON:API resource node asc nests somewhere in an analytics payload, after
+ * `nodesOf` has flattened `attributes` onto it.
+ * @typedef {JsonObject & {
+ *   id?: Json, type?: Json, name?: Json, attributes?: JsonObject,
+ *   accessType?: Json, stoppedDueToInactivity?: Json, processingDate?: Json,
+ * }} NodeRow
+ */
+/** One downloaded report segment, ready for `analytics download`. */
+/** @typedef {{report: string, requestId: string, instance: string, id: string}} SegmentRow */
+
+/**
+ * @param {string} text
+ * @param {number} [n]
+ * @returns {string}
+ */
 const tail = (text, n = 6) => text.trim().split('\n').slice(-n).join('\n');
 
 const SETUP = [
@@ -38,6 +64,10 @@ const UNSUPPORTED = /unexpected argument|unknown (sub)?command|unknown flag|^usa
 /**
  * `asc <args> --output json`. Every failure mode Apple and asc have is turned
  * into a sentence naming what is missing — never a raw refusal or a usage dump.
+ *
+ * @param {string[]} args
+ * @param {{what?: string, fallback?: AscPayload}} [opts]
+ * @returns {Promise<Json>}
  */
 export async function ascJSON(args, { what, fallback } = {}) {
 	const res = await exec(ASC, [...args, '--output', 'json'], { allowFail: true });
@@ -72,10 +102,21 @@ export async function ascJSON(args, { what, fallback } = {}) {
 	}
 }
 
-/** Pull every `{type, id, attributes}` of one type out of an asc payload, whatever it nests them in. */
-export function nodesOf(payload, type) {
+/**
+ * Pull every `{type, id, attributes}` of one type out of an asc payload, whatever it nests them in.
+ *
+ * @param {Json|undefined} payload
+ * @param {string} type
+ * @returns {NodeRow[]}
+ */
+function nodesOf(payload, type) {
+	/** @type {Map<Json, NodeRow>} */
 	const out = new Map();
+	/** @type {Set<Json>} */
 	const seen = new Set();
+	/**
+	 * @param {Json|undefined} v
+	 */
 	const walk = (v) => {
 		if (!v || typeof v !== 'object' || seen.has(v)) return;
 		seen.add(v);
@@ -83,14 +124,22 @@ export function nodesOf(payload, type) {
 			for (const x of v) walk(x);
 			return;
 		}
-		if (v.type === type && v.id) out.set(v.id, { ...v, ...(v.attributes ?? {}), id: v.id });
+		if (v.type === type && v.id) {
+			const attrs =
+				v.attributes !== null && typeof v.attributes === 'object' && !Array.isArray(v.attributes)
+					? v.attributes
+					: {};
+			out.set(v.id, { ...v, ...attrs, id: v.id });
+		}
 		for (const x of Object.values(v)) walk(x);
 	};
 	walk(payload);
 	return [...out.values()];
 }
 
-/** ASC will not answer at all without a stored key; say so before spending a round trip. */
+/** ASC will not answer at all without a stored key; say so before spending a round trip.
+ * @returns {Promise<void>}
+ */
 export async function requireCredentials() {
 	const res = await exec(ASC, ['auth', 'status', '--output', 'json'], { allowFail: true });
 	let state = null;
@@ -107,7 +156,12 @@ export async function requireCredentials() {
 		});
 }
 
-/** The pull window: `--from`/`--to` as YYYY-MM-DD, defaulting to the last 30 days. */
+/**
+ * The pull window: `--from`/`--to` as YYYY-MM-DD, defaulting to the last 30 days.
+ *
+ * @param {Flags} flags
+ * @returns {{from: string, to: string}}
+ */
 export function windowOf(flags) {
 	const to = strOf(flags.to) ?? isoDay(Date.now());
 	const from = strOf(flags.from) ?? isoDay(Date.parse(`${to}T00:00:00Z`) - 29 * DAY_MS);
@@ -121,7 +175,13 @@ export function windowOf(flags) {
 const REPORT_WANTED = /discovery|engagement|install|download/i;
 const MAX_INSTANCES = 120;
 
-/** Reports Apple has finished producing for this app, and their downloadable segments. */
+/**
+ * Reports Apple has finished producing for this app, and their downloadable segments.
+ *
+ * @param {string} appId
+ * @param {{from: string, to: string}} window
+ * @returns {Promise<{requestId: Json|undefined, segments: SegmentRow[]}>}
+ */
 export async function collectSegments(appId, { from, to }) {
 	const requests = nodesOf(await ascJSON(['analytics', 'requests', '--app', appId, '--paginate'], {
 		what: 'list analytics report requests',
@@ -131,7 +191,7 @@ export async function collectSegments(appId, { from, to }) {
 
 	const requestId = (usable.find((r) => r.accessType === 'ONGOING') ?? usable[0]).id;
 	const view = await ascJSON(
-		['analytics', 'view', '--request-id', requestId, '--include-segments', '--paginate'],
+		['analytics', 'view', '--request-id', String(requestId), '--include-segments', '--paginate'],
 		{ what: 'list the reports in an analytics request' },
 	);
 	const reports = nodesOf(view, 'analyticsReports').filter((r) => REPORT_WANTED.test(String(r.name ?? '')));
@@ -139,7 +199,7 @@ export async function collectSegments(appId, { from, to }) {
 
 	const segments = [];
 	for (const report of reports) {
-		const links = await ascJSON(['analytics', 'reports', 'links', '--report-id', report.id, '--paginate'], {
+		const links = await ascJSON(['analytics', 'reports', 'links', '--report-id', String(report.id), '--paginate'], {
 			what: 'list report instances',
 		});
 		const instances = nodesOf(links, 'analyticsReportInstances')
@@ -150,12 +210,18 @@ export async function collectSegments(appId, { from, to }) {
 			.sort((a, b) => String(a.processingDate).localeCompare(String(b.processingDate)));
 		for (const instance of instances.slice(0, MAX_INSTANCES)) {
 			const segs = nodesOf(
-				await ascJSON(['analytics', 'instances', 'links', '--instance-id', instance.id, '--paginate'], {
+				await ascJSON(['analytics', 'instances', 'links', '--instance-id', String(instance.id), '--paginate'], {
 					what: 'list report segments',
 				}),
 				'analyticsReportSegments',
 			);
-			for (const seg of segs) segments.push({ report: report.name, requestId, instance: instance.id, id: seg.id });
+			for (const seg of segs)
+				segments.push({
+					report: String(report.name ?? ''),
+					requestId: String(requestId ?? ''),
+					instance: String(instance.id ?? ''),
+					id: String(seg.id ?? ''),
+				});
 		}
 	}
 	return { requestId, segments };
@@ -165,6 +231,10 @@ export async function collectSegments(appId, { from, to }) {
  * Download every segment into one throwaway directory and read whatever asc
  * named the files. `say` is the caller's quiet-aware logger so `--json` output
  * stays clean without this module owning the flag.
+ *
+ * @param {SegmentRow[]} segments
+ * @param {Say} say
+ * @returns {Promise<{records: Array<Record<string,string>>, downloaded: number, dir: string}>}
  */
 export async function downloadSegments(segments, say) {
 	const dir = await mkdtemp(join(tmpdir(), 'ship-analytics-'));

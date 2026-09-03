@@ -7,12 +7,29 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { num } from './fmt.mjs';
+/** @typedef {import('../config.mjs').Config} Config */
+/** @typedef {import('./util.mjs').Json} Json */
+/** @typedef {import('./util.mjs').JsonObject} JsonObject */
+/** @typedef {import('./ads-plan.mjs').ScoredRowInput} ScoredRowInput */
+/** @typedef {import('./ads-plan.mjs').ScoredRow} ScoredRow */
+/** @typedef {import('./ads-plan.mjs').TermScore} TermScore */
+/** @typedef {import('./ads-plan.mjs').ConvertingTerm} ConvertingTerm */
 
-/** The scored-keyword rows `plan` reads, tolerating both artifact shapes. */
+/**
+ * @param {string|ScoredRowInput} r
+ * @returns {ScoredRow}
+ */
+const asScoredRow = (r) => (typeof r === 'string' ? { term: r } : { ...r, term: r.term ?? r.keyword });
+
+/**
+ * The scored-keyword rows `plan` reads, tolerating both artifact shapes.
+ * @param {{terms?: (string|ScoredRowInput)[], scored?: (string|ScoredRowInput)[]}|null|undefined} doc
+ * @returns {TermScore[]}
+ */
 export function scoredTerms(doc) {
 	const raw = Array.isArray(doc?.terms) ? doc.terms : Array.isArray(doc?.scored) ? doc.scored : [];
 	return raw
-		.map((r) => (typeof r === 'string' ? { term: r } : { ...r, term: r.term ?? r.keyword }))
+		.map(asScoredRow)
 		.filter((r) => r.term)
 		.map((r) => ({
 			term: String(r.term).toLocaleLowerCase(),
@@ -23,6 +40,7 @@ export function scoredTerms(doc) {
 		}));
 }
 
+/** @param {Config} cfg @param {string} name @param {Json} body @returns {Promise<string>} */
 export async function writeArtifact(cfg, name, body) {
 	await mkdir(cfg.paths.asa, { recursive: true });
 	const file = join(cfg.paths.asa, name);
@@ -33,6 +51,7 @@ export async function writeArtifact(cfg, name, body) {
 
 const DATED = /^(mining|snapshot)-\d{4}-\d{2}-\d{2}\.json$/;
 
+/** @param {string} dir @param {string[]} dated @param {number} keep @param {string[]} pruned @returns {Promise<void>} */
 const pruneOld = async (dir, dated, keep, pruned) => {
 	const byKind = new Map();
 	for (const n of dated) byKind.set(n.split('-')[0], [...(byKind.get(n.split('-')[0]) ?? []), n]);
@@ -43,6 +62,7 @@ const pruneOld = async (dir, dated, keep, pruned) => {
 		}
 };
 
+/** @param {string} dir @param {string} n @returns {Promise<{file: string, kind: string, generatedAt: string|null, params: Json|null, killRule: Json|null}|null>} */
 const indexEntry = async (dir, n) => {
 	const file = join(dir, n);
 	if (!existsSync(file)) return null;
@@ -60,8 +80,10 @@ const indexEntry = async (dir, n) => {
 	};
 };
 
-export async function reindexArtifacts(cfg) {
+/** @param {Config} cfg @returns {Promise<{generatedAt: string, retain: number, pruned: string[], artifacts: {file: string, kind: string, generatedAt: string|null, params: Json|null, killRule: Json|null}[]}|null>} */
+async function reindexArtifacts(cfg) {
 	const dir = cfg.paths.asa;
+	/** @type {string[]} */
 	let names = [];
 	try {
 		names = await readdir(dir);
@@ -70,10 +92,12 @@ export async function reindexArtifacts(cfg) {
 	}
 	const dated = names.filter((n) => DATED.test(n)).sort();
 	const keep = Math.max(1, num(cfg.ads?.retain, 12));
+	/** @type {string[]} */
 	const pruned = [];
 	await pruneOld(dir, dated, keep, pruned);
 
 	const kept = dated.filter((n) => !pruned.includes(n));
+	/** @type {{file: string, kind: string, generatedAt: string|null, params: Json|null, killRule: Json|null}[]} */
 	const entries = [];
 	for (const n of [...kept, 'campaign-plan.json', 'snapshot.json']) {
 		const entry = await indexEntry(dir, n);
@@ -87,12 +111,22 @@ export async function reindexArtifacts(cfg) {
 	return index;
 }
 
-/** Converting paid search terms, merged into the running paid-terms.json. */
+/** Rows of paid-terms.json, as this function writes them. */
+/** @typedef {{term: string, installs: number, spend: number, cpi: number, firstSeen: string, lastSeen: string}} PaidTerm */
+/**
+ * Converting paid search terms, merged into the running paid-terms.json.
+ * @param {Config} cfg
+ * @param {string} locale
+ * @param {ConvertingTerm[]} converting
+ * @returns {Promise<{file: string, count: number}>}
+ */
 export async function writePaidTerms(cfg, locale, converting) {
 	const dir = join(cfg.paths.aso, locale);
 	const file = join(dir, 'paid-terms.json');
 	const today = new Date().toISOString().slice(0, 10);
+	/** @type {{terms?: PaidTerm[]}|null} */
 	const before = existsSync(file) ? JSON.parse(await readFile(file, 'utf8')) : null;
+	/** @type {Map<string, PaidTerm>} */
 	const merged = new Map((before?.terms ?? []).map((t) => [String(t.term).toLocaleLowerCase(), t]));
 	for (const t of converting) {
 		const prev = merged.get(t.term);

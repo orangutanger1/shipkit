@@ -6,11 +6,77 @@ import { BID, assertBidSpread, bidFor, resolveBidding, resolveKillRule } from '.
 import { pageForAdGroup } from './cpp.mjs';
 import { brandTokens, tokenSupport, words } from './text.mjs';
 import { emit } from './output.mjs';
+/** @typedef {import('./util.mjs').Json} Json */
+/** @typedef {import('./util.mjs').JsonObject} JsonObject */
+/** @typedef {import('./util.mjs').JsonArray} JsonArray */
+/** @typedef {import('../config.mjs').Config} Config */
+/** @typedef {import('./cpp.mjs').CppEntry} CppEntry */
+/** @typedef {import('./util.mjs').Flags} Flags */
+/** Every JSON scalar, i.e. exactly what `num` coerces. */
+/** @typedef {string|number|boolean|null} Num */
+/** Anything JSON.stringify can serialise; undefined-valued members are dropped. */
+/** @typedef {Json|{[k: string]: WriteBody|undefined}|Array<WriteBody|undefined>} WriteBody */
+/** Budget split by campaign role. */
+/** @typedef {Record<string, number>} Split */
+/** An app a scored term or competitors.json names. */
+/** @typedef {{name?: string, seller?: string, id?: Json, ratings?: Json}} AppRef */
+/** @typedef {{term?: Json, keyword?: Json, demand?: Num, competition?: Num, opportunity?: Num, medianRatings?: Num, weakAppsTop10?: Num, exactTitleMatches?: Num, volume?: Num, text?: Json, top3?: AppRef[]}} ScoredRowInput */
+/** @typedef {{term?: Json, demand?: Num, competition?: Num, opportunity?: Num, medianRatings?: Num, weakAppsTop10?: Num, exactTitleMatches?: Num, top3?: AppRef[]}} ScoredRow */
+/** @typedef {{term: string, demand: number, competition: number, opportunity: number, medianRatings: Num|null, weakAppsTop10: Num|null, exactTitleMatches: Num|null, top3: AppRef[]}} TermScore */
+/** The id stamp `ship ads sync` records on planned objects. */
+/** @typedef {JsonObject & {id: string|null, syncedAt: string}} AppleStamp */
+/** @typedef {{text: string, matchType: string, bid?: number|null, apple?: AppleStamp|null}} PlannedKeyword */
+/** @typedef {{slug: string, name: Json}} ProductPageRef */
+/** @typedef {{name: string, defaultBidAmount: number, automatedKeywordsOptIn: boolean, keywords: PlannedKeyword[], demand?: number|null, competition?: number|null, opportunity?: number|null, medianRatings?: Num|null, weakAppsTop10?: Num|null, exactTitleMatches?: Num|null, incumbents?: {name?: Json, id: Json, ratings: Json}[], productPage?: ProductPageRef|null, status?: string, apple?: AppleStamp|null}} PlannedAdGroup */
+/** @typedef {{text: Json, matchType: Json}} PlannedNegative */
+/** @typedef {{role: string, name: string, dailyBudget: number, totalBudget: number, countriesOrRegions: Array<string|null>, supplySources: string[], billingEvent: string, adChannelType: string, status?: string, startTime?: Json, endTime?: Json, adGroups: PlannedAdGroup[], negativeKeywords: PlannedNegative[], rationale: string, apple?: AppleStamp|null}} PlannedCampaign */
+/** @typedef {{name: string, defaultBidAmount: number, automatedKeywordsOptIn?: boolean, endTime?: string|null, status?: string|null}} AdGroupSpec */
+/** @typedef {{text: string, name: Json, id: Json, ratings: Json}} Rival */
+/** @typedef {{term: string, impressions: number, taps: number, installs: number, spend: number, exact: boolean, topSpend: number, campaignId: Json|null, campaignName: Json|null, adGroupId: Json|null, adGroupName: Json|null}} TermAgg */
+/** One aggregated term once its CPI is known. */
+/** @typedef {TermAgg & {cpi: number|null}} ScoredTerm */
+/** @typedef {{term: string, matchType: string, spend: number, taps: number, impressions: number, campaignId: Json|null, campaignName: Json|null, adGroupName: Json|null, reason: string}} TermDecision */
+/** @typedef {{term: string, spend: number, taps: number, impressions: number, needTaps: number, campaignName: Json|null, adGroupName: Json|null, reason: string}} HeldTerm */
+/** @typedef {{term: string, matchType: string, installs: number, spend: number, cpi: number, bid: number, servedBy: Json|null, campaignId: Json|null, reason: string}} Promotion */
+/** @typedef {{targetCpi: number, wasteThreshold: number, minTaps: number, killRule: KillRule, negatives: TermDecision[], held: HeldTerm[], promotions: Promotion[]}} DecideResult */
+/** @typedef {{term: string, keyword: Json|null, matchType: Json|null, source: Json|null, campaignId: Json|null, campaignName: Json|null, adGroupId: Json|null, adGroupName: Json|null, impressions: number, taps: number, installs: number, spend: number, currency: Json}} SearchTermRow */
+/** @typedef {{term: string, installs: number, taps: number, spend: number, cpi: number}} ConvertingTerm */
+/** @typedef {ReturnType<typeof resolveBidding>} Bidding */
+/** @typedef {ReturnType<typeof resolveKillRule>} KillRule */
+/** What `resolveKillRule` is resolved from; its defaults type `subPrice`/`minTaps` as null-only, so the rest travels as a Json bag. */
+/** @typedef {{[k: string]: Json|undefined, retentionMonths?: number}} KillOptions */
+/** @typedef {{budget: number, split: Record<string, number>, top: number, minVolume: number, subPrice: number|null, retentionMonths: number, bidding: Bidding, killRule: KillRule}} PlanParams */
+/** @typedef {{available: false, reason: string}|{available: true, project: string, keySource: string|null, raw: JsonObject, customers: number, trials: number, subscriptions: number, revenue: number, mrr: number, installToPaid: number|null, trialRate: number|null, ltvPerInstall: number, modelledLtv: number|null, proven: boolean, cpiCeiling: number|null, label: string, verdict: string}} MonetisationSignal */
+/** @typedef {{generatedAt: string, source: string|null, locale: string, market: string, app: {name: Json, bundleId: Json|null, appId: string|number|null}, org: string|null, currency: string, params: PlanParams|null, budget: {requested: number, daily: number, monthly: number, split: Record<string, number>, ratio: Record<string, number>, derivation: string, scope: string}, targeting: {minVolume: number, considered: number, eligible: number, dropped: number, exactTerms: Json[]}, bidding: Bidding & {distinctBids: number, range: [number|null, number|null]}, monetisation: MonetisationSignal|null, campaigns: PlannedCampaign[], killRule: KillRule, syncedAt?: string|null, syncedOrg?: string|null}} PlanDoc */
+/** One mining artifact as `mine` writes it and `applyMining`/`printMining` consume it. */
+/** @typedef {{generatedAt: string, locale: string, org: Json|null, source: string, window: {from: string, to: string}, params: {window: {from: string, to: string}, locale: string, killRule: KillRule, campaign: Json|null}, killRule: KillRule, targetCpi: number, wasteThreshold: number, minTaps: number, rows: number, negatives: TermDecision[], held: HeldTerm[], promotions: Promotion[], converting: ConvertingTerm[], asoGap: string[], applied: AppliedMining|null}} MiningArtifact */
+/** @typedef {{at: string, org: string, dryRun: boolean, negativesAdded: number, promoted: number, skipped: string[], unplaced: string[]}} AppliedMining */
+/**
+ * View any JSON value as an object: objects pass through, scalars and arrays
+ * read as empty — exactly what property access on them would have yielded.
+ * @param {Json|undefined} v
+ * @returns {JsonObject}
+ */
+const asObj = (v) => (typeof v === 'object' && v !== null && !Array.isArray(v) ? v : {});
+/**
+ * `num` for values that may not be scalars: non-numbers read as missing.
+ * @param {Json|undefined} v
+ * @param {number} [fallback]
+ * @returns {number}
+ */
+const numOf = (v, fallback = 0) => num(v === null || typeof v !== 'object' ? v : NaN, fallback);
+/** @type {Record<string, number>} */
 export const SPLIT = { exact: 0.5, discovery: 0.25, competitor: 0.15, brand: 0.1 };
 const ROLES = Object.keys(SPLIT);
+/**
+ * Turn --split into per-role daily-budget weights.
+ * @param {string|boolean|null|undefined} [value]
+ * @returns {Record<string, number>}
+ */
 export function parseSplit(value) {
 	if (value === undefined || value === null || value === '' || value === true) return { ...SPLIT };
 	const parts = String(value).split(/[/,;:|\s]+/).filter(Boolean);
+	/** @type {Record<string, number>} */
 	const out = {};
 	if (parts.every((p) => /^\d+(?:\.\d+)?$/.test(p))) {
 		if (parts.length > ROLES.length)
@@ -30,12 +96,19 @@ export function parseSplit(value) {
 	if (!ROLES.some((role) => out[role] > 0)) throw new ShipError('--split allocates nothing to any campaign');
 	return out;
 }
+/**
+ * Split `total` across `weights` in whole cents, remainder to the biggest weight.
+ * @param {number} total
+ * @param {Record<string, number>} weights
+ * @returns {Record<string, number>}
+ */
 export function allocate(total, weights) {
 	const keys = Object.keys(weights).filter((k) => num(weights[k]) > 0);
 	const sum = keys.reduce((s, k) => s + num(weights[k]), 0);
 	const cents = Math.max(0, Math.round(num(total) * 100));
 	if (!keys.length || !sum) return {};
 	const biggest = keys.reduce((a, b) => (num(weights[b]) > num(weights[a]) ? b : a));
+	/** @type {Record<string, number>} */
 	const out = {}; let used = 0;
 	for (const k of keys) {
 		if (k === biggest) continue;
@@ -46,15 +119,21 @@ export function allocate(total, weights) {
 	out[biggest] = Math.max(0, cents - used) / 100;
 	return out;
 }
+/** @param {Json|undefined} [name] @returns {string} */
 const keywordText = (name) =>
 	String(name ?? '').split(/[:|(\-–—]/)[0].replace(/\s+/g, ' ').trim().toLocaleLowerCase();
+/** @param {string} name @param {number} dailyBudget @param {string} [market] */
 const campaignShell = (name, dailyBudget, market) => ({
 	name,
 	dailyBudget: round2(dailyBudget),
 	totalBudget: round2(num(dailyBudget) * 30),
-	countriesOrRegions: [market], supplySources: ['APPSTORE_SEARCH_RESULTS'],
+	countriesOrRegions: [market ?? null], supplySources: ['APPSTORE_SEARCH_RESULTS'],
 	billingEvent: 'TAPS', adChannelType: 'SEARCH',
 });
+/** The plan context every role spec reads. */
+/** @typedef {{app: {name: Json, bundleId?: Json, appId?: string|number|null}, market: string, daily: Record<string, number>, category: TermScore[], rivals: Rival[], brand: string, exactTerms: string[], midDemand: number, priced: (demand: Num) => number}} PlanCtx */
+/** @typedef {{when: (c: PlanCtx) => boolean, shell: (c: PlanCtx) => [string, number], adGroups: (c: PlanCtx) => PlannedAdGroup[], negatives: (c: PlanCtx) => PlannedNegative[], rationale: string}} RoleSpec */
+/** @type {Record<string, RoleSpec>} */
 const ROLES_SPEC = {
 	exact: {
 		when: (c) => c.daily.exact > 0,
@@ -127,9 +206,14 @@ const ROLES_SPEC = {
 		rationale: 'Your own name is the cheapest tap you will ever buy, and the one a competitor buys if you do not.',
 	},
 };
+/**
+ * Rival candidates: configured competitors plus picked terms that look branded.
+ * @param {{brand: string, competitors: AppRef[], picked: TermScore[], branded: (text: string) => boolean}} opts
+ * @returns {Rival[]}
+ */
 const collectRivals = ({ brand, competitors, picked, branded }) => {
 	const rivals = [], seen = new Set(brand ? [brand] : []);
-	for (const rival of [...competitors, ...picked.filter((t) => branded(t.term)).map((t) => ({ name: t.term }))]) {
+	for (const rival of [...competitors, ...picked.filter((t) => branded(t.term)).map((t) => ({ name: t.term, id: null, ratings: null }))]) {
 		const text = keywordText(rival?.name);
 		if (!text || seen.has(text)) continue;
 		seen.add(text);
@@ -137,6 +221,11 @@ const collectRivals = ({ brand, competitors, picked, branded }) => {
 	}
 	return rivals;
 };
+/**
+ * @param {PlannedCampaign[]} campaigns
+ * @param {CppEntry[]} pages
+ * @returns {void}
+ */
 const attachProductPages = (campaigns, pages) => {
 	for (const cp of campaigns)
 		for (const g of cp.adGroups) {
@@ -144,6 +233,22 @@ const attachProductPages = (campaigns, pages) => {
 			if (entry) g.productPage = { slug: entry.slug, name: entry.page?.name ?? entry.slug };
 		}
 };
+/**
+ * Build the four-campaign plan from scored terms, competitors and pages.
+ * @param {{
+ *   app: {name: Json, bundleId?: Json, appId?: string|number|null},
+ *   locale?: string, market?: string,
+ *   terms?: TermScore[], competitors?: AppRef[], pages?: CppEntry[],
+ *   budget?: number, split?: Record<string, number>, top?: number,
+ *   subPrice?: number|null, targetCpi?: Num,
+ *   retentionMonths?: number, baselineInstallRate?: number, minTaps?: Num,
+ *   bid?: Num, minBid?: Num, maxBid?: Num,
+ *   observedCpt?: number|null, seedBid?: number|null,
+ *   monetisation?: MonetisationSignal|null, minVolume?: number, org?: string|null,
+ *   source?: string|null, params?: PlanParams|null, generatedAt?: string,
+ * }} opts
+ * @returns {PlanDoc}
+ */
 export function buildPlan({
 	app, locale = 'en-US', market = 'US', terms = [], competitors = [], pages = [],
 	budget = 10, split = SPLIT, top = 15, subPrice = null, targetCpi = null,
@@ -161,9 +266,16 @@ export function buildPlan({
 		throw new ShipError(`no scored term clears aso.minVolume ${num(minVolume)}`, {
 			hint: `${terms.length} scored term(s), all under the floor — a term nobody searches is not worth bidding on, so either lower aso.minVolume or run \`ship aso volume --locale ${locale}\` so demand is measured rather than guessed`,
 		});
-	const bidding = resolveBidding({ bid, minBid, maxBid, observedCpt, seedBid });
-	const killRule = resolveKillRule({ targetCpi, subPrice, retentionMonths, baselineInstallRate, minTaps });
+	const bidding = resolveBidding({
+		bid: num(bid) || undefined, minBid: num(minBid) || undefined, maxBid: num(maxBid) || undefined,
+		observedCpt: observedCpt ?? undefined, seedBid: seedBid ?? undefined,
+	});
+	/** @type {KillOptions} */
+	const killOpts = { targetCpi, subPrice, retentionMonths, baselineInstallRate, minTaps };
+	const killRule = resolveKillRule(killOpts);
+	/** @type {ReturnType<typeof bidFor>[]} */
 	const bids = [];
+	/** @param {Num} demand @returns {number} */
 	const priced = (demand) => {
 		const b = bidFor(demand, bidding);
 		bids.push(b);
@@ -172,6 +284,7 @@ export function buildPlan({
 	const brandWords = brandTokens(terms.flatMap((t) => (t.top3 ?? []).map((a) => ({ name: a.name, seller: a.seller }))), locale);
 	const support = tokenSupport(terms.map((t) => t.term), locale);
 	const brandFloor = Math.max(3, Math.ceil(Math.max(0, ...support.values()) / 4));
+	/** @param {string} text @returns {boolean} */
 	const branded = (text) => words(text, locale).some((w) => brandWords.has(w) && (support.get(w) ?? 0) < brandFloor);
 	const rivals = collectRivals({ brand, competitors, picked, branded });
 	const category = picked.filter((t) => !branded(t.term));
@@ -184,6 +297,7 @@ export function buildPlan({
 	const demands = category.map((t) => num(t.demand, 100)).sort((a, b) => a - b);
 	const midDemand = demands.length ? demands[Math.floor(demands.length / 2)] : 100;
 	const ctx = { app, market, daily, category, rivals, brand, exactTerms, midDemand, priced };
+	/** @type {PlannedCampaign[]} */
 	const campaigns = ROLES.map((role) => {
 		const spec = ROLES_SPEC[role];
 		if (!spec.when(ctx)) return null;
@@ -194,7 +308,7 @@ export function buildPlan({
 			negativeKeywords: spec.negatives(ctx),
 			rationale: spec.rationale,
 		};
-	}).filter(Boolean);
+	}).filter((cp) => cp !== null);
 	assertBidSpread(bids, bidding);
 	attachProductPages(campaigns, pages);
 	const spread = [...new Set(bids.map((b) => b.amount))].sort((a, b) => a - b);
@@ -224,15 +338,24 @@ export function buildPlan({
 		monetisation: money$, campaigns, killRule,
 	};
 }
+/**
+ * Apple object ids recorded in a plan document, for the --force guard.
+ * @param {PlanDoc|null|undefined} [doc]
+ * @returns {{bound: boolean, objects: number, syncedAt: string|null}}
+ */
 export function planBindings(doc) {
+	/** @type {string[]} */
 	const ids = [];
+	/** @type {string|null} */
 	let syncedAt = null;
+	/** @param {Json|undefined} node */
 	const visit = (node) => {
 		if (!node || typeof node !== 'object') return;
 		if (Array.isArray(node)) return void node.forEach(visit);
-		if (node.apple?.id) {
-			ids.push(String(node.apple.id));
-			const t = node.apple.syncedAt ?? null;
+		const apple = node.apple;
+		if (apple && typeof apple === 'object' && !Array.isArray(apple) && apple.id) {
+			ids.push(String(apple.id));
+			const t = apple.syncedAt ?? null;
 			if (t && (syncedAt === null || String(t) > syncedAt)) syncedAt = String(t);
 		}
 		for (const v of Object.values(node)) visit(v);
@@ -240,8 +363,13 @@ export function planBindings(doc) {
 	visit(doc?.campaigns ?? null);
 	return { bound: ids.length > 0, objects: ids.length, syncedAt };
 }
+/**
+ * @param {PlanDoc|null|undefined} [p]
+ * @returns {{daily: number, split: Record<string, number>, bids: number[], stamped: {daily: number|null, distinctBids: number|null}, drifted: boolean}}
+ */
 export function planTotals(p) {
 	const campaigns = p?.campaigns ?? [];
+	/** @type {Record<string, number>} */
 	const split = {};
 	let daily = 0;
 	for (const cp of campaigns) {
@@ -258,7 +386,14 @@ export function planTotals(p) {
 		drifted: stamped.daily !== null && Math.abs(num(stamped.daily) - daily) > 0.005,
 	};
 }
+/**
+ * Render a plan document to the markdown the repo keeps beside it.
+ * @param {PlanDoc} p
+ * @param {{renderedAt?: string|null}} [opts]
+ * @returns {string}
+ */
 export function renderPlan(p, { renderedAt = null } = {}) {
+	/** @type {string[]} */
 	const L = [];
 	const bound = planBindings(p);
 	const t = planTotals(p);
@@ -330,28 +465,42 @@ export function renderPlan(p, { renderedAt = null } = {}) {
 	L.push('with `ship ads mine`, which turns the search-term report back into keywords.', '');
 	return L.join('\n');
 }
+/**
+ * Flatten an Apple search-term report into the rows `decide`/`convertingTerms` read.
+ * @param {Json|undefined} [payload]
+ * @returns {SearchTermRow[]}
+ */
 export function searchTermRows(payload) {
+	const body = asObj(payload);
 	const raw =
-		payload?.data?.reportingDataResponse?.row ?? payload?.reportingDataResponse?.row ??
-		(Array.isArray(payload?.rows) ? payload.rows : rowsOf(payload, { allowSingle: false }));
-	return raw
+		asObj(asObj(body.data).reportingDataResponse).row ?? asObj(body.reportingDataResponse).row ??
+		(Array.isArray(body.rows) ? body.rows : rowsOf(payload, { allowSingle: false }));
+	return (Array.isArray(raw) ? raw : [])
 		.map((r) => {
-			const m = r.metadata ?? r, t = r.total ?? r.granularity?.[0] ?? m;
+			const row = asObj(r);
+			const m = asObj(row.metadata ?? row), t = asObj(row.total ?? (Array.isArray(row.granularity) ? row.granularity[0] : undefined) ?? m);
 			return {
 				term: String(m.searchTermText ?? m.searchTerm ?? m.text ?? '').trim().toLocaleLowerCase(),
 				keyword: m.keyword ?? null, matchType: m.matchType ?? null, source: m.searchTermSource ?? null,
 				campaignId: m.campaignId ?? null, campaignName: m.campaignName ?? null,
 				adGroupId: m.adGroupId ?? null, adGroupName: m.adGroupName ?? null,
-				impressions: num(t.impressions), taps: num(t.taps),
-				installs: num(t.installs ?? num(t.newDownloads) + num(t.redownloads)),
-				spend: metric(t.localSpend), currency: t.localSpend?.currency ?? 'USD',
+				impressions: numOf(t.impressions), taps: numOf(t.taps),
+				installs: numOf(t.installs ?? numOf(t.newDownloads) + numOf(t.redownloads)),
+				spend: metric(t.localSpend), currency: asObj(t.localSpend).currency ?? 'USD',
 			};
 		})
 		.filter((r) => r.term);
 }
+/**
+ * Apply the kill rule and CPI target to aggregated search-term rows.
+ * @param {SearchTermRow[]|null|undefined} [rows]
+ * @param {KillOptions} [opts]
+ * @returns {DecideResult}
+ */
 export function decide(rows, opts = {}) {
 	const rule = resolveKillRule(opts);
 	const { targetCpi: cpi, wasteThreshold, minTaps } = rule;
+	/** @type {Map<string, TermAgg>} */
 	const agg = new Map();
 	for (const r of rows ?? []) {
 		const term = String(r?.term ?? '').trim().toLocaleLowerCase();
@@ -373,8 +522,10 @@ export function decide(rows, opts = {}) {
 	const terms = [...agg.values()].map((e) => ({
 		...e, spend: round2(e.spend), cpi: e.installs ? round2(e.spend / e.installs) : null,
 	}));
+	/** @param {ScoredTerm} e @returns {string} */
 	const evidence = (e) => `${money(e.spend)} over ${e.taps} tap(s) and ${e.impressions} impression(s) for zero installs`;
 	const spent = terms.filter((e) => e.installs === 0 && e.spend > wasteThreshold);
+	/** @param {{spend: number, term: string}} a @param {{spend: number, term: string}} b @returns {number} */
 	const bySpend = (a, b) => b.spend - a.spend || a.term.localeCompare(b.term);
 	const negatives = spent
 		.filter((e) => e.taps >= minTaps)
@@ -394,8 +545,14 @@ export function decide(rows, opts = {}) {
 				`${evidence(e)}, but ${e.taps} tap(s) is under the ${minTaps} needed before zero installs means anything: ` +
 				`a keyword converting at ${Math.round(rule.baselineInstallRate * 100)}% shows nothing this often by chance`,
 		}));
+	/**
+	 * Converted under the target on broad or Search Match; installs > 0 means cpi is set.
+	 * @param {ScoredTerm} e
+	 * @returns {e is TermAgg & {cpi: number}}
+	 */
+	const promotes = (e) => e.installs > 0 && e.cpi !== null && e.cpi <= cpi && !e.exact;
 	const promotions = terms
-		.filter((e) => e.installs > 0 && e.cpi <= cpi && !e.exact)
+		.filter(promotes)
 		.sort((a, b) => a.cpi - b.cpi || b.installs - a.installs || a.term.localeCompare(b.term))
 		.map((e) => ({
 			term: e.term, matchType: 'EXACT', installs: e.installs, spend: e.spend, cpi: e.cpi,
@@ -405,7 +562,12 @@ export function decide(rows, opts = {}) {
 		}));
 	return { targetCpi: cpi, wasteThreshold, minTaps, killRule: rule, negatives, held, promotions };
 }
+/**
+ * @param {SearchTermRow[]|null|undefined} [rows]
+ * @returns {ConvertingTerm[]}
+ */
 export function convertingTerms(rows) {
+	/** @type {Map<string, {term: string, installs: number, taps: number, spend: number}>} */
 	const agg = new Map();
 	for (const r of rows ?? []) {
 		const term = String(r?.term ?? '').toLocaleLowerCase();
@@ -421,6 +583,11 @@ export function convertingTerms(rows) {
 		.map((e) => ({ term: e.term, installs: e.installs, taps: e.taps, spend: round2(e.spend), cpi: round2(e.spend / e.installs) }))
 		.sort((a, b) => b.installs - a.installs || a.term.localeCompare(b.term));
 }
+/**
+ * Re-render campaign-plan.md from the plan already on disk.
+ * @param {{cfg: Config, flags: Flags, planFile: string, mdFile: string, onDisk: PlanDoc|null}} opts
+ * @returns {Promise<number>}
+ */
 export async function renderOnly({ cfg, flags, planFile, mdFile, onDisk }) {
 	if (!onDisk)
 		throw new ShipError(`no plan to render: ${planFile}`, {
@@ -443,8 +610,13 @@ export async function renderOnly({ cfg, flags, planFile, mdFile, onDisk }) {
 		note(`${bound.objects} Apple object id(s) in this plan${bound.syncedAt ? ` (last synced ${bound.syncedAt})` : ''} — \`ship ads sync --dry-run\` diffs it against the account`);
 	return 0;
 }
+/**
+ * @param {PlanDoc} out
+ * @param {{name: string, jsonFile: string, mdFile: string, backup: string|null, bound: {bound: boolean, objects: number, syncedAt: string|null}, measured: {cpt: number|null, reason: string|null}, money$: MonetisationSignal, competitors: AppRef[], locale: string, bid?: Json}} ctx
+ * @returns {void}
+ */
 export function printPlan(out, ctx) {
-	const { name, jsonFile, mdFile, backup, bound, measured, money$, competitors, locale } = ctx;
+	const { name, jsonFile, mdFile, backup, bound, measured, competitors, locale } = ctx;
 	heading(`Campaign plan · ${name} · ${out.market}`);
 	info(
 		`${money(out.budget.daily)}/day across ${out.campaigns.length} campaigns · ${Object.entries(out.budget.split).map(([role, v]) => `${role} ${money(v)}`).join(' · ')}`,

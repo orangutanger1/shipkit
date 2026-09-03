@@ -75,6 +75,15 @@ ${c.dim('`ship price plan` needs no credentials and no network.')}
 
 // ─── plan (offline) ──────────────────────────────────────────────────────────
 
+/** @typedef {import('../lib/price-asc.mjs').PlanDoc} PlanDoc */
+/** @typedef {import('../lib/price-asc.mjs').PriceRow} PriceRow */
+/** @typedef {import('../lib/price-asc.mjs').SubscriptionRow} SubscriptionRow */
+/** @typedef {import('../lib/pricing.mjs').PriceMove} PriceMove */
+/** @typedef {import('../lib/pricing.mjs').PriceChange} PriceChange */
+/** @typedef {import('../lib/util.mjs').Flags} Flags */
+/** @typedef {{changes: PriceMove[], blocked: PriceMove[], unchanged: PriceChange[], added: PriceChange[]}} ReconcileResult */
+
+/** @param {{flags: Flags, args?: string[]}} ctx @returns {Promise<number>} */
 async function plan({ flags }) {
 	const cfg = await loadConfig();
 	const base = flags.base !== undefined ? num(flags.base, Number.NaN) : num(cfg.price?.basePriceUsd, Number.NaN);
@@ -125,6 +134,7 @@ async function plan({ flags }) {
 	return 0;
 }
 
+/** @param {PlanDoc} doc @returns {string} */
 function renderPlan(doc) {
 	const L = [];
 	L.push(`# Territory pricing — ${doc.app.name}`, '');
@@ -167,6 +177,7 @@ function renderPlan(doc) {
 
 // ─── show ────────────────────────────────────────────────────────────────────
 
+/** @param {{flags: Flags, args?: string[]}} ctx @returns {Promise<number>} */
 async function show({ flags }) {
 	const cfg = await loadConfig();
 	const appId = requireAppId(cfg);
@@ -202,6 +213,9 @@ async function show({ flags }) {
  * The subscription half of `show`: name the one subscription to price and read
  * its per-territory prices. An unreadable price read degrades to an empty map
  * and a warning — show is a read, so a target it can see never fails it.
+ * @param {string} appId
+ * @param {Flags} flags
+ * @returns {Promise<{subscription: SubscriptionRow|{id: string, productId: string, name: null}|null, subPrices: Map<string, PriceRow>}>}
  */
 async function subscriptionTarget(appId, flags) {
 	await requireAsc(['subscriptions', 'pricing', 'prices']);
@@ -213,7 +227,7 @@ async function subscriptionTarget(appId, flags) {
 	if (picked)
 		return {
 			subscription: picked,
-			subPrices: await subscriptionPrices(picked.id ?? picked.productId, appId).catch((err) => {
+			subPrices: await subscriptionPrices(/** @type {string} */ (picked.id ?? picked.productId), appId).catch((err) => {
 				warn(`subscription prices unavailable: ${err.message}`);
 				return new Map();
 			}),
@@ -223,12 +237,15 @@ async function subscriptionTarget(appId, flags) {
 }
 
 /** The `--json` view: everything the human view prints, as data. */
+/** @param {{cfg: import('../config.mjs').Config, appId: string, flags: Flags, subscription: SubscriptionRow|{id: string, productId: string, name: null}|null, schedule: import('../exec.mjs').AscPayload|null|undefined, appPrices: Map<string, PriceRow>, subPrices: Map<string, PriceRow>, planDoc: PlanDoc|null, diff: ReconcileResult|null}} ctx @returns {number} */
 function showJson({ cfg, appId, flags, subscription, schedule, appPrices, subPrices, planDoc, diff }) {
 	return emit({
 		app: { name: cfg.name, appId },
 		target: flags['app-price'] ? 'app' : 'subscription',
 		subscription,
-		schedule,
+		// fallback: null means the asc read never yields undefined; ?? keeps the
+		// emitted shape stable either way.
+		schedule: schedule ?? null,
 		appPrices: [...appPrices.values()],
 		subscriptionPrices: [...subPrices.values()],
 		plan: planDoc ? { generatedAt: planDoc.generatedAt, baseUsd: planDoc.baseUsd, rows: planDoc.rows.length } : null,
@@ -236,15 +253,20 @@ function showJson({ cfg, appId, flags, subscription, schedule, appPrices, subPri
 	});
 }
 
+/** @param {import('../exec.mjs').AscPayload|null|undefined} schedule @returns {void} */
 function printSchedule(schedule) {
 	const sched = rowsOf(schedule)[0];
-	if (sched) {
-		const id = sched.id ?? sched.attributes?.id ?? '—';
-		const start = sched.attributes?.startDate ?? sched.startDate ?? 'immediate';
+	const obj = sched !== null && typeof sched === 'object' && !Array.isArray(sched) ? sched : null;
+	const attrs = obj?.attributes;
+	const attrObj = attrs !== null && typeof attrs === 'object' && !Array.isArray(attrs) ? attrs : null;
+	if (sched !== undefined && sched !== null && sched !== '') {
+		const id = obj?.id ?? attrObj?.id ?? '—';
+		const start = attrObj?.startDate ?? obj?.startDate ?? 'immediate';
 		info(`price schedule ${id} · starts ${start}`);
 	} else note('no app price schedule (a free app has none)');
 }
 
+/** @param {Map<string, PriceRow>} live @returns {void} */
 function printLivePrices(live) {
 	if (!live.size) {
 		note('no live prices readable for this target');
@@ -257,8 +279,9 @@ function printLivePrices(live) {
 	]);
 }
 
+/** @param {import('../config.mjs').Config} cfg @param {PlanDoc|null} planDoc @param {ReconcileResult|null} diff @returns {void} */
 function printPlanVsLive(cfg, planDoc, diff) {
-	if (!planDoc) {
+	if (!planDoc || !diff) {
 		note(`no local plan at ${planFileOf(cfg)} — run \`ship price plan\``);
 		return;
 	}
@@ -278,6 +301,7 @@ function printPlanVsLive(cfg, planDoc, diff) {
 
 // ─── apply ───────────────────────────────────────────────────────────────────
 
+/** @param {{flags: Flags, args?: string[]}} ctx @returns {Promise<number>} */
 async function apply({ flags }) {
 	const cfg = await loadConfig();
 	const appId = requireAppId(cfg);
@@ -290,7 +314,7 @@ async function apply({ flags }) {
 	const force = !!flags.force;
 	const startDate = flags['start-date'] ? String(flags['start-date']) : null;
 
-	if (flags['app-price']) return applyAppPrice({ cfg, appId, planDoc, flags, maxDelta, force, startDate });
+	if (flags['app-price']) return applyAppPrice({ appId, planDoc, flags, maxDelta, force, startDate });
 
 	await requireAsc(['subscriptions', 'pricing', 'prices']);
 	const subId = await resolveSubscription(appId, flags);
@@ -331,7 +355,9 @@ async function apply({ flags }) {
 	if (!flags.json) {
 		heading(`Applying ${todo.length} prices to ${subId}${isDryRun() ? c.yellow(' (dry run)') : ''}`);
 	}
+	/** @type {PriceMove[]} */
 	const applied = [];
+	/** @type {PriceChange[]} */
 	const skipped = [];
 	for (const change of todo) {
 		const args = [
@@ -360,7 +386,8 @@ async function apply({ flags }) {
  * on this CLI's surface. So we push the base row, and say plainly that the other
  * rows of the table did not ship rather than implying they did.
  */
-async function applyAppPrice({ cfg, appId, planDoc, flags, maxDelta, force, startDate }) {
+/** @param {{appId: string, planDoc: PlanDoc, flags: Flags, maxDelta: number, force: boolean, startDate: string|null}} ctx @returns {Promise<number>} */
+async function applyAppPrice({ appId, planDoc, flags, maxDelta, force, startDate }) {
 	await requireAsc(['pricing', 'schedule', 'create']);
 	const baseTerritory = normaliseTerritory(flags['base-territory'] ?? 'US');
 	const row = planDoc.rows.find((r) => r.territory === baseTerritory);
@@ -420,6 +447,7 @@ async function applyAppPrice({ cfg, appId, planDoc, flags, maxDelta, force, star
  * only gathers the inputs and decides which findings we actually have the data
  * to stand behind.
  */
+/** @param {{flags: Flags, args?: string[]}} ctx @returns {Promise<number>} */
 async function audit({ flags }) {
 	const cfg = await loadConfig(process.cwd(), { optional: true });
 	if (!cfg)
@@ -432,7 +460,7 @@ async function audit({ flags }) {
 
 	// Unknown is not wrong. Without a readable period there is no shape to judge,
 	// and the audit would otherwise report a missing yearly it simply cannot see.
-	if (live.why) report.skip('ladder', live.why);
+	if (live.why || live.subs === null) report.skip('ladder', live.why ?? 'ladder unreadable');
 	else if (live.subs.length && !live.subs.some((s) => normalisePeriod(s.period)))
 		report.skip('ladder', 'asc returned no subscription periods — cannot tell a yearly from a weekly');
 	else {
@@ -453,6 +481,7 @@ async function audit({ flags }) {
 
 const SUB = { show, plan, apply, audit };
 
+/** @param {{args: string[], flags: Flags}} ctx @returns {Promise<number|void>} */
 export async function run({ args, flags }) {
 	const { fn, args: rest } = resolveSubcommand({ command: 'price', args, subs: SUB, fallback: 'show' });
 	return fn({ args: rest, flags });

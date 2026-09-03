@@ -44,6 +44,40 @@ import {
 	writeArtifact,
 } from '../lib/storefront-scout.mjs';
 
+/** @typedef {import('../lib/util.mjs').Flags} Flags */
+/** @typedef {import('../lib/util.mjs').SubCtx} SubCtx */
+/** @typedef {import('../lib/scout-scoring.mjs').ScoutApp} ScoutApp */
+/** @typedef {import('../lib/scout-scoring.mjs').ScoredTerm} ScoredTerm */
+/** @typedef {import('../lib/scout-scoring.mjs').Flood} Flood */
+/** @typedef {import('../lib/scout-scoring.mjs').Commodity} Commodity */
+/** @typedef {import('../lib/scout-scoring.mjs').Incumbent} Incumbent */
+/** @typedef {import('../lib/scout-scoring.mjs').ClaimsAudit} ClaimsAudit */
+/** @typedef {import('../lib/scout-scoring.mjs').VerdictMetrics} VerdictMetrics */
+/** @typedef {import('../lib/scout-scoring.mjs').VerdictResult} VerdictResult */
+/** @typedef {import('../lib/scout-scoring.mjs').GateThresholds} GateThresholds */
+/** @typedef {import('../lib/scout-scoring.mjs').CpiBand} CpiBand */
+/** @typedef {import('../lib/scout-scoring.mjs').ListingDraft} ListingDraft */
+/** @typedef {import('../lib/scout-scoring.mjs').ProgressFn} ProgressFn */
+/** @typedef {import('../lib/storefront-scout.mjs').Market} Market */
+
+/**
+ * The brief artifact `ship scout brief` writes and prints — also the JSON body
+ * of `<out>/<market>/<slug>-brief.json`.
+ * @typedef {{
+ *   generatedAt: string, term: string, slug: string, market: Market,
+ *   seeds: string[], rank: number|null,
+ *   demand: number, demandSource: string, competition: number, opportunity: number,
+ *   saturation: Flood, commodity: Commodity, viability: number,
+ *   claims: ClaimsAudit, metrics: VerdictMetrics,
+ *   reviewMoat: {top3Median: number, top10Median: number, max: number},
+ *   incumbents: Incumbent[], related: string[],
+ *   listing: ListingDraft, asa: CpiBand|null,
+ *   gates: {moat: number, minVolume: number, exactTitleMatches: number,
+ *           saturation: number, clones: number, commodity: number},
+ *   verdict: VerdictResult,
+ * }} BriefArtifact
+ */
+
 // The scoring surface moved to lib/scout-scoring.mjs, brief-file access to
 // lib/storefront-scout.mjs; these re-exports keep `test/scout.test.mjs` and
 // `ship new --from` (which reads readBrief/listingFromBrief off this module)
@@ -84,10 +118,15 @@ ${c.dim('Order: terms → brief → names → new')}
 `;
 
 /** Progress belongs on stdout, which --json owns exclusively. */
+/**
+ * @param {Flags} flags
+ * @returns {ProgressFn|undefined}
+ */
 const reporter = (flags) => (flags.json ? undefined : progressLine);
 
 // ─── terms ───────────────────────────────────────────────────────────────────
 
+/** @param {SubCtx} ctx @returns {Promise<number>} */
 async function terms({ args, flags }) {
 	const seeds = args.map((s) => s.trim()).filter(Boolean);
 	if (!seeds.length)
@@ -149,6 +188,10 @@ async function terms({ args, flags }) {
 // ─── brief ───────────────────────────────────────────────────────────────────
 
 /** The gate thresholds from flags, in the shape `verdict` takes them. */
+/**
+ * @param {Flags} flags
+ * @returns {GateThresholds}
+ */
 const briefGates = (flags) => ({
 	moat: num(flags.moat, GATES.moat),
 	minVolume: num(flags['min-volume'] ?? flags.minVolume, GATES.minVolume),
@@ -159,6 +202,11 @@ const briefGates = (flags) => ({
 });
 
 /** The metrics block `verdict` reads, assembled once from the evidence the brief prints. */
+/**
+ * @param {{term: string, results: ScoutApp[], scored: ScoredTerm, flood: Flood,
+ *          same: Commodity, incumbents: Incumbent[]}} evidence
+ * @returns {VerdictMetrics}
+ */
 const briefMetrics = ({ term, results, scored, flood, same, incumbents }) => ({
 	term,
 	results: results.length,
@@ -183,10 +231,14 @@ const briefMetrics = ({ term, results, scored, flood, same, incumbents }) => ({
 	commodityApps: same.apps.map((a) => a.name),
 });
 
+/**
+ * @param {BriefArtifact} b
+ * @returns {void}
+ */
 function printBrief(b) {
 	heading(`Brief · ${b.term} ${c.dim(`(${b.market.country})`)}`);
 	info(
-		`demand ${c.bold(b.demand)} · competition ${c.bold(b.competition)} · opportunity ${c.bold(b.opportunity)} · saturation ${c.bold(b.saturation.score)} → viability ${c.bold(b.viability)} ${c.dim(`(${b.demandSource})`)}`,
+		`demand ${c.bold(String(b.demand))} · competition ${c.bold(String(b.competition))} · opportunity ${c.bold(String(b.opportunity))} · saturation ${c.bold(String(b.saturation.score))} → viability ${c.bold(String(b.viability))} ${c.dim(`(${b.demandSource})`)}`,
 	);
 
 	step('Incumbents');
@@ -286,6 +338,10 @@ function printBrief(b) {
 /**
  * The verdict step. A NO-GO that still ends with "next: scaffold it" is not a
  * gate, it is a disclaimer; the flags named are for the gates that tripped.
+ * @param {BriefArtifact} artifact
+ * @param {Market} market
+ * @param {string} file
+ * @returns {void}
  */
 function printVerdict(artifact, market, file) {
 	step('Verdict');
@@ -300,6 +356,7 @@ function printVerdict(artifact, market, file) {
 		note(`then: ship scout new ${slugifyAscii(artifact.term)} --from ${file}`);
 	} else {
 		note(`next: a different term — ${c.dim(`ship scout terms "<seeds from something you actually know>" --market ${market.country.toLowerCase()}`)}`);
+		/** @type {Record<string, string>} */
 		const overrides = {
 			moat: '--moat',
 			demand: '--min-volume',
@@ -315,6 +372,7 @@ function printVerdict(artifact, market, file) {
 	}
 }
 
+/** @param {SubCtx} ctx @returns {Promise<number>} */
 async function brief({ args, flags }) {
 	const term = args.join(' ').trim().toLocaleLowerCase();
 	if (!term)
@@ -327,7 +385,8 @@ async function brief({ args, flags }) {
 	const freshDays = num(flags['fresh-days'] ?? flags.freshDays, 365);
 	const subPrice = flags['sub-price'] ?? flags.subPrice;
 
-	const results = await topResults(term, { ...market, limit: 10 });
+	/** @type {ScoutApp[]} */
+	const results = (await topResults(term, { ...market, limit: 10 })) ?? [];
 	if (!results?.length)
 		throw new ShipError(`no App Store results for "${term}" in ${market.country}`, {
 			hint: 'check the spelling, or wait a minute — Apple answers a burst of search calls with 403s',
@@ -346,9 +405,16 @@ async function brief({ args, flags }) {
 		...harvestBrands(pool, term, 'en-US'),
 	]);
 
+	// `score`/`saturation`/`commodity` answer null only for an empty top-10,
+	// which the guard above already rejected; this re-check is what narrows
+	// all three for the artifact below.
 	const scored = score(term, results, { demand });
 	const flood = saturationOf(results, { term, freshDays });
 	const same = commodityOf(results, { term });
+	if (!scored || !flood || !same)
+		throw new ShipError(`no App Store results for "${term}" in ${market.country}`, {
+			hint: 'check the spelling, or wait a minute — Apple answers a burst of search calls with 403s',
+		});
 	const ratings = results.map((r) => r.userRatingCount ?? 0);
 	const incumbents = await incumbentsOf(results, market);
 	const claims = await claimsAudit(results, market);
@@ -414,6 +480,8 @@ async function brief({ args, flags }) {
  *
  * The metaphor being obvious is the problem — "glovebox" for a car app is the
  * first association any model produces, which is exactly why it was taken.
+ * @param {SubCtx} ctx
+ * @returns {Promise<number>}
  */
 async function names({ args, flags }) {
 	const name = args.join(' ').trim();
@@ -424,6 +492,7 @@ async function names({ args, flags }) {
 	const market = marketOf(flags.market);
 	enableCache(flags);
 
+	/** @type {ScoutApp[]} */
 	const results = (await topResults(name, { ...market, limit: 50 })) ?? [];
 	const hits = brandCollisions(name, results);
 	// A brand word Apple's own autocomplete already completes into somebody's
@@ -468,14 +537,17 @@ async function names({ args, flags }) {
 
 // ─── new ─────────────────────────────────────────────────────────────────────
 
+/** @param {SubCtx} ctx @returns {Promise<number>} */
 async function scaffold({ args, flags }) {
 	const from = await resolveBrief(flags, marketOf(flags.market));
 	const { run: scaffoldApp } = await import('./new.mjs');
 	return scaffoldApp({ args, flags: { ...flags, from } });
 }
 
+/** @type {Record<string, (ctx: SubCtx) => Promise<number>>} */
 const SUB = { terms, brief, names, new: scaffold };
 
+/** @param {SubCtx} ctx @returns {Promise<number>} */
 export async function run({ args, flags }) {
 	const [sub, ...rest] = args;
 	if (!sub)

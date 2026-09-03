@@ -7,15 +7,34 @@
 import { ShipError } from '../log.mjs';
 import { isCovered, stopwordsFor, words } from './text.mjs';
 
-/** Numbers arrive as "1,234", "12.3%" or "" depending on who exported them. */
+/** @typedef {import('./util.mjs').Json} Json */
+/** @typedef {import('./util.mjs').JsonObject} JsonObject */
+/** @typedef {import('./util.mjs').JsonArray} JsonArray */
+
+/** One normalised analytics term row — what every reader below consumes. */
+/** @typedef {{term: string, impressions: number, pageViews: number, installs: number, conversionRate: number}} TermRow */
+/** Impressions / page views / installs, the three numbers every funnel counts. */
+/** @typedef {{impressions: number, pageViews: number, installs: number}} Counts */
+
+/**
+ * Numbers arrive as "1,234", "12.3%" or "" depending on who exported them.
+ * @param {Json|undefined} v
+ * @returns {number}
+ */
 export function parseSpreadsheetNumber(v) {
 	if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
 	const n = Number(String(v ?? '').replace(/[,\s%]/g, ''));
 	return Number.isFinite(n) ? n : 0;
 }
 
+/**
+ * @param {number} top
+ * @param {number} bottom
+ * @returns {number}
+ */
 const rate = (top, bottom) => (bottom > 0 ? top / bottom : 0);
 
+/** @returns {Counts} */
 export const zero = () => ({ impressions: 0, pageViews: 0, installs: 0 });
 
 /**
@@ -27,10 +46,10 @@ export const zero = () => ({ impressions: 0, pageViews: 0, installs: 0 });
  * whitespace splitting reports every Japanese term as missing — `予定管理` is
  * covered by a field holding `カレンダー,予定,管理` and no `/\s+/` split sees it.
  *
- * @param {Array<object>} rows analytics term rows
+ * @param {TermRow[]} rows analytics term rows
  * @param {string|string[]} keywords the staged keyword field
  * @param {string} [locale]
- * @returns {Array<{term:string, impressions:number, pageViews:number, installs:number, conversionRate:number}>}
+ * @returns {TermRow[]}
  */
 export function missingFromListing(rows, keywords, locale = 'en') {
 	const field = Array.isArray(keywords) ? keywords.join(' ') : String(keywords ?? '');
@@ -91,24 +110,31 @@ export function bottleneck({ impressions = 0, pageViews = 0, installs = 0 } = {}
 	return { ...out, ...worst, healthy: viewScore >= 1 && installScore >= 1 };
 }
 
-/** Analytics rows are written by us but read from files humans edit; take every shape. */
+/**
+ * Analytics rows are written by us but read from files humans edit; take every
+ * shape.
+ * @param {Json|undefined} [r]
+ * @returns {TermRow}
+ */
 export function normaliseRow(r) {
-	const term = String(r?.term ?? r?.keyword ?? '').trim();
-	const impressions = parseSpreadsheetNumber(r?.impressions);
-	const pageViews = parseSpreadsheetNumber(r?.pageViews ?? r?.pageviews ?? r?.views);
-	const installs = parseSpreadsheetNumber(r?.installs ?? r?.downloads ?? r?.units);
+	const row = typeof r === 'object' && r !== null && !Array.isArray(r) ? r : {};
+	const term = String(row.term ?? row.keyword ?? '').trim();
+	const impressions = parseSpreadsheetNumber(row.impressions);
+	const pageViews = parseSpreadsheetNumber(row.pageViews ?? row.pageviews ?? row.views);
+	const installs = parseSpreadsheetNumber(row.installs ?? row.downloads ?? row.units);
 	return {
 		term,
 		impressions,
 		pageViews,
 		installs,
-		conversionRate: impressions > 0 ? rate(installs, impressions) : parseSpreadsheetNumber(r?.conversionRate),
+		conversionRate: impressions > 0 ? rate(installs, impressions) : parseSpreadsheetNumber(row.conversionRate),
 	};
 }
 
 /**
  * Parse a delimited report into records. Apple's API reports are TSV, the web
  * export is CSV, and some locales export CSV with semicolons; sniff the header.
+ * @param {string|undefined} [text]
  * @returns {Array<Record<string,string>>}
  */
 export function parseDelimited(text) {
@@ -150,6 +176,7 @@ export function parseDelimited(text) {
 }
 
 /** Header name → the role it plays. Apple has renamed every one of these at least once. */
+/** @type {[string, RegExp][]} */
 const COLUMN = [
 	['term', /^(search\s*)?(term|keyword|query)s?$/i],
 	['impressions', /impression/i],
@@ -161,7 +188,12 @@ const COLUMN = [
 	['counts', /^(unique\s*)?counts?$/i],
 ];
 
+/**
+ * @param {string[]} headers
+ * @returns {Record<string, string>}
+ */
 function roles(headers) {
+	/** @type {Record<string, string>} */
 	const out = {};
 	for (const h of headers) {
 		const hit = COLUMN.find(([, re]) => re.test(h));
@@ -170,22 +202,39 @@ function roles(headers) {
 	return out;
 }
 
+/** @type {[string, RegExp][]} */
 const EVENT = [
 	['impressions', /impression/i],
 	['pageViews', /page\s*view/i],
 	['installs', /install|download|unit/i],
 ];
 
+/** @type {Array<'impressions'|'pageViews'|'installs'>} */
 const METRIC_KEYS = ['impressions', 'pageViews', 'installs'];
 
 /** An export's own total row would double-count every term it sits under. */
+/**
+ * @param {string} term
+ * @returns {boolean}
+ */
 const isTotalRow = (term) => /^(total|totals|all|—|-)$/i.test(term);
 
 /** A row outside the requested territory contributes nothing (no territory column → keep all). */
+/**
+ * @param {Record<string,string>} rec
+ * @param {Record<string,string>} col
+ * @param {string|null} want
+ * @returns {boolean}
+ */
 const inTerritory = (rec, col, want) =>
 	!want || !col.territory || String(rec[col.territory] ?? '').toLowerCase().includes(want);
 
 /** The wide layout reads all three metric columns straight off the row. */
+/**
+ * @param {Record<string,string>} rec
+ * @param {Record<string,string>} col
+ * @returns {Counts}
+ */
 function wideCounts(rec, col) {
 	const add = zero();
 	add.impressions = parseSpreadsheetNumber(rec[col.impressions]);
@@ -195,6 +244,11 @@ function wideCounts(rec, col) {
 }
 
 /** The long Event/Counts layout names one metric per row; unknown events contribute nothing. */
+/**
+ * @param {Record<string,string>} rec
+ * @param {Record<string,string>} col
+ * @returns {Counts|null}
+ */
 function longCounts(rec, col) {
 	const kind = EVENT.find(([, re]) => re.test(String(rec[col.event] ?? '')));
 	if (!kind) return null;
@@ -205,6 +259,10 @@ function longCounts(rec, col) {
  * Fold report records into per-term counts and a total funnel. Handles both
  * layouts Apple ships: a wide report (one column per metric) and a long one
  * (an `Event` column plus `Counts`).
+ *
+ * @param {Record<string,string>[]} records
+ * @param {{territory?: string}} [opts]
+ * @returns {{terms: TermRow[], funnel: Counts, matched: boolean}}
  */
 export function foldRecords(records, { territory } = {}) {
 	if (!records.length) return { terms: [], funnel: zero(), matched: false };
@@ -214,6 +272,7 @@ export function foldRecords(records, { territory } = {}) {
 	if (!wide && !long) return { terms: [], funnel: zero(), matched: false };
 
 	const funnel = zero();
+	/** @type {Map<string, Counts>} */
 	const byTerm = new Map();
 	const want = territory ? String(territory).toLowerCase() : null;
 	for (const rec of records) {
@@ -240,11 +299,18 @@ const STEP_NAME = /^(step|name|event|label|screen|funnel[ _-]?step)$/i;
 const STEP_COUNT = /^(users?|count|completed|people|value|unique[ _-]?users|conversions?)$/i;
 
 /**
+ * One funnel step as parsed: `order` is consumed by the sort and dropped.
+ * @typedef {{name: string, users: number, kind: Json|undefined}} FunnelStep
+ */
+
+/**
  * An export → ordered `{name, users}` steps. Accepts the three shapes a funnel
  * arrives in: delimited text with a header, a bare JSON array, and PostHog's
  * `{result:[{name, count, order}]}`. Row order is the funnel order except when
  * an explicit `order`/`step_index` is present, which wins.
+ *
  * @param {string} text
+ * @returns {FunnelStep[]}
  */
 export function parseFunnelExport(text) {
 	const raw = String(text ?? '').trim();

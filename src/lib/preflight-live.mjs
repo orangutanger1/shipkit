@@ -25,15 +25,41 @@ import {
 
 const URL_TIMEOUT_MS = 5000;
 
+/** @typedef {import('./preflight-checks.mjs').AscResult} AscResult */
+/** @typedef {import('./preflight-checks.mjs').AscState} AscState */
+/** @typedef {import('./util.mjs').Json} Json */
+/** @typedef {import('./util.mjs').JsonObject} JsonObject */
+
+/** @param {Json|undefined} v @returns {v is JsonObject} */
+const isJsonObject = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/**
+ * JSON:API row → its attributes block, or the row itself when asc answers flat.
+ * @param {Json|undefined} row
+ * @returns {JsonObject}
+ */
+const attrsOf = (row) => {
+	if (!isJsonObject(row)) return {};
+	const attrs = row.attributes;
+	return isJsonObject(attrs) ? attrs : row;
+};
+
+/** @param {string[]} args @returns {Promise<AscResult>} */
 async function ascProbe(args) {
 	try {
 		return classifyAsc(await exec(ASC, [...args, '--output', 'json'], { allowFail: true }));
 	} catch (err) {
-		return { state: 'unavailable', payload: null, detail: clean(err.message) };
+		return { state: 'unavailable', payload: null, detail: clean(err instanceof Error ? err.message : String(err)) };
 	}
 }
 
-/** Emit the row for a non-`ok` probe. Returns true when it handled the check. */
+/** Emit the row for a non-`ok` probe. Returns true when it handled the check.
+ * @param {import('../log.mjs').Report} report
+ * @param {string} name
+ * @param {{state: AscState, detail: string}} probe
+ * @param {string} manual
+ * @returns {boolean}
+ */
 function probeRow(report, name, { state, detail }, manual) {
 	if (state === 'ok') return false;
 	if (state === 'unsupported')
@@ -46,12 +72,13 @@ function probeRow(report, name, { state, detail }, manual) {
 
 const UNAVAILABLE_STATES = ['unsupported', 'unauthorized', 'unavailable'];
 
+/** @param {import('../log.mjs').Report} report @param {import('../config.mjs').Config} cfg @returns {Promise<void>} */
 export async function checkListing(report, cfg) {
 	let staged;
 	try {
 		staged = await readStaged(cfg);
 	} catch (err) {
-		report.fail('listing', clean(err.message));
+		report.fail('listing', clean(err instanceof Error ? err.message : String(err)));
 		return;
 	}
 	if (!staged.length) {
@@ -72,9 +99,11 @@ export async function checkListing(report, cfg) {
 	}
 }
 
+/** @param {import('../log.mjs').Report} report @param {import('../config.mjs').Config} cfg @param {string} version @returns {Promise<void>} */
 export async function checkVersion(report, cfg, version) {
 	const expo = await readExpoConfig(cfg);
-	const expoVersion = expo?.version ?? expo?.expo?.version ?? null;
+	const sub = expo && isJsonObject(expo.expo) ? expo.expo : null;
+	const expoVersion = expo?.version ?? sub?.version ?? null;
 	if (!expo) report.skip('version', `${version} — no app.json to cross-check`);
 	else if (!expoVersion) report.skip('version', `${version} — app.json declares no version`);
 	else if (expoVersion !== version)
@@ -82,38 +111,48 @@ export async function checkVersion(report, cfg, version) {
 	else report.ok('version', version);
 }
 
+/** @param {import('../log.mjs').Report} report @param {string} appId @param {string} version @returns {Promise<void>} */
 export async function checkAscVersion(report, appId, version) {
 	const probe = await ascProbe(['versions', 'list', '--app', appId, '--version', version]);
 	if (probeRow(report, 'asc version', probe, `\`asc versions list --app ${appId}\``)) return;
-	const rows = probe.payload?.data ?? (Array.isArray(probe.payload) ? probe.payload : []);
-	const hit = rows.find((r) => (r?.attributes?.versionString ?? r?.versionString) === version) ?? rows[0];
+	const payload = probe.payload;
+	const data = isJsonObject(payload) && Array.isArray(payload.data) ? payload.data : null;
+	const rows = data ?? (Array.isArray(payload) ? payload : []);
+	const hit =
+		rows.find(
+			(r) => (attrsOf(r).versionString ?? (isJsonObject(r) ? r.versionString : undefined)) === version,
+		) ?? rows[0];
 	if (!hit) {
 		report.fail('asc version', `${version} does not exist on app ${appId} — create it before submitting`);
 		return;
 	}
-	const attrs = hit.attributes ?? hit;
+	const attrs = attrsOf(hit);
 	const state = attrs.appStoreState ?? attrs.state ?? 'UNKNOWN';
 	report.ok('asc version', `${version} · ${state}`);
 }
 
+/** @param {import('../log.mjs').Report} report @param {string} appId @returns {Promise<void>} */
 export async function checkBuild(report, appId) {
 	const probe = await ascProbe(['builds', 'list', '--app', appId, '--limit', '5']);
 	if (probeRow(report, 'build', probe, '`asc builds list` / `ship build`')) return;
-	const rows = probe.payload?.data ?? (Array.isArray(probe.payload) ? probe.payload : []);
+	const payload = probe.payload;
+	const data = isJsonObject(payload) && Array.isArray(payload.data) ? payload.data : null;
+	const rows = data ?? (Array.isArray(payload) ? payload : []);
 	if (!rows.length) {
 		report.warn('build', `no builds on app ${appId} — run \`ship build\``);
 		return;
 	}
-	const newest = rows[0].attributes ?? rows[0];
+	const newest = attrsOf(rows[0]);
 	const number = newest.version ?? newest.buildNumber ?? '?';
 	const state = newest.processingState ?? 'UNKNOWN';
-	const anyValid = rows.some((r) => (r.attributes ?? r).processingState === 'VALID');
+	const anyValid = rows.some((r) => attrsOf(r).processingState === 'VALID');
 	report[anyValid ? 'ok' : 'warn'](
 		'build',
 		anyValid ? `build ${number} · ${state}` : `newest build ${number} is ${state} — nothing VALID to attach yet`,
 	);
 }
 
+/** @param {import('../log.mjs').Report} report @param {string} appId @param {string} version @returns {Promise<void>} */
 export async function checkValidate(report, appId, version) {
 	const probe = await ascProbe(['validate', '--app', appId, '--version', version, '--platform', 'IOS']);
 	// asc validate can exit non-zero *because* it found blockers, and its plan
@@ -128,12 +167,18 @@ export async function checkValidate(report, appId, version) {
 		return;
 	}
 	const items = validationItems(res);
-	const summary = res?.summary ?? res?.data?.attributes?.summary;
-	if (summary)
-		report[summary.blocking ? 'fail' : summary.errors ? 'fail' : summary.warnings ? 'warn' : 'ok'](
+	const root = isJsonObject(res) ? res : null;
+	const data = root && isJsonObject(root.data) ? root.data : null;
+	const dataAttrs = data && isJsonObject(data.attributes) ? data.attributes : null;
+	const summary = root?.summary ?? dataAttrs?.summary;
+	if (summary) {
+		// `{}` reads a primitive summary the way `?.` reads it: every field absent.
+		const s = isJsonObject(summary) ? summary : {};
+		report[s.blocking ? 'fail' : s.errors ? 'fail' : s.warnings ? 'warn' : 'ok'](
 			'validate',
-			`${summary.blocking ?? 0} blocking · ${summary.errors ?? 0} error · ${summary.warnings ?? 0} warning · ${summary.infos ?? 0} info`,
+			`${s.blocking ?? 0} blocking · ${s.errors ?? 0} error · ${s.warnings ?? 0} warning · ${s.infos ?? 0} info`,
 		);
+	}
 	if (!items.length) {
 		if (!summary) report.ok('validate', 'Apple reports no blockers');
 		return;
@@ -145,6 +190,7 @@ export async function checkValidate(report, appId, version) {
 	});
 }
 
+/** @param {import('../log.mjs').Report} report @param {import('../config.mjs').Config} cfg @returns {Promise<void>} */
 export async function checkRevenueCat(report, cfg) {
 	const key = await apiKey({ optional: true });
 	if (!key) {
@@ -155,7 +201,7 @@ export async function checkRevenueCat(report, cfg) {
 	try {
 		project = await resolveProject(cfg);
 	} catch (err) {
-		report.skip('rc', `project unresolved — ${clean(err.message)}`);
+		report.skip('rc', `project unresolved — ${clean(err instanceof Error ? err.message : String(err))}`);
 		return;
 	}
 	if (!project) {
@@ -170,13 +216,16 @@ export async function checkRevenueCat(report, cfg) {
 	for (const f of findings) report[levelOf(f.level, 'warn')](`rc: ${clean(f.name)}`, clean(f.detail));
 }
 
+/** @param {string} url @returns {Promise<number>} */
 async function headOk(url) {
 	// HEAD is enough and cheap; some hosts answer 405, which still proves it resolves.
 	const res = await fetch(url, { method: 'HEAD', redirect: 'follow', signal: AbortSignal.timeout(URL_TIMEOUT_MS) });
 	return res.status;
 }
 
+/** @param {import('../log.mjs').Report} report @param {import('../config.mjs').Config} cfg @returns {Promise<void>} */
 export async function checkLegal(report, cfg) {
+	/** @type {[string, string|null][]} */
 	const urls = [
 		['privacy url', cfg.legal?.privacyUrl],
 		['support url', cfg.legal?.supportUrl],
@@ -191,7 +240,7 @@ export async function checkLegal(report, cfg) {
 			if (status >= 200 && status < 400) report.ok(name, `${status} · ${url}`);
 			else report.fail(name, `${status} · ${url} — a dead policy URL is an automatic rejection`);
 		} catch (err) {
-			report.fail(name, `${url} unreachable — ${clean(err.message)}`);
+			report.fail(name, `${url} unreachable — ${clean(err instanceof Error ? err.message : String(err))}`);
 		}
 	}
 }
@@ -201,6 +250,13 @@ export async function checkLegal(report, cfg) {
  * and `asc validate` does not always surface it. Ask App Store Connect what is
  * actually attached to the primary locale rather than trusting the local tree —
  * uploads happen from other machines too.
+ *
+ * @param {import('../log.mjs').Report} report
+ * @param {import('../config.mjs').Config} cfg
+ * @param {string} appId
+ * @param {string} version
+ * @param {(appId: string, version: string, locale: string) => Promise<string>} localizationId
+ * @returns {Promise<void>}
  */
 export async function checkScreenshots(report, cfg, appId, version, localizationId) {
 	const locale = cfg.asc.primaryLocale;
@@ -208,7 +264,7 @@ export async function checkScreenshots(report, cfg, appId, version, localization
 	try {
 		locId = await localizationId(appId, version, locale);
 	} catch (err) {
-		report.skip('screenshots', clean(err.message));
+		report.skip('screenshots', clean(err instanceof Error ? err.message : String(err)));
 		return;
 	}
 	const probe = await ascProbe(['screenshots', 'list', '--version-localization', locId]);
@@ -216,12 +272,16 @@ export async function checkScreenshots(report, cfg, appId, version, localization
 		probeRow(report, 'screenshots', probe, '`ship shots upload`');
 		return;
 	}
-	const sets = Array.isArray(probe.payload?.sets) ? probe.payload.sets : [];
+	const payload = probe.payload;
+	const sets = isJsonObject(payload) && Array.isArray(payload.sets) ? payload.sets : [];
 	const counts = sets
-		.map((s) => ({
-			type: s.set?.attributes?.screenshotDisplayType ?? 'UNKNOWN',
-			n: Array.isArray(s.screenshots) ? s.screenshots.length : 0,
-		}))
+		.map((s) => {
+			const attrs = attrsOf(isJsonObject(s) ? s.set : null);
+			return {
+				type: attrs.screenshotDisplayType ?? 'UNKNOWN',
+				n: isJsonObject(s) && Array.isArray(s.screenshots) ? s.screenshots.length : 0,
+			};
+		})
 		.filter((s) => s.n > 0);
 	if (!counts.length) {
 		report.fail(
@@ -230,13 +290,14 @@ export async function checkScreenshots(report, cfg, appId, version, localization
 		);
 		return;
 	}
-	if (!counts.some((s) => /IPHONE/.test(s.type))) {
+	if (!counts.some((s) => /IPHONE/.test(String(s.type)))) {
 		report.fail('screenshots', `${locale} has ${counts.map((s) => `${s.type} ×${s.n}`).join(', ')} but no iPhone set`);
 		return;
 	}
 	report.ok('screenshots', `${locale}: ${counts.map((s) => `${s.type} ×${s.n}`).join(', ')}`);
 }
 
+/** @param {import('../log.mjs').Report} report @param {import('../config.mjs').Config} cfg @returns {Promise<void>} */
 export async function checkEncryption(report, cfg) {
 	const expo = await readExpoConfig(cfg);
 	if (!expo) {
@@ -257,9 +318,16 @@ export async function checkEncryption(report, cfg) {
 		);
 		return;
 	}
-	report.ok('export compliance', `${ENCRYPTION_KEY}: ${(expo?.expo ?? expo)?.ios?.infoPlist?.[ENCRYPTION_KEY]}`);
+	const root = expo ? (expo.expo ?? expo) : null;
+	const plist = isJsonObject(root) ? root.ios : null;
+	const entries = isJsonObject(plist) ? plist.infoPlist : null;
+	report.ok(
+		'export compliance',
+		`${ENCRYPTION_KEY}: ${isJsonObject(entries) ? entries[ENCRYPTION_KEY] : undefined}`,
+	);
 }
 
+/** @param {import('../log.mjs').Report} report @param {import('../config.mjs').Config} cfg @returns {void} */
 export function checkEuTrader(report, cfg) {
 	const hits = euLocalesIn(cfg.store?.locales);
 	if (!hits.length) {
@@ -272,10 +340,11 @@ export function checkEuTrader(report, cfg) {
 	}
 	report.fail(
 		'eu trader',
-		`${hits.join(', ')} ship to EU storefronts and legal.euTrader is ${cfg.legal?.euTrader === false ? 'false' : 'unset'} — an undeclared trader is pulled from every EU storefront outright, which is worse than a rejection; declare it in App Store Connect → Business, then set legal.euTrader to true`,
+		`${hits.join(', ')} ship to EU storefronts and legal.euTrader is ${typeof cfg.legal?.euTrader === 'boolean' && !cfg.legal?.euTrader ? 'false' : 'unset'} — an undeclared trader is pulled from every EU storefront outright, which is worse than a rejection; declare it in App Store Connect → Business, then set legal.euTrader to true`,
 	);
 }
 
+/** @param {import('../log.mjs').Report} report @param {string} appId @returns {Promise<void>} */
 export async function checkAgeRating(report, appId) {
 	const probe = await ascProbe(['age-rating', 'view', '--app', appId]);
 	if (probeRow(report, 'age rating', probe, 'App Store Connect → App Information → Age Rating')) return;
@@ -294,6 +363,7 @@ export async function checkAgeRating(report, appId) {
 	report.ok('age rating', 'questionnaire complete');
 }
 
+/** @param {import('../log.mjs').Report} report @param {string} appId @returns {Promise<void>} */
 export async function checkContentRights(report, appId) {
 	const probe = await ascProbe(['apps', 'content-rights', 'view', '--app', appId]);
 	if (probeRow(report, 'content rights', probe, 'App Store Connect → App Information → Content Rights')) return;
@@ -314,6 +384,10 @@ export async function checkContentRights(report, appId) {
  * So this asks whether a session exists before touching anything, and skips
  * loudly when it does not. An app that collects data behind an empty label is
  * rejected, so "unknown" still has to be visible in the report.
+ *
+ * @param {import('../log.mjs').Report} report
+ * @param {string} appId
+ * @returns {Promise<void>}
  */
 export async function checkPrivacy(report, appId) {
 	const session = await ascProbe(['web', 'auth', 'status']);
@@ -324,7 +398,7 @@ export async function checkPrivacy(report, appId) {
 		);
 		return;
 	}
-	if (!session.payload?.authenticated) {
+	if (!(isJsonObject(session.payload) && session.payload.authenticated)) {
 		report.skip(
 			'privacy labels',
 			'no Apple web session (`asc web auth login`) — privacy labels live behind web-session endpoints, not the ASC API key',
@@ -344,12 +418,13 @@ export async function checkPrivacy(report, appId) {
 	report.ok('privacy labels', `${count} data usage declaration${count === 1 ? '' : 's'}`);
 }
 
+/** @param {import('../log.mjs').Report} report @param {import('../config.mjs').Config} cfg @param {string} version @returns {Promise<void>} */
 export async function checkOta(report, cfg, version) {
 	let safety;
 	try {
 		safety = await otaSafety(cfg, version);
 	} catch (err) {
-		report.skip('ota', `cannot read the native surface — ${clean(err.message)}`);
+		report.skip('ota', `cannot read the native surface — ${clean(err instanceof Error ? err.message : String(err))}`);
 		return;
 	}
 	// Informational only — preflight gates submission, not updates.
@@ -360,6 +435,9 @@ export async function checkOta(report, cfg, version) {
  * Can we reach App Store Connect at all? Asked once so the review checks below do
  * not each rediscover the same missing key, and answered without a network call
  * when the run is offline.
+ *
+ * @param {boolean} offline
+ * @returns {Promise<{live: boolean, why: string|null}>}
  */
 export async function ascReachable(offline) {
 	if (offline) return { live: false, why: '--offline' };
@@ -367,7 +445,8 @@ export async function ascReachable(offline) {
 	const probe = await ascProbe(['auth', 'status']);
 	if (probe.state === 'unauthorized' || probe.state === 'error')
 		return { live: false, why: `asc auth status failed — ${probe.detail || 'not authenticated'}` };
-	if (!probe.payload?.credentials?.length)
+	const creds = isJsonObject(probe.payload) ? probe.payload.credentials : null;
+	if (!Array.isArray(creds) || !creds.length)
 		return { live: false, why: 'no App Store Connect credentials — `asc auth login`' };
 	return { live: true, why: null };
 }

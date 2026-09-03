@@ -53,10 +53,6 @@ export ASTRO_MCP_URL=http://127.0.0.1:9100/mcp
 `ship doctor` probes the endpoint and reports it as *skipped* (not failed) when
 the tunnel is down — the rest of the pipeline does not depend on it.
 
-Tools: `list_apps`, `get_app_keywords`, `search_rankings`, `get_app_ratings`,
-`extract_competitors_keywords`, `add_app`, `add_keywords`, `set_keyword_note`,
-`set_keyword_tag`, `manage_tag`, `search_app_store`, `get_keyword_suggestions`.
-
 Astro tracks **rank over time**, which the App Store exposes to nobody else.
 `ship aso` covers the complementary half — live autocomplete harvesting and
 top-10 competition scoring — with no subscription and no Mac. Use both: `ship aso`

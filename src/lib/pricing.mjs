@@ -27,6 +27,17 @@ import { ShipError } from '../log.mjs';
 import { num, round1, round2 } from './fmt.mjs';
 import { rowsOf } from './asc-report.mjs';
 
+/** @typedef {import('./util.mjs').Json} Json */
+/** @typedef {import('./util.mjs').JsonObject} JsonObject */
+
+/**
+ * One local price ladder: what it looks like on a tag, why it has that shape,
+ * and the function that snaps a raw conversion onto it.
+ * @typedef {{label: string, why: string, round: (v: number) => number}} PriceConvention
+ * @typedef {{charm99: PriceConvention, whole9: PriceConvention, tens: PriceConvention, hundred: PriceConvention, thousand: PriceConvention, ninety: PriceConvention, yen80: PriceConvention, rupee9: PriceConvention}} Conventions
+ */
+/** @typedef {keyof Conventions} RoundingName */
+
 /** Mid-market FX snapshot the territory table was derived from. */
 export const FX_AS_OF = '2025-06';
 
@@ -40,6 +51,8 @@ export const COMMISSION = 0.15;
  * Local price ladders. Each `round` maps a raw converted amount onto the shape
  * of a price customers in that storefront actually see. The `why` ships in
  * plan.json so the number in front of a reviewer carries its own justification.
+ *
+ * @type {Conventions}
  */
 export const CONVENTIONS = {
 	charm99: {
@@ -91,7 +104,11 @@ export const CONVENTIONS = {
 	},
 };
 
-/** Decimal places a storefront's tag carries. Only the .99 ladder has any. */
+/**
+ * Decimal places a storefront's tag carries. Only the .99 ladder has any.
+ * @param {RoundingName} rounding
+ * @returns {number}
+ */
 const decimalsFor = (rounding) => (rounding === 'charm99' ? 2 : 0);
 
 /**
@@ -101,7 +118,10 @@ const decimalsFor = (rounding) => (rounding === 'charm99' ? 2 : 0);
  * arguable, which is the point: change a number here and every plan moves with
  * a reviewable diff. Russia is absent because Apple suspended paid sales there;
  * Argentina is absent because a committed FX snapshot for ARS would be a lie.
+ *
+ * @typedef {{territory: string, alpha3: string, currency: string, fx: number, basisPct: number, rounding: RoundingName, note?: string}} Territory
  */
+/** @type {Territory[]} */
 export const TERRITORIES = [
 	// Americas
 	{ territory: 'US', alpha3: 'USA', currency: 'USD', fx: 1, basisPct: 100, rounding: 'charm99', note: 'reference storefront' },
@@ -164,7 +184,11 @@ export const TERRITORIES = [
 const BY_TERRITORY = new Map(TERRITORIES.map((t) => [t.territory, t]));
 const BY_ALPHA3 = new Map(TERRITORIES.map((t) => [t.alpha3, t.territory]));
 
-/** ASC speaks alpha-3 territory ids; humans and this table speak alpha-2. */
+/**
+ * ASC speaks alpha-3 territory ids; humans and this table speak alpha-2.
+ * @param {Json|null|undefined} code
+ * @returns {string}
+ */
 export function normaliseTerritory(code) {
 	const s = String(code ?? '').trim().toUpperCase();
 	if (!s) return '';
@@ -172,11 +196,30 @@ export function normaliseTerritory(code) {
 }
 
 /**
+ * One derived territory price: what the tag reads, what it nets, and the
+ * arithmetic that produced it.
+ * @typedef {{
+ *   territory: string, alpha3: string, currency: string, price: number, decimals: number,
+ *   basisPct: number, rounding: RoundingName, note: string, fx: number,
+ *   usdEquivalent: number, effectivePct: number, roundingDriftPct: number,
+ *   proceedsUsd: number, belowFloor: boolean,
+ * }} PlanRow
+ */
+/**
+ * A whole derived price table — the body of plan.json before the command adds
+ * provenance.
+ * @typedef {{baseUsd: number, floorUsd: number, commission: number, fxAsOf: string, rows: PlanRow[], flagged: string[]}} DerivedPlan
+ */
+/** The slice of a plan row the price gate and the printers need. */
+/** @typedef {{territory: string, currency: string, price: number, decimals?: number}} PricedRow */
+
+/**
  * Derive the whole price table from one US price. Pure: no clock, no config, no
  * filesystem, so it is the thing tests pin and the thing reviewers read.
  *
  * @param {number} baseUsd US price the rest of the table is a percentage of.
- * @param {{territories?:string[], floorUsd?:number, commission?:number}} opts
+ * @param {{territories?: string[]|null, floorUsd?: number, commission?: number}} [opts]
+ * @returns {DerivedPlan}
  */
 export function derivePlan(baseUsd, { territories = null, floorUsd = MIN_PROCEEDS_USD, commission = COMMISSION } = {}) {
 	const base = Number(baseUsd);
@@ -197,6 +240,7 @@ export function derivePlan(baseUsd, { territories = null, floorUsd = MIN_PROCEED
 		wanted = new Set(wanted);
 	}
 
+	/** @type {PlanRow[]} */
 	const rows = [];
 	for (const t of TERRITORIES) {
 		if (wanted && !wanted.has(t.territory)) continue;
@@ -235,8 +279,23 @@ export function derivePlan(baseUsd, { territories = null, floorUsd = MIN_PROCEED
 	};
 }
 
-/** A plan row as it reads on a tag: `4.99 USD`. */
+/**
+ * A plan row as it reads on a tag: `4.99 USD`.
+ * @param {PricedRow} row
+ * @returns {string}
+ */
 export const priceLabel = (row) => `${Number(row.price).toFixed(row.decimals ?? 2)} ${row.currency}`;
+
+/** One live price reading: `price` is whatever the source offered, number first. */
+/** @typedef {{price?: Json, currency?: Json}} LivePrice */
+
+/**
+ * A plan-row-vs-live outcome. `from` is null for a first price — nothing to gate.
+ * @typedef {{territory: string, currency: string, from: number|null, to: number, decimals: number}} PriceBase
+ */
+/** A decided move: `delta` is always known (a first price has no delta to gate). */
+/** @typedef {PriceBase & {delta: number}} PriceMove */
+/** @typedef {PriceBase & {delta?: number}} PriceChange */
 
 /**
  * Compare a derived table against live prices and split it by the delta gate.
@@ -244,11 +303,13 @@ export const priceLabel = (row) => `${Number(row.price).toFixed(row.decimals ?? 
  * how much" is the question you want answered before anything moves. Named
  * `reconcilePrices` — lib/asa.mjs has a different `reconcile` for Apple Ads.
  *
- * @param {object[]} rows plan rows
- * @param {Map<string,{price:number,currency?:string}>|object} live per-territory live prices
- * @param {{maxDelta?:number, force?:boolean}} opts maxDelta is a fraction: 0.5 = 50%
+ * @param {PricedRow[]} rows plan rows
+ * @param {Map<string, LivePrice>|JsonObject} live per-territory live prices
+ * @param {{maxDelta?: number, force?: boolean}} [opts] maxDelta is a fraction: 0.5 = 50%
+ * @returns {{changes: PriceMove[], blocked: PriceMove[], unchanged: PriceChange[], added: PriceChange[]}}
  */
 export function reconcilePrices(rows, live, { maxDelta = 0.5, force = false } = {}) {
+	/** @param {string} t @returns {LivePrice|Json|undefined} */
 	const at = (t) => (live instanceof Map ? live.get(t) : live?.[t]);
 	const changes = [];
 	const blocked = [];
@@ -257,7 +318,15 @@ export function reconcilePrices(rows, live, { maxDelta = 0.5, force = false } = 
 
 	for (const row of rows) {
 		const current = at(row.territory);
-		const from = current == null ? null : num(current.price ?? current, Number.NaN);
+		// `current` may be a full live-price row or the bare price itself.
+		const quoted =
+			current == null
+				? null
+				: typeof current === 'object' && !Array.isArray(current)
+					? (current.price ?? current)
+					: current;
+		const from = quoted !== null && typeof quoted !== 'object' ? num(quoted, Number.NaN) : Number.NaN;
+		/** @type {PriceChange} */
 		const entry = {
 			territory: row.territory,
 			currency: row.currency,
@@ -275,33 +344,51 @@ export function reconcilePrices(rows, live, { maxDelta = 0.5, force = false } = 
 			continue;
 		}
 		entry.delta = entry.from === 0 ? 1 : round2((row.price - entry.from) / entry.from);
-		if (!force && Math.abs(entry.delta) > maxDelta) blocked.push(entry);
-		else changes.push(entry);
+		if (!force && Math.abs(entry.delta) > maxDelta) blocked.push({ ...entry, delta: entry.delta });
+		else changes.push({ ...entry, delta: entry.delta });
 	}
 	return { changes, blocked, unchanged, added };
 }
 
 /** ASC offer durations, plus the ISO 8601 durations the same field arrives as. */
+/** @type {Record<string, number>} */
 const OFFER_DAYS = {
 	THREE_DAYS: 3, ONE_WEEK: 7, TWO_WEEKS: 14, ONE_MONTH: 30,
 	TWO_MONTHS: 60, THREE_MONTHS: 90, SIX_MONTHS: 180, ONE_YEAR: 365,
 	P3D: 3, P1W: 7, P2W: 14, P1M: 30, P2M: 60, P3M: 90, P6M: 180, P1Y: 365,
 };
 
+/** @param {Json|undefined} v @returns {v is JsonObject} */
+const isJsonObject = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/**
+ * View any JSON value as an object: objects pass through untouched, anything
+ * else reads as an empty row — exactly what property access on a scalar yields.
+ * @param {Json|undefined} v
+ * @returns {JsonObject}
+ */
+const asRow = (v) => (isJsonObject(v) ? v : {});
+
 /**
  * Days in a subscription's introductory offer, or null when there is nothing to
  * read. An intro offer hangs off a relationship `asc subscriptions list` does
  * not include, so null is the honest answer far more often than not — and it is
  * not zero, because zero means "this app has no trial" and warns about it.
+ *
+ * @param {Json} s
+ * @returns {number|null}
  */
 export function trialDaysOf(s) {
-	const a = s?.attributes ?? {};
-	const offer = rowsOf(a.introductoryOffers ?? s?.introductoryOffers ?? a.introductoryOffer ?? s?.introductoryOffer)[0];
+	const row = asRow(s);
+	const a = asRow(row.attributes);
+	const offer = asRow(
+		rowsOf(a.introductoryOffers ?? row.introductoryOffers ?? a.introductoryOffer ?? row.introductoryOffer)[0],
+	);
 	const raw =
-		offer?.attributes?.duration ??
-		offer?.duration ??
+		asRow(offer.attributes).duration ??
+		offer.duration ??
 		a.introductoryOfferDuration ??
-		s?.introductoryOfferDuration ??
+		row.introductoryOfferDuration ??
 		null;
 	if (raw == null) return null;
 	return OFFER_DAYS[String(raw).trim().toUpperCase()] ?? null;

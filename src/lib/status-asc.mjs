@@ -13,7 +13,7 @@ const when = (iso) => (typeof iso === 'string' && iso.length >= 16 ? iso.slice(0
 const dim = (s) => (s ? String(s) : c.dim(DASH));
 
 /** Every section that needs an app id gets the same failure with the same fix. */
-export function needAppId(ctx) {
+function needAppId(ctx) {
 	if (!ctx.appId)
 		throw new ShipError('no App Store Connect app id', {
 			hint: 'set asc.appId in ship.config.json (find it with `asc apps list`)',
@@ -25,7 +25,7 @@ export function needAppId(ctx) {
  * Colour the review state the way you would read it: green means done, yellow
  * means Apple owns the ball, red means you do.
  */
-export function stateColour(state) {
+function stateColour(state) {
 	const s = String(state ?? '');
 	if (!s) return c.dim(DASH);
 	if (s === 'READY_FOR_SALE') return c.green(s);

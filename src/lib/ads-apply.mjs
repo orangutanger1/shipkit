@@ -13,7 +13,6 @@ import {
 	createCampaign,
 	createKeywords,
 	ensureNegatives,
-	listCampaigns,
 	pauseAdGroup,
 	pauseKeywords,
 	pullReport,
@@ -21,18 +20,40 @@ import {
 	updateCampaign,
 	updateKeywords,
 } from './ads-client.mjs';
+/** @typedef {import('./util.mjs').Json} Json */
+/** @typedef {import('./ads-plan.mjs').PlannedCampaign} PlannedCampaign */
+/** @typedef {import('./ads-plan.mjs').PlannedAdGroup} PlannedAdGroup */
+/** @typedef {import('./ads-plan.mjs').PlannedKeyword} PlannedKeyword */
+/** @typedef {import('./ads-plan.mjs').MonetisationSignal} MonetisationSignal */
+/** @typedef {import('./ads-client.mjs').Row} Row */
+/** @typedef {import('./ads-client.mjs').SnapshotCampaign} SnapshotCampaign */
+/** @typedef {import('./asa-reconcile.mjs').Change} Change */
+/** @typedef {import('./asa-reconcile.mjs').ReconcileResult} ReconcileResult */
+/** @typedef {import('../config.mjs').Config} Config */
+/** @typedef {import('./util.mjs').JsonObject} JsonObject */
+/** @typedef {import('./asa-reconcile.mjs').Action} Action */
 
+/**
+ * Record an Apple id and sync stamp on a planned object.
+ * @param {PlannedCampaign|PlannedAdGroup|PlannedKeyword} obj
+ * @param {{id?: Json}|Row} live
+ * @param {JsonObject} fields
+ * @returns {PlannedCampaign|PlannedAdGroup|PlannedKeyword}
+ */
 const stampApple = (obj, live, fields) => {
 	obj.apple = { id: live?.id ? String(live.id) : (obj.apple?.id ?? null), syncedAt: new Date().toISOString(), ...fields };
 	return obj;
 };
+/** @param {JsonObject} obj @param {JsonObject} [fields] @returns {void} */
 const adoptLive = (obj, fields) => {
 	for (const [k, v] of Object.entries(fields ?? {})) obj[k] = v ?? obj[k];
 };
+/** @type {Record<string, (s: string) => string>} */
 const OP_COLOUR = {
 	create: c.green, update: c.cyan, adopt: c.blue, preserve: c.yellow, pause: c.red,
 	unplanned: c.yellow, conflict: c.red, orphan: c.magenta, noop: c.dim,
 };
+/** @param {ReconcileResult} plan$ @param {{verbose?: boolean}} [opts] @returns {void} */
 export function printReconciliation(plan$, { verbose = false } = {}) {
 	const shown = plan$.actions.filter((a) => verbose || a.op !== 'noop');
 	if (!shown.length) {
@@ -49,12 +70,14 @@ export function printReconciliation(plan$, { verbose = false } = {}) {
 	const counts = Object.entries(plan$.summary).filter(([op]) => verbose || op !== 'noop').map(([op, n]) => `${n} ${op}`).join(' · ');
 	info(counts || 'no changes');
 }
+/** @param {Action} action @param {{create: () => Promise<void>|void, update: () => Promise<void>|void, adopt?: () => void, keep?: () => void}} handlers @returns {Promise<void>|void} */
 const applyMutation = (action, { create, update, adopt, keep }) => {
 	if (action.op === 'create' || action.op === 'orphan') return create();
 	if (action.op === 'update') return update();
 	if (action.op === 'adopt') return adopt?.();
 	return keep?.();
 };
+/** @param {{campaigns: number, groups: number, keywords: number, negatives: number, paused: number, pages: number, adopted: number}} tally @param {{org: string, planFile: string}} opts @returns {void} */
 export function printSyncSummary(tally, { org, planFile }) {
 	process.stdout.write('\n');
 	good(
@@ -63,10 +86,14 @@ export function printSyncSummary(tally, { org, planFile }) {
 	good(`recorded Apple object ids into ${planFile}`);
 	note(`verify: ship ads snapshot --org ${org}`);
 }
+/** @param {{org: string, adamId: string|number, currency: string, planned: PlannedCampaign[], account: {campaigns: SnapshotCampaign[]}, plan$: ReconcileResult}} opts @returns {Promise<{campaigns: number, groups: number, keywords: number, negatives: number, paused: number, pages: number, adopted: number}>} */
 export async function applyPlan({ org, adamId, currency, planned, account, plan$ }) {
+	/** @type {{pages?: Row[]}} */
 	const cache = {};
 	const tally = { campaigns: 0, groups: 0, keywords: 0, negatives: 0, paused: 0, pages: 0, adopted: 0 };
-	const at = (level, path) => plan$.actions.find((a) => a.level === level && a.path === path) ?? { op: 'noop' };
+	/** @param {'campaign'|'adGroup'|'keyword'} level @param {string} path @returns {Action} */
+	const at = (level, path) => plan$.actions.find((a) => a.level === level && a.path === path) ?? { op: 'noop', level, path, id: null, name: '', changes: [] };
+	/** @param {PlannedAdGroup} g @param {string} path @param {string} campaignId @param {string} adGroupId @returns {Promise<void>} */
 	const applyKeywords = async (g, path, campaignId, adGroupId) => {
 		const create = [], update = [];
 		for (const k of g.keywords ?? []) {
@@ -74,7 +101,7 @@ export async function applyPlan({ org, adamId, currency, planned, account, plan$
 			const ka = at('keyword', `${path} / ${k.text} ${k.matchType}`);
 			if (ka.op === 'create' || ka.op === 'orphan') create.push({ ...k, bid });
 			else if (ka.op === 'update') update.push({ id: ka.id, bid, status: 'ACTIVE' });
-			else if (ka.op === 'adopt' && ka.adoptFields) k.bid = ka.adoptFields.bidAmount ?? bid;
+			else if (ka.op === 'adopt' && ka.adoptFields) k.bid = Number(ka.adoptFields.bidAmount ?? bid);
 			if (ka.id)
 				stampApple(k, { id: ka.id }, { text: k.text, matchType: k.matchType, bidAmount: round2(k.bid ?? bid), status: 'ACTIVE' });
 		}
@@ -84,7 +111,7 @@ export async function applyPlan({ org, adamId, currency, planned, account, plan$
 			for (const row of made) {
 				const k = (g.keywords ?? []).find((x) => x.text === row.text && x.matchType === row.matchType);
 				if (k)
-					stampApple(k, row, { text: row.text, matchType: row.matchType, bidAmount: round2(k.bid ?? g.defaultBidAmount), status: 'ACTIVE' });
+					stampApple(k, row, { text: row.text ?? null, matchType: row.matchType ?? null, bidAmount: round2(k.bid ?? g.defaultBidAmount), status: 'ACTIVE' });
 			}
 		}
 		if (update.length) {
@@ -98,10 +125,12 @@ export async function applyPlan({ org, adamId, currency, planned, account, plan$
 			tally.paused += stale.length;
 		}
 	};
+	/** @param {PlannedCampaign} cp @param {PlannedAdGroup} g @param {string} campaignId @returns {Promise<void>} */
 	const applyAdGroup = async (cp, g, campaignId) => {
 		const path = `${cp.name} / ${g.name}`;
 		const ga = at('adGroup', path);
-		let adGroupId = ga.id;
+		/** @type {string|null} */
+		let adGroupId = typeof ga.id === 'string' ? ga.id : null;
 		await applyMutation(ga, {
 			create: async () => {
 				const created = await createAdGroup(org, campaignId, g, currency);
@@ -127,10 +156,12 @@ export async function applyPlan({ org, adamId, currency, planned, account, plan$
 		await applyKeywords(g, path, campaignId, adGroupId);
 		if (g.productPage && (await bindProductPage(org, adamId, campaignId, adGroupId, g.productPage, cache))) tally.pages++;
 	};
+	/** @param {PlannedCampaign} cp @returns {Promise<void>} */
 	const applyCampaign = async (cp) => {
 		const action = at('campaign', cp.name);
 		const liveCp = account.campaigns.find((r) => r.id === action.id) ?? null;
-		let campaignId = action.id;
+		/** @type {string|null} */
+		let campaignId = typeof action.id === 'string' ? action.id : null;
 		const stamp = () => stampApple(cp, { id: campaignId }, { name: cp.name, dailyBudget: round2(cp.dailyBudget), status: cp.status ?? 'ENABLED' });
 		await applyMutation(action, {
 			create: async () => {
@@ -171,21 +202,31 @@ export async function applyPlan({ org, adamId, currency, planned, account, plan$
 	return tally;
 }
 
+/** @param {Config} cfg @param {{subPrice?: Json}} [opts] @returns {Promise<MonetisationSignal>} */
 export async function monetisationSignal(cfg, { subPrice } = {}) {
-	if (!cfg?.revenuecat?.projectId) return { available: false, reason: 'no revenuecat.projectId in ship.config.json' };
+	if (!cfg?.revenuecat?.projectId)
+		return /** @type {MonetisationSignal} */ ({ available: false, reason: 'no revenuecat.projectId in ship.config.json' });
 	try {
 		const project = await resolveProject(cfg);
-		if (!project) return { available: false, reason: `no RevenueCat project matches "${cfg.revenuecat.projectId}"` };
+		if (!project)
+			return /** @type {MonetisationSignal} */ ({ available: false, reason: `no RevenueCat project matches "${cfg.revenuecat.projectId}"` });
 		const raw = await overviewMetrics(project.id);
+		/** overviewMetrics can hand back nulls where monetisation expects absent — same zeros once num() reads them. */
+		/** @type {{[k: string]: Json}} */
+		const m = raw;
+		/** @type {{[k: string]: Json|undefined, retentionMonths?: number}} */
+		const mo = { subPrice: subPrice ?? cfg.ads?.subPrice, retentionMonths: cfg.ads?.retentionMonths };
 		return {
 			available: true, project: project.id, keySource: project.keySource ?? null, raw,
-			...monetisation(raw, { subPrice: subPrice ?? cfg.ads?.subPrice, retentionMonths: cfg.ads?.retentionMonths }),
+			...monetisation(m, mo),
 		};
 	} catch (err) {
-		return { available: false, reason: err.message };
+		return /** @type {MonetisationSignal} */ ({ available: false, reason: err instanceof Error ? err.message : String(err) });
 	}
 }
+/** @param {Config} cfg @param {string|null|undefined} org @param {{days?: number}} [opts] @returns {Promise<{cpt: number|null, reason: string|null, taps?: number, spend?: number, window?: {from: string, to: string}}>} */
 export async function realisedCpt(cfg, org, { days = 30 } = {}) {
+	void cfg;
 	if (!org) return { cpt: null, reason: 'no ads.orgId' };
 	if (!(await authState()).configured) return { cpt: null, reason: 'no Apple Ads credentials' };
 	const to = new Date().toISOString().slice(0, 10);
@@ -197,9 +238,10 @@ export async function realisedCpt(cfg, org, { days = 30 } = {}) {
 		if (!taps) return { cpt: null, reason: `no taps in the last ${days} days` };
 		return { cpt: round2(spend / taps), reason: null, taps, spend: round2(spend), window: { from, to } };
 	} catch (err) {
-		return { cpt: null, reason: err.message };
+		return { cpt: null, reason: err instanceof Error ? err.message : String(err) };
 	}
 }
+/** @param {MonetisationSignal|null|undefined} money$ @param {{budget?: number|null}} [opts] @returns {void} */
 export function reportMonetisation(money$, { budget = null } = {}) {
 	if (!money$) return;
 	if (!money$.available) {

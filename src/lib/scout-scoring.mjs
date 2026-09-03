@@ -12,8 +12,173 @@ import { normaliseKeywords } from './locales.mjs';
 import { brandTokens, charCount, indexedWords, stopwordsFor, tokenSupport, words } from './text.mjs';
 import { median } from './util.mjs';
 
-/** Grouped integers for verdict and report text: 82,000, not 82000. */
+/** @typedef {import('./util.mjs').Json} Json */
+/** @typedef {import('./util.mjs').Flags} Flags */
+
+/**
+ * One iTunes search/lookup row, narrowed to the fields scout reads. The
+ * payload is unvalidated JSON off the storefront API, so every field is
+ * optional and nullable; consumers read through `??` fallbacks.
+ * @typedef {{
+ *   trackName?: string|null, sellerName?: string|null, trackId?: number|null,
+ *   userRatingCount?: number|null, averageUserRating?: number|null,
+ *   price?: number|null, formattedPrice?: string|null,
+ *   currentVersionReleaseDate?: string|null, trackViewUrl?: string|null,
+ *   description?: string|null,
+ * }} ScoutApp
+ */
+
+/** Shape of the progress callback sweeps hand to the storefront layer. */
+/** @typedef {(i: number, total: number, label: string, extra?: Json) => void} ProgressFn */
+
+/**
+ * The gate thresholds, as `verdict` reads them: every cap a flag can move.
+ * @typedef {{
+ *   moat: number, minVolume: number, exactCap: number,
+ *   saturationCap: number, cloneCap: number, commodityCap: number,
+ * }} GateThresholds
+ */
+
+/**
+ * The metrics block the gates read — everything `brief` can say about one
+ * term's top-10 in numbers. The six gate metrics are required; the rest is
+ * the context the messages print.
+ * @typedef {{
+ *   term: string, results: number, demand: number, exactTitleMatches: number,
+ *   top3MedianRatings: number, freeTop10: number,
+ *   weakAppsTop10: number, medianRatings: number, paidTop10: number, iapTop3: number,
+ *   saturation: number, newEntrants: number, freshUnproven: number,
+ *   cloneTitles: number, clones: number, cloneApps: (string|null)[], freshDays: number,
+ *   commodity: number, commodityMatches: number, commodityProven: number,
+ *   commodityApps: (string|null)[],
+ * }} VerdictMetrics
+ */
+
+/** One tripped gate: the number that tripped it and the threshold it beat. */
+/** @typedef {{gate: string, value: number, threshold: number, message: string}} VerdictReason */
+
+/** @typedef {{go: boolean, reasons: VerdictReason[]}} VerdictResult */
+
+/**
+ * One row of the gate table: the test that fires, the metric that tripped,
+ * the threshold it beat, and the message that prints both numbers.
+ * @typedef {{
+ *   gate: string,
+ *   metric: 'top3MedianRatings'|'demand'|'exactTitleMatches'|'saturation'|'clones'|'commodity',
+ *   flag: (t: GateThresholds) => number,
+ *   test: (m: VerdictMetrics, t: GateThresholds) => boolean,
+ *   message: (m: VerdictMetrics, t: GateThresholds) => string,
+ * }} Gate
+ */
+
+/** What a paid install may cost before Search Ads stops paying for itself. */
+/** @typedef {{
+ *   subPrice: number, netPerMonth: number, assumedMonthsRetained: number, ltv: number,
+ *   installToSubscriber: {low: number, high: number}, cpi: {low: number, high: number},
+ *   derivation: string,
+ * }} CpiBand */
+
+/**
+ * One scored row of a terms sweep, as `scoreAll` ranks them (viability first).
+ * `top3` rides along so a prior sweep can be mined for incumbent names.
+ * @typedef {{
+ *   keyword: string, results: number, demand: number, competition: number,
+ *   opportunity: number, viability: number, saturation: number, clones: number,
+ *   medianRatings: number, exactTitleMatches: number, newEntrants: number,
+ *   weakAppsTop10: number, paidTop10: number,
+ *   top3?: {name: string|null, id: number|null, ratings: number, stars: number|null, seller: string|null}[],
+ * }} ScoredTerm
+ */
+
+/** One row of the top-10 as the flood check scored it. */
+/** @typedef {{name: string|null, seller: string|null, ratings: number, released: string|null, ageDays: number|null, titleMatch: boolean}} FloodApp */
+
+/**
+ * The flood block `saturation()` returns for a non-empty top-10.
+ * @typedef {{
+ *   results: number, dated: number, freshDays: number, tractionFloor: number,
+ *   newEntrants: number, newEntrantsQuarter: number, freshUnproven: number,
+ *   cloneTitles: number, clones: number, cloneApps: (string|null)[],
+ *   medianAgeDays: number|null, youngestDays: number|null, distinctSellers: number,
+ *   score: number, apps: FloodApp[],
+ * }} Flood
+ */
+
+/** One incumbent the same-product check matched. */
+/** @typedef {{name: string|null, ratings: number}} CommodityApp */
+
+/**
+ * The same-product block `commodity()` returns for a non-empty top-10.
+ * @typedef {{
+ *   results: number, matches: number, share: number, proven: number, unproven: number,
+ *   subjects: string[], apps: CommodityApp[],
+ * }} Commodity
+ */
+
+/** One top-3 incumbent as `incumbentsOf` annotates it. */
+/** @typedef {{
+ *   name: string|null, id: number|null, seller: string|null, ratings: number,
+ *   stars: number|null, price: number, formattedPrice: string|null, updated: string|null,
+ *   daysSinceUpdate: number|null, hasIap: boolean|null, url: string|null,
+ * }} Incumbent */
+
+/** One positioning claim and how much of the top-10 already makes it. */
+/** @typedef {{claim: string, apps: number, share: number, holders: (string|null)[]}} ClaimRow */
+
+/** @typedef {{corpus: number, claims: ClaimRow[]}} ClaimsAudit */
+
+/** The listing fields `draftListing` fills from evidence. */
+/** @typedef {{
+ *   name: string, subtitle: string, keywords: string, description: string,
+ *   keywordField: {used: number, limit: number}, coversTerm: boolean,
+ * }} ListingDraft */
+
+/** The listing fields a brief artifact carries. */
+/** @typedef {{name?: string, subtitle?: string, keywords?: string, description?: string}} BriefListing */
+
+/**
+ * The brief artifact `ship scout brief` writes, as `listingFromBrief` reads
+ * it. Every field is optional — the reader fills `null`/`''` for whatever an
+ * older brief lacks — and every field carries the JSON type the writer emits.
+ * @typedef {{
+ *   term?: string, file?: string, generatedAt?: string,
+ *   market?: {country?: string},
+ *   listing?: BriefListing,
+ *   verdict?: {go?: boolean, reasons?: VerdictReason[]},
+ *   metrics?: VerdictMetrics,
+ *   claims?: {claims?: {share: number, claim: string}[]},
+ *   incumbents?: {name: string|null, ratings: number}[],
+ *   demand?: number, competition?: number, opportunity?: number, viability?: number,
+ *   saturation?: {score?: number}, commodity?: {share?: number},
+ * }} ScoutBrief
+ */
+
+/**
+ * The staged listing `listingFromBrief` drafts for `ship new --from`, with the
+ * research notes that outlive it.
+ * @typedef {{
+ *   locale: string, name: string, subtitle: string, keywords: string, description: string,
+ *   promotionalText: string, whatsNew: string, privacyPolicyUrl: string,
+ *   supportUrl: string, marketingUrl: string,
+ *   notes: {
+ *     term: string|null, brief: string|null, market: string|null, researchedAt: string|null,
+ *     scores: {demand: number|null, competition: number|null, opportunity: number|null,
+ *              saturation: number|null, commodity: number|null, viability: number|null},
+ *     evidence: {top3MedianRatings: number|null, exactTitleMatches: number|null,
+ *                freeTop10: number|null, newEntrants: number|null, freshUnproven: number|null,
+ *                claimsAlreadyTaken: string[], incumbents: string[]},
+ *     verdict: string|null,
+ *     rewrite: string[],
+ *   },
+ * }} StagedDraft
+ */
+
 const NUM = new Intl.NumberFormat('en-US');
+/**
+ * Grouped integers for verdict and report text: 82,000, not 82000.
+ * @param {string|number|boolean|null|undefined} n
+ * @returns {string}
+ */
 export const fmt = (n) => NUM.format(Math.round(Number(n) || 0));
 
 /**
@@ -38,7 +203,13 @@ export const GATES = {
 	commodity: 25,
 };
 
-/** A free incumbent with a review moat cannot be beaten on price or on trust, and you have neither. Paid-only incumbents leave "the free one" open. */
+/**
+ * A free incumbent with a review moat cannot be beaten on price or on trust,
+ * and you have neither. Paid-only incumbents leave "the free one" open.
+ * @param {VerdictMetrics} m
+ * @param {GateThresholds} t
+ * @returns {string}
+ */
 const moatMessage = (m, t) =>
 	`top-3 median ${fmt(m.top3MedianRatings)} ratings is over the ${fmt(t.moat)} moat, and ${m.freeTop10} of the top ${m.results ?? 10} are free — you would have to out-review an incumbent and undercut free`;
 
@@ -47,6 +218,9 @@ const moatMessage = (m, t) =>
  * twenty other people shipped into last month passes all of them: no moat, no
  * reviews, weak apps. What it does not have is room, and the reviews that
  * decide the ranking six months out have not been written for anyone yet.
+ * @param {VerdictMetrics} m
+ * @param {GateThresholds} t
+ * @returns {string}
  */
 const saturationMessage = (m, t) =>
 	`saturation ${m.saturation} is over the ${t.saturationCap} cap — ${m.newEntrants ?? 0} of the top ${m.results ?? 10} first shipped inside ${m.freshDays ?? 365} days, ${m.freshUnproven ?? 0} of those still have under 25 ratings and ${m.cloneTitles ?? 0} already put "${m.term}" in the title. This is not an unserved niche, it is a race that started before you; the weak incumbents this term scores well on are other people's launches from last year`;
@@ -56,6 +230,9 @@ const saturationMessage = (m, t) =>
  * shipped the app this brief would produce". An app titled after the query
  * with no ratings is that, whatever its release date, and the count survives
  * two entrenched incumbents keeping the blended saturation score down.
+ * @param {VerdictMetrics} m
+ * @param {GateThresholds} t
+ * @returns {string}
  */
 const clonesMessage = (m, t) =>
 	`${m.clones} of the top ${m.results ?? 10} are already this app — titled after "${m.term}", shipped inside ${m.freshDays ?? 365} days, still under 25 ratings${m.cloneApps?.length ? ` (${m.cloneApps.slice(0, 4).join(', ')})` : ''} — over the ${t.cloneCap} cap. The pipeline that handed you this term handed it to them first; building it again competes with your own idea`;
@@ -67,6 +244,9 @@ const clonesMessage = (m, t) =>
  * in every `<subject> log` category, and that is where the term is deadest.
  * Traction decides which sentence gets printed, because the two failures
  * have opposite shapes and only one of them is survivable by shipping early.
+ * @param {VerdictMetrics} m
+ * @param {GateThresholds} t
+ * @returns {string}
  */
 const commodityMessage = (m, t) =>
 	`${m.commodityMatches ?? 0} of the top ${m.results ?? 10} are already this product — a subject word plus a logging noun, in any order, at any age (${m.commodityApps?.slice(0, 4).join(', ') ?? ''}) — ${m.commodity}% of the page, over the ${t.commodityCap}% cap. ` +
@@ -82,6 +262,7 @@ const commodityMessage = (m, t) =>
  * finding anybody can act on. Order is print order: strength gates first,
  * then the flood gates a strength-only read would miss.
  */
+/** @type {Gate[]} */
 const GATE_TABLE = [
 	{
 		gate: 'moat',
@@ -129,6 +310,7 @@ const GATE_TABLE = [
 	},
 ];
 
+/** @type {GateThresholds} */
 const THRESHOLD_DEFAULTS = {
 	moat: GATES.moat,
 	minVolume: GATES.minVolume,
@@ -142,19 +324,19 @@ const THRESHOLD_DEFAULTS = {
  * Go/no-go on one term. Pure and exported: the thresholds are the product
  * decision, so they get unit tests rather than a live storefront at 1 req/s.
  * The gates themselves are data — see GATE_TABLE.
- * @param {{term:string, results:number, demand:number, exactTitleMatches:number,
- *          top3MedianRatings:number, freeTop10:number, saturation?:number,
- *          newEntrants?:number, freshUnproven?:number, cloneTitles?:number,
- *          clones?:number, cloneApps?:string[], freshDays?:number}} m
- * @param {{moat?:number, minVolume?:number, exactCap?:number, saturationCap?:number,
- *          cloneCap?:number, commodityCap?:number}} [thresholds]
- * @returns {{go:boolean, reasons:{gate:string, value:number, threshold:number, message:string}[]}}
+ * @param {VerdictMetrics} m
+ * @param {Partial<GateThresholds>} [thresholds]
+ * @returns {VerdictResult}
  */
 export function verdict(m, thresholds = {}) {
+	// The Record half is index-signature bookkeeping so the `t[k] = v` loop
+	// below typechecks; the values are always the GateThresholds defaults.
+	/** @type {GateThresholds & Record<string, number>} */
 	const t = { ...THRESHOLD_DEFAULTS };
 	// An explicitly-undefined threshold falls back to the default, exactly as a
 	// destructured parameter default would.
 	for (const [k, v] of Object.entries(thresholds)) if (v !== undefined) t[k] = v;
+	/** @type {VerdictReason[]} */
 	const reasons = [];
 	for (const g of GATE_TABLE) {
 		if (!g.test(m, t)) continue;
@@ -168,6 +350,8 @@ export function verdict(m, thresholds = {}) {
  * Apple keeps 30% in year one, a solo subscription app's median subscriber is
  * gone inside three months, and 2-5% of installs ever subscribe. Above the top
  * of this band ASA is a marketing expense, not acquisition.
+ * @param {number} subPrice
+ * @returns {CpiBand}
  */
 export function cpiBand(subPrice) {
 	const net = subPrice * 0.7;
@@ -183,6 +367,10 @@ export function cpiBand(subPrice) {
 	};
 }
 
+/**
+ * @param {string} s
+ * @returns {string}
+ */
 const titleCase = (s) =>
 	String(s)
 		.split(/\s+/)
@@ -190,9 +378,16 @@ const titleCase = (s) =>
 		.map((w) => w[0].toLocaleUpperCase() + w.slice(1))
 		.join(' ');
 
-/** Longest leading run of whole words that fits `limit` code points; hard-cut if even one does not. */
-export function fitWords(text, limit) {
+/**
+ * Longest leading run of whole words that fits `limit` code points; hard-cut
+ * if even one does not.
+ * @param {string} text
+ * @param {number} limit
+ * @returns {string}
+ */
+function fitWords(text, limit) {
 	const parts = String(text).split(/\s+/).filter(Boolean);
+	/** @type {string[]} */
 	const kept = [];
 	for (const part of parts) {
 		if (charCount([...kept, part].join(' ')) > limit) break;
@@ -213,10 +408,17 @@ export function fitWords(text, limit) {
  *  - `primaryGenreName` is Apple's shelf label, not a query. Nobody searches
  *    "utilities", and it cost a subtitle slot every time it was mined.
  */
+/**
+ * @param {ScoutApp[]} results
+ * @param {string} locale
+ * @returns {string[]}
+ */
 export function categoryVocabulary(results, locale) {
+	/** @type {Set<string>} */
 	const brands = new Set();
 	for (const r of results) for (const w of indexedWords(r.sellerName ?? '', locale)) brands.add(w);
 
+	/** @type {Map<string, number>} */
 	const freq = new Map();
 	for (const r of results)
 		for (const w of indexedWords(r.trackName ?? '', locale)) freq.set(w, (freq.get(w) ?? 0) + 1);
@@ -263,10 +465,18 @@ const NAME_SEPARATOR = /\s*(?:::|:|—|–|-|\||·)\s*/;
  * keyword-coverage warning in `meta lint`. Two narrow detectors that each say
  * why they fired beat one that guesses at brand-ness from text alone.
  */
+/**
+ * @param {string[]} suggestions
+ * @param {string} term
+ * @param {string} [locale]
+ * @returns {Set<string>}
+ */
 export function harvestBrands(suggestions, term, locale = 'en-US') {
 	const needle = String(term ?? '').trim().toLocaleLowerCase();
 	if (!needle) return new Set();
+	/** @type {Set<string>} */
 	const nameSide = new Set();
+	/** @type {Set<string>} */
 	const querySide = new Set();
 	for (const row of suggestions ?? []) {
 		const text = String(row ?? '').toLocaleLowerCase();
@@ -305,6 +515,11 @@ export function harvestBrands(suggestions, term, locale = 'en-US') {
  * Targeting a competitor's name is a deliberate ASA decision — `ship ads plan`
  * builds a Competitor campaign for exactly that — never a listing default.
  */
+/**
+ * @param {string[]} suggestions
+ * @param {{brands?: ReadonlySet<string>, locale?: string, floor?: number, min?: number}} [opts]
+ * @returns {string[]}
+ */
 export function keywordPool(suggestions, { brands = new Set(), locale = 'en-US', floor = 10, min = 2 } = {}) {
 	const support = tokenSupport(suggestions, locale);
 	const stop = stopwordsFor(locale);
@@ -322,6 +537,12 @@ export function keywordPool(suggestions, { brands = new Set(), locale = 'en-US',
  * Harvested queries every token of which the market actually types, for the
  * subtitle draft. A one-query token is somebody's product name — `service link`
  * read like a category phrase and is a company.
+ */
+/**
+ * @param {string[]} suggestions
+ * @param {string} [locale]
+ * @param {{brands?: ReadonlySet<string>, floor?: number, min?: number}} [opts]
+ * @returns {string[]}
  */
 export function supportedPhrases(suggestions, locale = 'en-US', { brands = new Set(), floor = 10, min = 2 } = {}) {
 	const keep = new Set(keywordPool(suggestions, { brands, locale, floor, min }));
@@ -341,6 +562,9 @@ export function supportedPhrases(suggestions, locale = 'en-US', { brands = new S
  * The description is deliberately a skeleton whose last sentence says what to
  * replace it with: it is the one listing field search does not index, so
  * generating prose for it would be writing for nobody.
+ * @param {{term: string, suggestions?: string[], results?: ScoutApp[],
+ *          brands?: ReadonlySet<string>, locale?: string}} opts
+ * @returns {ListingDraft}
  */
 export function draftListing({ term, suggestions = [], results = [], brands = new Set(), locale = 'en-US' }) {
 	const name = fitWords(titleCase(term), 30);
@@ -391,7 +615,12 @@ export function draftListing({ term, suggestions = [], results = [], brands = ne
 	};
 }
 
-/** The six numbers the staged record keeps, exactly as the brief scored them. */
+/**
+ * The six numbers the staged record keeps, exactly as the brief scored them.
+ * @param {ScoutBrief} brief
+ * @returns {{demand: number|null, competition: number|null, opportunity: number|null,
+ *            saturation: number|null, commodity: number|null, viability: number|null}}
+ */
 const briefScores = (brief) => ({
 	demand: brief.demand ?? null,
 	competition: brief.competition ?? null,
@@ -404,8 +633,15 @@ const briefScores = (brief) => ({
 	viability: brief.viability ?? null,
 });
 
-/** The evidence block: the numbers a rewrite argument needs, six weeks later. */
+/**
+ * The evidence block: the numbers a rewrite argument needs, six weeks later.
+ * @param {ScoutBrief} brief
+ * @returns {{top3MedianRatings: number|null, exactTitleMatches: number|null,
+ *            freeTop10: number|null, newEntrants: number|null, freshUnproven: number|null,
+ *            claimsAlreadyTaken: string[], incumbents: string[]}}
+ */
 const briefEvidence = (brief) => {
+	/** @type {Partial<VerdictMetrics>} */
 	const m = brief.metrics ?? {};
 	return {
 		top3MedianRatings: m.top3MedianRatings ?? null,
@@ -418,11 +654,20 @@ const briefEvidence = (brief) => {
 	};
 };
 
-/** `GO`, the NO-GO with its reasons joined, or null when the gates never ran. */
+/**
+ * `GO`, the NO-GO with its reasons joined, or null when the gates never ran.
+ * @param {Partial<VerdictResult>} v
+ * @returns {string|null}
+ */
 const verdictLine = (v) =>
 	v.go === undefined ? null : v.go ? 'GO' : `NO-GO — ${(v.reasons ?? []).map((r) => r.message).join('; ')}`;
 
-/** The rewrite instructions, which outlive the research that produced them. */
+/**
+ * The rewrite instructions, which outlive the research that produced them.
+ * @param {{keywords?: string}} listing
+ * @param {string|undefined} term
+ * @returns {string[]}
+ */
 const rewriteNotes = (listing, term) => [
 	`name, subtitle and keywords are drafted from "${term}" — edit them, then \`ship meta lint\``,
 	`keywords use ${charCount(listing.keywords ?? '')}/100 characters; every space after a comma costs one`,
@@ -434,8 +679,12 @@ const rewriteNotes = (listing, term) => [
  * Brief → the staged listing `ship new --from` writes. The notes block is the
  * point: six weeks later the only surviving record of why these 100 characters
  * were chosen is the one that shipped inside the file they live in.
+ * @param {ScoutBrief} brief
+ * @param {{locale?: string}} [opts]
+ * @returns {StagedDraft}
  */
 export function listingFromBrief(brief, { locale = 'en-US' } = {}) {
+	/** @type {BriefListing} */
 	const l = brief.listing ?? {};
 	return {
 		locale,
@@ -469,6 +718,8 @@ export function listingFromBrief(brief, { locale = 'en-US' } = {}) {
  * `slugify` (Unicode-preserving, for custom-product-page slugs). The two are
  * deliberately not unified: one is an ASCII file stem with a hash fallback,
  * the other a directory-safe page name.
+ * @param {string} term
+ * @returns {string}
  */
 export function slugifyAscii(term) {
 	const ascii = String(term ?? '')

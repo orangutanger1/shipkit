@@ -10,6 +10,8 @@ import { eas } from '../exec.mjs';
 import { ShipError, c, good, heading, info, note, step, warn } from '../log.mjs';
 import { nativeConfigFingerprint, nativeFingerprint, readLock, writeLock } from '../lib/native.mjs';
 
+/** @typedef {import('../lib/util.mjs').Flags} Flags */
+
 export const help = `
 ${c.bold('ship build')} ${c.dim('— EAS cloud build for iOS, and the OTA baseline it leaves behind')}
 
@@ -32,12 +34,16 @@ ${c.bold('Notes')}
   ${c.dim('With --no-wait the baseline is recorded at queue time, not build time.')}
 `;
 
-/** `--no-wait` and `--wait=false` both mean "queue it and return". */
+/** `--no-wait` and `--wait=false` both mean "queue it and return".
+ * @param {Flags} flags
+ * @returns {boolean}
+ */
 function wantsWait(flags) {
 	if (flags['no-wait']) return false;
 	return !(flags.wait === false || flags.wait === 'false');
 }
 
+/** @param {import('../lib/util.mjs').SubCtx} ctx */
 export async function run({ args, flags }) {
 	if (args.length)
 		throw new ShipError(`build: unexpected argument "${args[0]}"`, {
@@ -52,8 +58,9 @@ export async function run({ args, flags }) {
 			].join('\n'),
 		});
 
-	const cfg = await loadConfig();
-	const version = await resolveVersion(cfg, flags.version);
+	// loadConfig() without `optional` throws instead of resolving null.
+	const cfg = /** @type {import('../config.mjs').Config} */ (await loadConfig());
+	const version = await resolveVersion(cfg, /** @type {string|undefined} */ (flags.version));
 	const profile = String(flags.profile ?? cfg.eas.profile);
 	const platform = String(cfg.eas.platform);
 	const wait = wantsWait(flags);
