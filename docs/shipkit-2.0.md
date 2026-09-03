@@ -158,6 +158,8 @@ subscription is a new file, not a refactor. Neither is implemented.
 | **GitHub Pro** | 3,000 Actions min/mo on private repos. macOS bills at **10×** → **300 macOS min/mo**. |
 | **Sentry** (50K errors, 100K txns/mo) | Crash rate + release health into `ship status`. Fills the "quality problem" branch of `analytics diagnose`. |
 | Figma | Already integrated (`lib/figma.mjs`). |
+| **Azure DevOps** (in the age 13–17 Azure offer) | Azure Pipelines: 1 free Microsoft-hosted parallel job, **1,800 min/mo** for private projects — and Azure bills **wall-clock minutes with no OS multiplier**, so those are 1,800 *macOS* minutes against GitHub Pro's 300. See §7.2. |
+| Application Insights (same offer) | Would duplicate Sentry and needs an Azure resource to point at. Skipped — Sentry is a key and a DSN. |
 | Datadog Pro (2 yr), New Relic, Codecov, Azure $100, DigitalOcean $200, Heroku $13/mo | Not needed. Shipkit runs no services and adds none (§42 of the brief). Codecov is redundant with c8 `--100`. |
 
 Not in the pack: any macOS CI credit. Handled in §7.
@@ -416,10 +418,13 @@ avoidance, haptics presence, frame timing, VoiceOver labels.
 | --- | --- | --- |
 | GitHub Actions, **public** repo | free, unlimited, incl. macOS | **Default.** shipkit is public → the harness is developed and self-tested at zero cost. Keep app repos public where you can. |
 | GitHub Actions, private repo (Student Pack → GitHub Pro) | 3,000 min/mo, macOS 10× → **300 macOS min/mo** | Enough for ~15–20 QA runs/month. Gate on release tags, never on push. |
-| **Codemagic** | 500 free macOS M2 min/mo, individual accounts only (not teams) | Overflow lane for private repos. |
+| **Azure Pipelines** (Student Pack → Azure DevOps) | 1,800 min/mo, 1 parallel job, **no OS multiplier** | **Private-repo lane.** 6× GitHub Pro's macOS budget. Caveats to clear once: the free-parallelism grant wants a linked Azure subscription and, for most new orgs, a manual request form; hosted macOS capacity is rationed; and Azure DevOps *public* projects are retired, so this is a private-project lane only. |
+| **Codemagic** | 500 free macOS M2 min/mo, individual accounts only (not teams) | Overflow / fallback if the Azure grant does not come through. |
 | **Xcode Cloud** | 25 compute-hours/mo free with the Apple Developer Program | Needs a real Xcode project (`expo prebuild`) and is awkward for Maestro. Builds already go through EAS. **Not used.** |
 
-EAS handles building, so macOS minutes are spent **only** on QA. Guard rails in the
+Order of preference: public repo on GitHub Actions (free) → Azure Pipelines
+(1,800 min) → GitHub Pro (300 macOS min) → Codemagic (500 min). EAS handles
+building, so macOS minutes are spent **only** on QA. Guard rails in the
 workflow: `concurrency` cancel-in-progress, `timeout-minutes`, and trigger on
 release tag / `workflow_dispatch` only.
 
