@@ -16,6 +16,7 @@ ship scout       before a repo exists: terms · brief · new
 ship research    competitor evidence from the storefront: plan · fetch · capture · verify · index
 ship aso         keyword research: harvest · volume · score · suggest · apply · competitors · audit
 ship design      token and screen contracts: system · spec · review
+ship qa          simulator-free quality gate over the built screens: run · check · baseline
 ship loc         localization: seed · draft · review · lock · status
 ship meta        store listings: lint · stage · pull · apply · migrate · keywords · cpp
 ship shots       screenshots: sizes · capture · render · verify · figma · plan · validate · upload

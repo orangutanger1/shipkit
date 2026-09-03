@@ -35,7 +35,7 @@ import { checkAdsConfig } from './lib/asa.mjs';
 /** The `research` block: which providers, which flows, and the hard fetch budget. */
 /** @typedef {{dir: string, providers: string[], flows: string[], budget: {apps: number, screensPerApp: number, reviewPages: number}}} ResearchConfig */
 /** The `design` block: the token file, and the matrix `ship qa` captures. */
-/** @typedef {{dir: string, system: string, qa: {themes: string[], locales: string[], dynamicType: string[]}}} DesignConfig */
+/** @typedef {{dir: string, system: string, qa: {url: string|null, themes: string[], locales: string[], dynamicType: string[]}}} DesignConfig */
 /** What ship.config.json itself contains. Every block is optional; the
  * defaults fill whatever is absent (see DEFAULTS). */
 /** @typedef {{name?: string, bundleId?: string, version?: string, appDir?: string, asc?: AscConfig, eas?: EasConfig, ota?: OtaConfig, store?: StoreConfig, shots?: ShotsConfig, revenuecat?: RevenuecatConfig, ads?: AdsConfig, aso?: AsoConfig, loc?: LocConfig, analytics?: AnalyticsConfig, price?: PriceConfig, legal?: LegalConfig, product?: ProductConfig, research?: ResearchConfig, design?: DesignConfig}} FileConfig */
@@ -122,7 +122,7 @@ const DEFAULTS = {
 	design: {
 		dir: 'design',
 		system: 'design/system.json',
-		qa: { themes: ['light', 'dark'], locales: ['en-US'], dynamicType: ['default', 'xl'] },
+		qa: { url: null, themes: ['light', 'dark'], locales: ['en-US'], dynamicType: ['default', 'xl'] },
 	},
 };
 

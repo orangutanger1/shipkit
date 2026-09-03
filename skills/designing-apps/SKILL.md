@@ -173,6 +173,44 @@ gradients. Duplicate labels and missing empty states are not countable from
 source alone; they are yours, and `ship design spec --check` catches the second
 one from the spec side.
 
+## The QA loop
+
+There is no simulator on this host, so quality is checked in two tiers and the
+report says which tier proved what. A Tier 1 run reports motion, native
+navigation semantics and VoiceOver as `SKIPPED` — never `PASS`.
+
+```bash
+ship qa                     # capture every screen, write qa/<version>/report.json
+ship qa --url http://…      # the running web build, if design.qa.url is not set
+ship qa check               # gate the report on disk, capturing nothing
+ship qa baseline            # accept the current captures as the visual baseline
+ship qa --tier2 report.json # fold a macOS-lane report in before gating
+```
+
+**Tier 1** drives the app's own React Native Web build in headless Chromium at
+428×926, once per cell of the matrix in `design.qa`: every screen at every
+theme, locale and Dynamic Type step, plus one capture per declared state. The
+build is told which cell to render through query parameters — `qaTheme`,
+`qaState`, `qaLocale`, `qaTextScale` — and a build that ignores them fails the
+dark-mode and state checks rather than passing everything twice.
+
+What it proves, as arithmetic over in-page measurements rather than over pixels:
+horizontal overflow, WCAG AA contrast per text run, tap targets against the 44pt
+HIG minimum, controls under the notch or home indicator, text clipped at a
+larger type step, rendered font sizes against the ramp, states that render the
+default screen, a dark mode that paints the light palette, and drift from the
+recorded baseline.
+
+**Tier 2** is the `macos-latest` runner: `xcrun simctl`, Maestro flows, the
+accessibility tree. Only it can answer motion, native semantics and VoiceOver,
+and only `--tier2` can turn one of those rows green.
+
+**Tier 3** is a physical device in your hand. It is not automated and is not
+pretended to be.
+
+`ship qa` is a required row inside `ship preflight`, which is how it gets teeth
+without a second release path.
+
 ## The order the work goes in
 
 1. `ship research verify && ship research index` — evidence, or you are guessing.
@@ -181,6 +219,8 @@ one from the spec side.
 4. `ship design spec` → write the copy and the success conditions →
    `ship design spec --check`.
 5. Implement against those two files and nothing else, then `ship design review`.
+6. `ship qa` — the screens as built, measured. `ship qa baseline` once they look
+   right, so the next run reports what changed.
 
 Doing 5 before 3 is how an app ends up with a design system reverse-engineered
 from whatever the first screen happened to use.

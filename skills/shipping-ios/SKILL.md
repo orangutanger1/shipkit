@@ -424,10 +424,16 @@ cap: buying installs worth $0.00 is a decision, not a default.
 ## Before claiming a release is done
 
 `ship preflight` is the gate. It checks listing lint, version coherence between
-`app.json` and ASC, review state, a VALID build, an iPhone screenshot set live on
-App Store Connect for the primary locale, Apple's own `validate` plan, RevenueCat
-wiring, reachable legal URLs, and OTA compatibility. Run it and read the output;
-do not assert readiness from the absence of errors elsewhere.
+`app.json` and ASC, the Tier 1 quality report for this version, review state, a
+VALID build, an iPhone screenshot set live on App Store Connect for the primary
+locale, Apple's own `validate` plan, RevenueCat wiring, reachable legal URLs,
+and OTA compatibility. Run it and read the output; do not assert readiness from
+the absence of errors elsewhere.
+
+The quality row is `ship qa` (see the `designing-apps` skill). In a repo with no
+`design/ux.json` it skips; once that spec exists, preflight fails without a
+current report, and a report written for another version counts as no report —
+it is the one that would say PASS about screens this build does not contain.
 
 Preflight owns the mechanical blockers. The review itself is a person, and three
 rules survive every submission that went badly:

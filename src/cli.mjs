@@ -46,6 +46,11 @@ export const COMMANDS = {
 		summary: 'Token and screen contracts: system · spec · review',
 		load: () => import('./commands/design.mjs'),
 	},
+	qa: {
+		group: 'Build',
+		summary: 'Simulator-free quality gate over the built screens: run · check · baseline',
+		load: () => import('./commands/qa.mjs'),
+	},
 	meta: {
 		group: 'Ship',
 		summary: 'Store listings: lint · stage · pull · apply · migrate · keywords · cpp',

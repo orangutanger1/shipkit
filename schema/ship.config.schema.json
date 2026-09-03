@@ -130,7 +130,7 @@
 				"dir": {
 					"type": "string",
 					"default": "store",
-					"description": "Root of the listing tree: staged/ (authored) plus app-info/ and version/<v>/ (generated — never hand-edit)."
+					"description": "Root of the listing tree: staged/ (authored) plus app-info/ and version/<v>/ (generated \u2014 never hand-edit)."
 				},
 				"locales": {
 					"type": "array",
@@ -182,14 +182,14 @@
 						"string",
 						"null"
 					],
-					"description": "Name of the env var holding the public SDK key the app reads at runtime, e.g. EXPO_PUBLIC_RC_IOS_KEY. Name only — never the value."
+					"description": "Name of the env var holding the public SDK key the app reads at runtime, e.g. EXPO_PUBLIC_RC_IOS_KEY. Name only \u2014 never the value."
 				},
 				"key": {
 					"type": [
 						"string",
 						"null"
 					],
-					"description": "Name of the secret-key file under ~/.omp/revenuecat/ (stem, e.g. \"car\"), or an absolute path. Omit it: `ship rc` tries the ambient ~/.omp/revenuecat.key first and, only if that key cannot see projectId, picks the key in ~/.omp/revenuecat/ that can. Name or path only — never the value."
+					"description": "Name of the secret-key file under ~/.omp/revenuecat/ (stem, e.g. \"car\"), or an absolute path. Omit it: `ship rc` tries the ambient ~/.omp/revenuecat.key first and, only if that key cannot see projectId, picks the key in ~/.omp/revenuecat/ that can. Name or path only \u2014 never the value."
 				}
 			}
 		},
@@ -343,7 +343,7 @@
 						"string",
 						"null"
 					],
-					"description": "Published privacy policy. `ship preflight` HEAD-requests it — a dead URL is an automatic review rejection."
+					"description": "Published privacy policy. `ship preflight` HEAD-requests it \u2014 a dead URL is an automatic review rejection."
 				},
 				"supportUrl": {
 					"type": [
@@ -470,6 +470,14 @@
 					"additionalProperties": false,
 					"description": "The matrix `ship qa` captures every screen across.",
 					"properties": {
+						"url": {
+							"type": [
+								"string",
+								"null"
+							],
+							"default": null,
+							"description": "The running RN-Web build `ship qa` drives, e.g. http://localhost:8081. Tier 1 captures nothing without it."
+						},
 						"themes": {
 							"type": "array",
 							"items": {

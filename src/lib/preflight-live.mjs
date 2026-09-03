@@ -2,10 +2,13 @@
 // RevenueCat / legal / OTA checks. Every live check skips — never fails — when
 // credentials are absent, so the offline half can run on a machine that has
 // never seen a key. A skip means "unknown"; only a fail means "you are blocked".
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { ASC, run as exec, which } from '../exec.mjs';
 import { readExpoConfig } from '../config.mjs';
 import { lintListing, readStaged } from './locales.mjs';
 import { otaSafety } from './native.mjs';
+import { readJSONIfExists } from './jsonio.mjs';
 import { apiKey, auditProject, resolveProject } from './revenuecat.mjs';
 import {
 	classifyAsc,
@@ -429,6 +432,43 @@ export async function checkOta(report, cfg, version) {
 	}
 	// Informational only — preflight gates submission, not updates.
 	report[safety.safe ? 'ok' : 'warn']('ota', safety.safe ? 'native surface unchanged since lock' : clean(safety.reason));
+}
+
+/**
+ * The Tier 1 quality gate, folded in as a row rather than a separate command
+ * nobody remembers to run.
+ *
+ * A repo with no `design/ux.json` has nothing for `ship qa` to drive, so this
+ * skips — adopted apps predate the spec and must still be able to submit. Once
+ * the spec exists the report is mandatory, and a report written for a different
+ * version is a stale report, which is worse than none: it is the one that says
+ * PASS about screens this build does not contain.
+ *
+ * @param {import('../log.mjs').Report} report
+ * @param {import('../config.mjs').Config} cfg
+ * @param {string} version
+ */
+export async function checkQa(report, cfg, version) {
+	const spec = join(cfg.paths.design, 'ux.json');
+	if (!existsSync(spec)) {
+		report.skip('qa', 'no design/ux.json in this repo — nothing for `ship qa` to drive');
+		return;
+	}
+	const file = join(cfg.paths.qa, version, 'report.json');
+	const qa = /** @type {any} */ (await readJSONIfExists(file));
+	if (!qa) {
+		report.fail('qa', `no ${file} — run \`ship qa\``);
+		return;
+	}
+	if (qa.version !== version) {
+		report.fail('qa', `${file} reports version ${qa.version}, not ${version} — re-run \`ship qa\``);
+		return;
+	}
+	const { fail = 0, warn = 0, skipped = 0 } = qa.summary ?? {};
+	const tail = `tier ${qa.tier}${skipped ? `, ${skipped} check(s) need the macOS lane` : ''}`;
+	if (fail) report.fail('qa', `${fail} failing check(s) — ${tail}`);
+	else if (warn) report.warn('qa', `${warn} warning(s) — ${tail}`);
+	else report.ok('qa', tail);
 }
 
 /**

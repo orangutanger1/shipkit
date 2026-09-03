@@ -30,6 +30,7 @@ import {
 	checkListing,
 	checkOta,
 	checkPrivacy,
+	checkQa,
 	checkRevenueCat,
 	checkScreenshots,
 	checkValidate,
@@ -81,6 +82,7 @@ Checks, in order:
   ${c.cyan('listing')}      store/staged locales lint clean
   ${c.cyan('version')}      ship.config.json agrees with app.json
   ${c.cyan('encryption')}   app.json answers Apple's export compliance question
+  ${c.cyan('qa')}           the Tier 1 quality report for this version is clean
   ${c.cyan('asc')}          the version exists and what state it is in
   ${c.cyan('build')}        newest build and whether it processed
   ${c.cyan('screenshots')}  the primary locale has an iPhone set live on ASC
@@ -134,6 +136,7 @@ async function preflight({ flags }) {
 	await checkListing(report, cfg);
 	await checkVersion(report, cfg, version);
 	await checkEncryption(report, cfg);
+	await checkQa(report, cfg, version);
 
 	// A dead key or missing asc is "unknown", not "the version does not exist".
 	// Each live check below still probes on its own, so short-circuiting here
