@@ -1,0 +1,210 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://github.com/mayfield/shipkit/schema/qa-report.schema.json",
+	"title": "qa report",
+	"description": "qa/<version>/report.json, consumed by `ship preflight`. Every check declares the tier that can prove it: a Tier-1 run reports native, motion and accessibility as SKIPPED and never as PASS.",
+	"type": "object",
+	"required": [
+		"version",
+		"generatedAt",
+		"tier",
+		"checks",
+		"summary"
+	],
+	"additionalProperties": false,
+	"patternProperties": {
+		"^_": {
+			"description": "Annotation kept beside the data it explains. Ignored by every loader."
+		}
+	},
+	"properties": {
+		"$schema": {
+			"type": "string"
+		},
+		"version": {
+			"type": "string",
+			"minLength": 1
+		},
+		"generatedAt": {
+			"type": "string",
+			"format": "date-time"
+		},
+		"tier": {
+			"type": "integer",
+			"minimum": 1,
+			"maximum": 2,
+			"description": "Highest tier that actually ran. Tier 1 is headless RN-Web here; tier 2 is the macOS simulator lane."
+		},
+		"matrix": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"themes": {
+					"type": "array",
+					"items": {
+						"enum": [
+							"light",
+							"dark"
+						]
+					}
+				},
+				"locales": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"dynamicType": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				}
+			}
+		},
+		"checks": {
+			"type": "array",
+			"minItems": 1,
+			"items": {
+				"type": "object",
+				"required": [
+					"id",
+					"category",
+					"requiresTier",
+					"status"
+				],
+				"additionalProperties": false,
+				"properties": {
+					"id": {
+						"type": "string",
+						"pattern": "^[a-z][a-z0-9-]*$"
+					},
+					"category": {
+						"enum": [
+							"layout",
+							"contrast",
+							"typography",
+							"spacing",
+							"tap-target",
+							"safe-area",
+							"state",
+							"dynamic-type",
+							"dark-mode",
+							"regression",
+							"motion",
+							"native",
+							"accessibility"
+						]
+					},
+					"requiresTier": {
+						"type": "integer",
+						"minimum": 1,
+						"maximum": 2
+					},
+					"status": {
+						"enum": [
+							"PASS",
+							"WARN",
+							"FAIL",
+							"SKIPPED"
+						]
+					},
+					"screen": {
+						"type": "string"
+					},
+					"flow": {
+						"type": "string",
+						"enum": [
+							"first-launch",
+							"welcome",
+							"value-prop",
+							"personalization",
+							"permission",
+							"account",
+							"first-value",
+							"home",
+							"navigation",
+							"search",
+							"discovery",
+							"detail",
+							"create",
+							"edit",
+							"settings",
+							"paywall",
+							"trial",
+							"upsell",
+							"feature-gate",
+							"pricing",
+							"restore",
+							"re-engagement",
+							"notification",
+							"streak",
+							"progress",
+							"reminder",
+							"empty",
+							"loading",
+							"error",
+							"offline",
+							"undo",
+							"destructive"
+						],
+						"description": "A flow id from src/lib/flows.mjs. The closed vocabulary is the join key across research, ux spec, analytics and QA."
+					},
+					"message": {
+						"type": "string",
+						"maxLength": 300
+					},
+					"evidence": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "Repo-relative capture paths. A FAIL without evidence is an assertion, not a finding."
+					},
+					"measured": {
+						"type": [
+							"number",
+							"string",
+							"null"
+						]
+					},
+					"threshold": {
+						"type": [
+							"number",
+							"string",
+							"null"
+						]
+					}
+				}
+			}
+		},
+		"summary": {
+			"type": "object",
+			"required": [
+				"pass",
+				"warn",
+				"fail",
+				"skipped"
+			],
+			"additionalProperties": false,
+			"properties": {
+				"pass": {
+					"type": "integer",
+					"minimum": 0
+				},
+				"warn": {
+					"type": "integer",
+					"minimum": 0
+				},
+				"fail": {
+					"type": "integer",
+					"minimum": 0
+				},
+				"skipped": {
+					"type": "integer",
+					"minimum": 0
+				}
+			}
+		}
+	}
+}

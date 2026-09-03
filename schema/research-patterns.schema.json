@@ -1,0 +1,134 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://github.com/mayfield/shipkit/schema/research-patterns.schema.json",
+	"title": "research patterns",
+	"description": "Claims at research/<slug>/patterns.json. Every claim separates what the references show from what the agent infers, and `research verify` fails an `evidence` claim with fewer than 3 refs.",
+	"type": "object",
+	"required": [
+		"claims"
+	],
+	"additionalProperties": false,
+	"patternProperties": {
+		"^_": {
+			"description": "Annotation kept beside the data it explains. Ignored by every loader."
+		}
+	},
+	"properties": {
+		"$schema": {
+			"type": "string"
+		},
+		"generatedAt": {
+			"type": "string",
+			"format": "date-time"
+		},
+		"claims": {
+			"type": "array",
+			"items": {
+				"type": "object",
+				"required": [
+					"claim",
+					"kind",
+					"refs",
+					"counterexamples",
+					"confidence"
+				],
+				"additionalProperties": false,
+				"properties": {
+					"id": {
+						"type": "string",
+						"pattern": "^claim_[0-9a-z-]{1,40}$"
+					},
+					"claim": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 300
+					},
+					"kind": {
+						"enum": [
+							"evidence",
+							"hypothesis"
+						],
+						"description": "evidence needs >=3 refs; hypothesis needs >=1 and must name its assumptions."
+					},
+					"flow": {
+						"type": "string",
+						"enum": [
+							"first-launch",
+							"welcome",
+							"value-prop",
+							"personalization",
+							"permission",
+							"account",
+							"first-value",
+							"home",
+							"navigation",
+							"search",
+							"discovery",
+							"detail",
+							"create",
+							"edit",
+							"settings",
+							"paywall",
+							"trial",
+							"upsell",
+							"feature-gate",
+							"pricing",
+							"restore",
+							"re-engagement",
+							"notification",
+							"streak",
+							"progress",
+							"reminder",
+							"empty",
+							"loading",
+							"error",
+							"offline",
+							"undo",
+							"destructive"
+						],
+						"description": "A flow id from src/lib/flows.mjs. The closed vocabulary is the join key across research, ux spec, analytics and QA."
+					},
+					"refs": {
+						"type": "array",
+						"minItems": 1,
+						"uniqueItems": true,
+						"items": {
+							"type": "string",
+							"pattern": "^ref_[0-9a-f]{6,32}$"
+						}
+					},
+					"counterexamples": {
+						"type": "array",
+						"uniqueItems": true,
+						"items": {
+							"type": "string",
+							"pattern": "^ref_[0-9a-f]{6,32}$"
+						},
+						"description": "Required field, may be empty. Present so the agent is forced to look for one."
+					},
+					"confidence": {
+						"enum": [
+							"high",
+							"medium",
+							"low"
+						]
+					},
+					"assumptions": {
+						"type": "array",
+						"items": {
+							"type": "string",
+							"maxLength": 200
+						}
+					},
+					"themeLabels": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "themes.json labels this claim is grounded in, when it comes from reviews rather than screens."
+					}
+				}
+			}
+		}
+	}
+}

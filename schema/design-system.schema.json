@@ -1,0 +1,879 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://github.com/mayfield/shipkit/schema/design-system.schema.json",
+	"title": "design system",
+	"description": "design/system.json — the token contract. The implementing agent may not use a colour, radius, duration or type step that is not in this file, which is what makes a generated app look designed rather than assembled.",
+	"type": "object",
+	"required": [
+		"brand",
+		"color",
+		"type",
+		"spacing",
+		"radii",
+		"motion"
+	],
+	"additionalProperties": false,
+	"patternProperties": {
+		"^_": {
+			"description": "Annotation kept beside the data it explains. Ignored by every loader."
+		}
+	},
+	"$defs": {
+		"citation": {
+			"type": "string",
+			"pattern": "^(ref_[0-9a-f]{6,32}|claim_[0-9a-z-]{1,40}|HIG:[A-Za-z0-9./-]+)$",
+			"description": "Where this value comes from: a reference id, a patterns.json claim id, or a HIG rule. `ship design system --check` fails an uncited token — an invented colour is the failure mode this whole file exists to stop."
+		}
+	},
+	"properties": {
+		"$schema": {
+			"type": "string"
+		},
+		"generatedAt": {
+			"type": "string",
+			"format": "date-time"
+		},
+		"brand": {
+			"type": "object",
+			"required": [
+				"name",
+				"direction"
+			],
+			"additionalProperties": false,
+			"properties": {
+				"name": {
+					"type": "string",
+					"minLength": 1
+				},
+				"direction": {
+					"type": "string",
+					"minLength": 1,
+					"maxLength": 200,
+					"description": "The one-sentence design direction every token answers to."
+				},
+				"rationale": {
+					"type": "string",
+					"maxLength": 2000
+				}
+			}
+		},
+		"color": {
+			"type": "object",
+			"required": [
+				"accentHue",
+				"themes"
+			],
+			"additionalProperties": false,
+			"properties": {
+				"accentHue": {
+					"type": "integer",
+					"minimum": 0,
+					"maximum": 359,
+					"description": "Exactly one accent hue. Multiple accents is the most common tell of a generated interface, so the schema permits only one."
+				},
+				"themes": {
+					"type": "object",
+					"required": [
+						"light",
+						"dark"
+					],
+					"additionalProperties": false,
+					"properties": {
+						"light": {
+							"type": "object",
+							"required": [
+								"background",
+								"surface",
+								"surfaceAlt",
+								"text",
+								"textMuted",
+								"textInverse",
+								"accent",
+								"accentText",
+								"border",
+								"success",
+								"warning",
+								"danger"
+							],
+							"additionalProperties": false,
+							"properties": {
+								"background": {
+									"type": "object",
+									"required": [
+										"value",
+										"cite"
+									],
+									"additionalProperties": false,
+									"properties": {
+										"value": {
+											"type": "string",
+											"pattern": "^#[0-9a-fA-F]{6}$"
+										},
+										"cite": {
+											"$ref": "#/$defs/citation"
+										},
+										"note": {
+											"type": "string",
+											"maxLength": 200
+										}
+									}
+								},
+								"surface": {
+									"type": "object",
+									"required": [
+										"value",
+										"cite"
+									],
+									"additionalProperties": false,
+									"properties": {
+										"value": {
+											"type": "string",
+											"pattern": "^#[0-9a-fA-F]{6}$"
+										},
+										"cite": {
+											"$ref": "#/$defs/citation"
+										},
+										"note": {
+											"type": "string",
+											"maxLength": 200
+										}
+									}
+								},
+								"surfaceAlt": {
+									"type": "object",
+									"required": [
+										"value",
+										"cite"
+									],
+									"additionalProperties": false,
+									"properties": {
+										"value": {
+											"type": "string",
+											"pattern": "^#[0-9a-fA-F]{6}$"
+										},
+										"cite": {
+											"$ref": "#/$defs/citation"
+										},
+										"note": {
+											"type": "string",
+											"maxLength": 200
+										}
+									}
+								},
+								"text": {
+									"type": "object",
+									"required": [
+										"value",
+										"cite"
+									],
+									"additionalProperties": false,
+									"properties": {
+										"value": {
+											"type": "string",
+											"pattern": "^#[0-9a-fA-F]{6}$"
+										},
+										"cite": {
+											"$ref": "#/$defs/citation"
+										},
+										"note": {
+											"type": "string",
+											"maxLength": 200
+										}
+									}
+								},
+								"textMuted": {
+									"type": "object",
+									"required": [
+										"value",
+										"cite"
+									],
+									"additionalProperties": false,
+									"properties": {
+										"value": {
+											"type": "string",
+											"pattern": "^#[0-9a-fA-F]{6}$"
+										},
+										"cite": {
+											"$ref": "#/$defs/citation"
+										},
+										"note": {
+											"type": "string",
+											"maxLength": 200
+										}
+									}
+								},
+								"textInverse": {
+									"type": "object",
+									"required": [
+										"value",
+										"cite"
+									],
+									"additionalProperties": false,
+									"properties": {
+										"value": {
+											"type": "string",
+											"pattern": "^#[0-9a-fA-F]{6}$"
+										},
+										"cite": {
+											"$ref": "#/$defs/citation"
+										},
+										"note": {
+											"type": "string",
+											"maxLength": 200
+										}
+									}
+								},
+								"accent": {
+									"type": "object",
+									"required": [
+										"value",
+										"cite"
+									],
+									"additionalProperties": false,
+									"properties": {
+										"value": {
+											"type": "string",
+											"pattern": "^#[0-9a-fA-F]{6}$"
+										},
+										"cite": {
+											"$ref": "#/$defs/citation"
+										},
+										"note": {
+											"type": "string",
+											"maxLength": 200
+										}
+									}
+								},
+								"accentText": {
+									"type": "object",
+									"required": [
+										"value",
+										"cite"
+									],
+									"additionalProperties": false,
+									"properties": {
+										"value": {
+											"type": "string",
+											"pattern": "^#[0-9a-fA-F]{6}$"
+										},
+										"cite": {
+											"$ref": "#/$defs/citation"
+										},
+										"note": {
+											"type": "string",
+											"maxLength": 200
+										}
+									}
+								},
+								"border": {
+									"type": "object",
+									"required": [
+										"value",
+										"cite"
+									],
+									"additionalProperties": false,
+									"properties": {
+										"value": {
+											"type": "string",
+											"pattern": "^#[0-9a-fA-F]{6}$"
+										},
+										"cite": {
+											"$ref": "#/$defs/citation"
+										},
+										"note": {
+											"type": "string",
+											"maxLength": 200
+										}
+									}
+								},
+								"success": {
+									"type": "object",
+									"required": [
+										"value",
+										"cite"
+									],
+									"additionalProperties": false,
+									"properties": {
+										"value": {
+											"type": "string",
+											"pattern": "^#[0-9a-fA-F]{6}$"
+										},
+										"cite": {
+											"$ref": "#/$defs/citation"
+										},
+										"note": {
+											"type": "string",
+											"maxLength": 200
+										}
+									}
+								},
+								"warning": {
+									"type": "object",
+									"required": [
+										"value",
+										"cite"
+									],
+									"additionalProperties": false,
+									"properties": {
+										"value": {
+											"type": "string",
+											"pattern": "^#[0-9a-fA-F]{6}$"
+										},
+										"cite": {
+											"$ref": "#/$defs/citation"
+										},
+										"note": {
+											"type": "string",
+											"maxLength": 200
+										}
+									}
+								},
+								"danger": {
+									"type": "object",
+									"required": [
+										"value",
+										"cite"
+									],
+									"additionalProperties": false,
+									"properties": {
+										"value": {
+											"type": "string",
+											"pattern": "^#[0-9a-fA-F]{6}$"
+										},
+										"cite": {
+											"$ref": "#/$defs/citation"
+										},
+										"note": {
+											"type": "string",
+											"maxLength": 200
+										}
+									}
+								}
+							}
+						},
+						"dark": {
+							"type": "object",
+							"required": [
+								"background",
+								"surface",
+								"surfaceAlt",
+								"text",
+								"textMuted",
+								"textInverse",
+								"accent",
+								"accentText",
+								"border",
+								"success",
+								"warning",
+								"danger"
+							],
+							"additionalProperties": false,
+							"properties": {
+								"background": {
+									"type": "object",
+									"required": [
+										"value",
+										"cite"
+									],
+									"additionalProperties": false,
+									"properties": {
+										"value": {
+											"type": "string",
+											"pattern": "^#[0-9a-fA-F]{6}$"
+										},
+										"cite": {
+											"$ref": "#/$defs/citation"
+										},
+										"note": {
+											"type": "string",
+											"maxLength": 200
+										}
+									}
+								},
+								"surface": {
+									"type": "object",
+									"required": [
+										"value",
+										"cite"
+									],
+									"additionalProperties": false,
+									"properties": {
+										"value": {
+											"type": "string",
+											"pattern": "^#[0-9a-fA-F]{6}$"
+										},
+										"cite": {
+											"$ref": "#/$defs/citation"
+										},
+										"note": {
+											"type": "string",
+											"maxLength": 200
+										}
+									}
+								},
+								"surfaceAlt": {
+									"type": "object",
+									"required": [
+										"value",
+										"cite"
+									],
+									"additionalProperties": false,
+									"properties": {
+										"value": {
+											"type": "string",
+											"pattern": "^#[0-9a-fA-F]{6}$"
+										},
+										"cite": {
+											"$ref": "#/$defs/citation"
+										},
+										"note": {
+											"type": "string",
+											"maxLength": 200
+										}
+									}
+								},
+								"text": {
+									"type": "object",
+									"required": [
+										"value",
+										"cite"
+									],
+									"additionalProperties": false,
+									"properties": {
+										"value": {
+											"type": "string",
+											"pattern": "^#[0-9a-fA-F]{6}$"
+										},
+										"cite": {
+											"$ref": "#/$defs/citation"
+										},
+										"note": {
+											"type": "string",
+											"maxLength": 200
+										}
+									}
+								},
+								"textMuted": {
+									"type": "object",
+									"required": [
+										"value",
+										"cite"
+									],
+									"additionalProperties": false,
+									"properties": {
+										"value": {
+											"type": "string",
+											"pattern": "^#[0-9a-fA-F]{6}$"
+										},
+										"cite": {
+											"$ref": "#/$defs/citation"
+										},
+										"note": {
+											"type": "string",
+											"maxLength": 200
+										}
+									}
+								},
+								"textInverse": {
+									"type": "object",
+									"required": [
+										"value",
+										"cite"
+									],
+									"additionalProperties": false,
+									"properties": {
+										"value": {
+											"type": "string",
+											"pattern": "^#[0-9a-fA-F]{6}$"
+										},
+										"cite": {
+											"$ref": "#/$defs/citation"
+										},
+										"note": {
+											"type": "string",
+											"maxLength": 200
+										}
+									}
+								},
+								"accent": {
+									"type": "object",
+									"required": [
+										"value",
+										"cite"
+									],
+									"additionalProperties": false,
+									"properties": {
+										"value": {
+											"type": "string",
+											"pattern": "^#[0-9a-fA-F]{6}$"
+										},
+										"cite": {
+											"$ref": "#/$defs/citation"
+										},
+										"note": {
+											"type": "string",
+											"maxLength": 200
+										}
+									}
+								},
+								"accentText": {
+									"type": "object",
+									"required": [
+										"value",
+										"cite"
+									],
+									"additionalProperties": false,
+									"properties": {
+										"value": {
+											"type": "string",
+											"pattern": "^#[0-9a-fA-F]{6}$"
+										},
+										"cite": {
+											"$ref": "#/$defs/citation"
+										},
+										"note": {
+											"type": "string",
+											"maxLength": 200
+										}
+									}
+								},
+								"border": {
+									"type": "object",
+									"required": [
+										"value",
+										"cite"
+									],
+									"additionalProperties": false,
+									"properties": {
+										"value": {
+											"type": "string",
+											"pattern": "^#[0-9a-fA-F]{6}$"
+										},
+										"cite": {
+											"$ref": "#/$defs/citation"
+										},
+										"note": {
+											"type": "string",
+											"maxLength": 200
+										}
+									}
+								},
+								"success": {
+									"type": "object",
+									"required": [
+										"value",
+										"cite"
+									],
+									"additionalProperties": false,
+									"properties": {
+										"value": {
+											"type": "string",
+											"pattern": "^#[0-9a-fA-F]{6}$"
+										},
+										"cite": {
+											"$ref": "#/$defs/citation"
+										},
+										"note": {
+											"type": "string",
+											"maxLength": 200
+										}
+									}
+								},
+								"warning": {
+									"type": "object",
+									"required": [
+										"value",
+										"cite"
+									],
+									"additionalProperties": false,
+									"properties": {
+										"value": {
+											"type": "string",
+											"pattern": "^#[0-9a-fA-F]{6}$"
+										},
+										"cite": {
+											"$ref": "#/$defs/citation"
+										},
+										"note": {
+											"type": "string",
+											"maxLength": 200
+										}
+									}
+								},
+								"danger": {
+									"type": "object",
+									"required": [
+										"value",
+										"cite"
+									],
+									"additionalProperties": false,
+									"properties": {
+										"value": {
+											"type": "string",
+											"pattern": "^#[0-9a-fA-F]{6}$"
+										},
+										"cite": {
+											"$ref": "#/$defs/citation"
+										},
+										"note": {
+											"type": "string",
+											"maxLength": 200
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"type": {
+			"type": "object",
+			"required": [
+				"family",
+				"ramp"
+			],
+			"additionalProperties": false,
+			"properties": {
+				"family": {
+					"type": "object",
+					"required": [
+						"text"
+					],
+					"additionalProperties": false,
+					"properties": {
+						"text": {
+							"type": "string"
+						},
+						"display": {
+							"type": "string"
+						},
+						"mono": {
+							"type": "string"
+						}
+					}
+				},
+				"ramp": {
+					"type": "array",
+					"minItems": 4,
+					"items": {
+						"type": "object",
+						"required": [
+							"name",
+							"size",
+							"lineHeight",
+							"weight",
+							"cite"
+						],
+						"additionalProperties": false,
+						"properties": {
+							"name": {
+								"type": "string",
+								"pattern": "^[a-z][a-zA-Z0-9]*$"
+							},
+							"size": {
+								"type": "number",
+								"minimum": 8
+							},
+							"lineHeight": {
+								"type": "number",
+								"minimum": 8
+							},
+							"weight": {
+								"type": "integer",
+								"minimum": 100,
+								"maximum": 900
+							},
+							"tracking": {
+								"type": "number"
+							},
+							"role": {
+								"type": "string"
+							},
+							"cite": {
+								"$ref": "#/$defs/citation"
+							}
+						}
+					}
+				}
+			}
+		},
+		"spacing": {
+			"type": "object",
+			"required": [
+				"base",
+				"scale",
+				"cite"
+			],
+			"additionalProperties": false,
+			"properties": {
+				"base": {
+					"enum": [
+						4,
+						8
+					],
+					"description": "A single series. Mixed 4pt and 6pt spacing is why generated layouts read as noisy."
+				},
+				"scale": {
+					"type": "array",
+					"minItems": 4,
+					"uniqueItems": true,
+					"items": {
+						"type": "number",
+						"minimum": 0
+					}
+				},
+				"cite": {
+					"$ref": "#/$defs/citation"
+				}
+			}
+		},
+		"radii": {
+			"type": "object",
+			"minProperties": 1,
+			"additionalProperties": {
+				"type": "object",
+				"required": [
+					"value",
+					"cite"
+				],
+				"additionalProperties": false,
+				"properties": {
+					"value": {
+						"type": "number",
+						"minimum": 0
+					},
+					"cite": {
+						"$ref": "#/$defs/citation"
+					},
+					"note": {
+						"type": "string",
+						"maxLength": 200
+					}
+				}
+			}
+		},
+		"elevation": {
+			"type": "object",
+			"additionalProperties": {
+				"type": "object",
+				"required": [
+					"value",
+					"cite"
+				],
+				"additionalProperties": false,
+				"properties": {
+					"value": {
+						"type": "string"
+					},
+					"cite": {
+						"$ref": "#/$defs/citation"
+					},
+					"note": {
+						"type": "string",
+						"maxLength": 200
+					}
+				}
+			}
+		},
+		"motion": {
+			"type": "object",
+			"required": [
+				"durations",
+				"curves"
+			],
+			"additionalProperties": false,
+			"properties": {
+				"durations": {
+					"type": "object",
+					"additionalProperties": {
+						"type": "object",
+						"required": [
+							"value",
+							"cite"
+						],
+						"additionalProperties": false,
+						"properties": {
+							"value": {
+								"type": "integer",
+								"minimum": 0,
+								"maximum": 1000
+							},
+							"cite": {
+								"$ref": "#/$defs/citation"
+							},
+							"note": {
+								"type": "string",
+								"maxLength": 200
+							}
+						}
+					}
+				},
+				"curves": {
+					"type": "object",
+					"additionalProperties": {
+						"type": "object",
+						"required": [
+							"value",
+							"cite"
+						],
+						"additionalProperties": false,
+						"properties": {
+							"value": {
+								"type": "string",
+								"minLength": 1
+							},
+							"cite": {
+								"$ref": "#/$defs/citation"
+							},
+							"note": {
+								"type": "string",
+								"maxLength": 200
+							}
+						}
+					}
+				},
+				"reducedMotion": {
+					"type": "string",
+					"maxLength": 300,
+					"description": "What the system does when the OS asks for reduced motion. Required reading for the implementing agent; a missing answer means it will animate anyway."
+				}
+			}
+		},
+		"haptics": {
+			"type": "object",
+			"description": "Keyed by \"<flow>.<verb>\" so the haptics map speaks the same vocabulary as analytics.",
+			"patternProperties": {
+				"^(first-launch|welcome|value-prop|personalization|permission|account|first-value|home|navigation|search|discovery|detail|create|edit|settings|paywall|trial|upsell|feature-gate|pricing|restore|re-engagement|notification|streak|progress|reminder|empty|loading|error|offline|undo|destructive)\\.(viewed|started|completed|skipped|dismissed|failed|granted|denied)$": {
+					"type": "object",
+					"required": [
+						"value",
+						"cite"
+					],
+					"additionalProperties": false,
+					"properties": {
+						"value": {
+							"enum": [
+								"selection",
+								"impactLight",
+								"impactMedium",
+								"impactHeavy",
+								"success",
+								"warning",
+								"error"
+							]
+						},
+						"cite": {
+							"$ref": "#/$defs/citation"
+						},
+						"note": {
+							"type": "string",
+							"maxLength": 200
+						}
+					}
+				}
+			},
+			"additionalProperties": false
+		}
+	}
+}

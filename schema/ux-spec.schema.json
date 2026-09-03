@@ -1,0 +1,297 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://github.com/mayfield/shipkit/schema/ux-spec.schema.json",
+	"title": "ux spec",
+	"description": "design/ux.json — the sole build contract. Every screen names its flow, its states, its analytics events and, where it sells, its RevenueCat ids, so `ship qa`, `ship analytics` and `ship rc audit` all read the same file the app was built from.",
+	"type": "object",
+	"required": [
+		"screens",
+		"flows"
+	],
+	"additionalProperties": false,
+	"patternProperties": {
+		"^_": {
+			"description": "Annotation kept beside the data it explains. Ignored by every loader."
+		}
+	},
+	"properties": {
+		"$schema": {
+			"type": "string"
+		},
+		"generatedAt": {
+			"type": "string",
+			"format": "date-time"
+		},
+		"screens": {
+			"type": "array",
+			"minItems": 1,
+			"items": {
+				"type": "object",
+				"required": [
+					"id",
+					"route",
+					"flow",
+					"purpose",
+					"states"
+				],
+				"additionalProperties": false,
+				"properties": {
+					"id": {
+						"type": "string",
+						"pattern": "^[a-z][a-z0-9-]*$"
+					},
+					"route": {
+						"type": "string",
+						"pattern": "^/",
+						"description": "expo-router path. `ship qa` drives the web build through exactly these routes, so a route that does not exist is a failing check rather than a stale doc."
+					},
+					"flow": {
+						"type": "string",
+						"enum": [
+							"first-launch",
+							"welcome",
+							"value-prop",
+							"personalization",
+							"permission",
+							"account",
+							"first-value",
+							"home",
+							"navigation",
+							"search",
+							"discovery",
+							"detail",
+							"create",
+							"edit",
+							"settings",
+							"paywall",
+							"trial",
+							"upsell",
+							"feature-gate",
+							"pricing",
+							"restore",
+							"re-engagement",
+							"notification",
+							"streak",
+							"progress",
+							"reminder",
+							"empty",
+							"loading",
+							"error",
+							"offline",
+							"undo",
+							"destructive"
+						],
+						"description": "A flow id from src/lib/flows.mjs. The closed vocabulary is the join key across research, ux spec, analytics and QA."
+					},
+					"purpose": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 200
+					},
+					"components": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "components.json ids, which is where the RN/Expo primitive behind each one is named."
+					},
+					"copy": {
+						"type": "object",
+						"additionalProperties": {
+							"type": "string"
+						},
+						"description": "Every user-visible string, keyed. Nothing is invented at implementation time."
+					},
+					"states": {
+						"type": "array",
+						"minItems": 1,
+						"uniqueItems": true,
+						"items": {
+							"enum": [
+								"default",
+								"empty",
+								"loading",
+								"error",
+								"offline",
+								"success",
+								"disabled"
+							]
+						},
+						"description": "Which states must exist. QA captures one image per state, so an unlisted state is an unbuilt state."
+					},
+					"events": {
+						"type": "array",
+						"items": {
+							"type": "object",
+							"required": [
+								"name",
+								"flow",
+								"verb"
+							],
+							"additionalProperties": false,
+							"properties": {
+								"name": {
+									"type": "string",
+									"pattern": "^[a-z][a-z0-9_]*$"
+								},
+								"flow": {
+									"type": "string",
+									"enum": [
+										"first-launch",
+										"welcome",
+										"value-prop",
+										"personalization",
+										"permission",
+										"account",
+										"first-value",
+										"home",
+										"navigation",
+										"search",
+										"discovery",
+										"detail",
+										"create",
+										"edit",
+										"settings",
+										"paywall",
+										"trial",
+										"upsell",
+										"feature-gate",
+										"pricing",
+										"restore",
+										"re-engagement",
+										"notification",
+										"streak",
+										"progress",
+										"reminder",
+										"empty",
+										"loading",
+										"error",
+										"offline",
+										"undo",
+										"destructive"
+									],
+									"description": "A flow id from src/lib/flows.mjs. The closed vocabulary is the join key across research, ux spec, analytics and QA."
+								},
+								"verb": {
+									"enum": [
+										"viewed",
+										"started",
+										"completed",
+										"skipped",
+										"dismissed",
+										"failed",
+										"granted",
+										"denied"
+									]
+								},
+								"when": {
+									"type": "string",
+									"maxLength": 200
+								}
+							}
+						}
+					},
+					"monetization": {
+						"type": "object",
+						"required": [
+							"offering",
+							"entitlement"
+						],
+						"additionalProperties": false,
+						"description": "RevenueCat ids on the screen that sells, so `ship rc audit` validates the implemented ladder against this spec instead of against a human’s memory.",
+						"properties": {
+							"offering": {
+								"type": "string",
+								"minLength": 1
+							},
+							"entitlement": {
+								"type": "string",
+								"minLength": 1
+							},
+							"packages": {
+								"type": "array",
+								"items": {
+									"type": "string"
+								}
+							}
+						}
+					},
+					"notes": {
+						"type": "string",
+						"maxLength": 500
+					}
+				}
+			}
+		},
+		"flows": {
+			"type": "array",
+			"minItems": 1,
+			"items": {
+				"type": "object",
+				"required": [
+					"id",
+					"screens"
+				],
+				"additionalProperties": false,
+				"properties": {
+					"id": {
+						"type": "string",
+						"enum": [
+							"first-launch",
+							"welcome",
+							"value-prop",
+							"personalization",
+							"permission",
+							"account",
+							"first-value",
+							"home",
+							"navigation",
+							"search",
+							"discovery",
+							"detail",
+							"create",
+							"edit",
+							"settings",
+							"paywall",
+							"trial",
+							"upsell",
+							"feature-gate",
+							"pricing",
+							"restore",
+							"re-engagement",
+							"notification",
+							"streak",
+							"progress",
+							"reminder",
+							"empty",
+							"loading",
+							"error",
+							"offline",
+							"undo",
+							"destructive"
+						],
+						"description": "A flow id from src/lib/flows.mjs. The closed vocabulary is the join key across research, ux spec, analytics and QA."
+					},
+					"screens": {
+						"type": "array",
+						"minItems": 1,
+						"items": {
+							"type": "string",
+							"pattern": "^[a-z][a-z0-9-]*$"
+						},
+						"description": "Screen ids in order. The order is the journey; QA walks it."
+					},
+					"entry": {
+						"type": "string",
+						"maxLength": 200
+					},
+					"success": {
+						"type": "string",
+						"maxLength": 200,
+						"description": "What counts as completing this flow. Becomes the funnel’s terminal event."
+					}
+				}
+			}
+		}
+	}
+}

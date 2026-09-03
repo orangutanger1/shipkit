@@ -1,0 +1,130 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://github.com/mayfield/shipkit/schema/research-themes.schema.json",
+	"title": "research review themes",
+	"description": "Synthesized themes at research/<slug>/themes.json. The agent writes label/kind/quotes; ratingSkew, support and version correlation are computed in Node so the numbers cannot be guessed.",
+	"type": "object",
+	"required": [
+		"themes"
+	],
+	"additionalProperties": false,
+	"patternProperties": {
+		"^_": {
+			"description": "Annotation kept beside the data it explains. Ignored by every loader."
+		}
+	},
+	"properties": {
+		"$schema": {
+			"type": "string"
+		},
+		"generatedAt": {
+			"type": "string",
+			"format": "date-time"
+		},
+		"themes": {
+			"type": "array",
+			"items": {
+				"type": "object",
+				"required": [
+					"label",
+					"kind",
+					"support",
+					"reviewIds"
+				],
+				"additionalProperties": false,
+				"properties": {
+					"label": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 60
+					},
+					"kind": {
+						"enum": [
+							"pain",
+							"job",
+							"request",
+							"churn-reason",
+							"praise"
+						]
+					},
+					"trackId": {
+						"type": "integer",
+						"minimum": 1
+					},
+					"support": {
+						"type": "integer",
+						"minimum": 1,
+						"description": "Backing review count. Must equal reviewIds.length; `research verify` checks the arithmetic."
+					},
+					"ratingSkew": {
+						"type": "number",
+						"description": "Mean rating of the supporting reviews minus the app mean. Negative means this theme travels with unhappiness."
+					},
+					"versions": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "Versions the supporting reviews cluster on, when a release correlates."
+					},
+					"quotes": {
+						"type": "array",
+						"maxItems": 3,
+						"items": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 200
+						}
+					},
+					"reviewIds": {
+						"type": "array",
+						"minItems": 1,
+						"uniqueItems": true,
+						"items": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					"flow": {
+						"type": "string",
+						"enum": [
+							"first-launch",
+							"welcome",
+							"value-prop",
+							"personalization",
+							"permission",
+							"account",
+							"first-value",
+							"home",
+							"navigation",
+							"search",
+							"discovery",
+							"detail",
+							"create",
+							"edit",
+							"settings",
+							"paywall",
+							"trial",
+							"upsell",
+							"feature-gate",
+							"pricing",
+							"restore",
+							"re-engagement",
+							"notification",
+							"streak",
+							"progress",
+							"reminder",
+							"empty",
+							"loading",
+							"error",
+							"offline",
+							"undo",
+							"destructive"
+						],
+						"description": "A flow id from src/lib/flows.mjs. The closed vocabulary is the join key across research, ux spec, analytics and QA."
+					}
+				}
+			}
+		}
+	}
+}

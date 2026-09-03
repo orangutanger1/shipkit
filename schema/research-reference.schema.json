@@ -1,0 +1,269 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://github.com/mayfield/shipkit/schema/research-reference.schema.json",
+	"title": "research reference",
+	"description": "One normalized reference at research/<slug>/references/<id>.json. Provider-agnostic: `ship design` and `ship qa` read these and never learn which provider produced them.",
+	"type": "object",
+	"required": [
+		"id",
+		"provider",
+		"providerId",
+		"kind",
+		"app",
+		"flow",
+		"image",
+		"sourceUrl",
+		"capturedAt",
+		"doNotCopy",
+		"confidence"
+	],
+	"additionalProperties": false,
+	"patternProperties": {
+		"^_": {
+			"description": "Annotation kept beside the data it explains. Ignored by every loader."
+		}
+	},
+	"properties": {
+		"$schema": {
+			"type": "string"
+		},
+		"id": {
+			"type": "string",
+			"pattern": "^ref_[0-9a-f]{6,32}$",
+			"description": "hash(provider, providerId), so the same source screen dedupes to one file across runs."
+		},
+		"provider": {
+			"enum": [
+				"appstore",
+				"manual",
+				"appfigures",
+				"mobbin",
+				"appllama"
+			],
+			"description": "appstore and manual are implemented; the rest are adapter slots."
+		},
+		"providerId": {
+			"type": "string",
+			"minLength": 1,
+			"description": "Provider-local identity, e.g. \"341232718#screen-3\"."
+		},
+		"kind": {
+			"enum": [
+				"screen",
+				"flow",
+				"element"
+			]
+		},
+		"app": {
+			"type": "object",
+			"required": [
+				"name"
+			],
+			"additionalProperties": false,
+			"properties": {
+				"name": {
+					"type": "string",
+					"minLength": 1
+				},
+				"trackId": {
+					"type": "integer",
+					"minimum": 1
+				},
+				"bundleId": {
+					"type": "string"
+				},
+				"rating": {
+					"type": "number",
+					"minimum": 0,
+					"maximum": 5
+				},
+				"ratingCount": {
+					"type": "integer",
+					"minimum": 0
+				},
+				"ratingVelocity": {
+					"type": [
+						"number",
+						"null"
+					],
+					"description": "Ratings gained per day since the previous research run. Shipkit’s own free stand-in for downloads; null on a first run, which has no prior snapshot."
+				},
+				"price": {
+					"type": "number",
+					"minimum": 0
+				},
+				"hasIap": {
+					"type": "boolean"
+				},
+				"iapPrices": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"releasedAt": {
+					"type": "string",
+					"format": "date-time"
+				},
+				"updatedAt": {
+					"type": "string",
+					"format": "date-time"
+				},
+				"genres": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"downloadsEst": {
+					"type": [
+						"integer",
+						"null"
+					],
+					"description": "Appfigures only; null without that provider."
+				},
+				"revenueEst": {
+					"type": [
+						"number",
+						"null"
+					]
+				}
+			}
+		},
+		"flow": {
+			"type": "string",
+			"enum": [
+				"first-launch",
+				"welcome",
+				"value-prop",
+				"personalization",
+				"permission",
+				"account",
+				"first-value",
+				"home",
+				"navigation",
+				"search",
+				"discovery",
+				"detail",
+				"create",
+				"edit",
+				"settings",
+				"paywall",
+				"trial",
+				"upsell",
+				"feature-gate",
+				"pricing",
+				"restore",
+				"re-engagement",
+				"notification",
+				"streak",
+				"progress",
+				"reminder",
+				"empty",
+				"loading",
+				"error",
+				"offline",
+				"undo",
+				"destructive"
+			],
+			"description": "A flow id from src/lib/flows.mjs. The closed vocabulary is the join key across research, ux spec, analytics and QA."
+		},
+		"position": {
+			"type": [
+				"integer",
+				"null"
+			],
+			"minimum": 1,
+			"maximum": 10,
+			"description": "Marketing-shot ordinal. Position is developer-ranked priority, not arbitrary order, so it is evidence in itself. null for captures that have no ordering."
+		},
+		"image": {
+			"type": "object",
+			"required": [
+				"path",
+				"sha256",
+				"w",
+				"h"
+			],
+			"additionalProperties": false,
+			"properties": {
+				"path": {
+					"type": "string",
+					"pattern": "^assets/",
+					"description": "Repo-relative, under the research slug. Committed, so a re-run costs no fetches."
+				},
+				"sha256": {
+					"type": "string",
+					"format": "sha256"
+				},
+				"w": {
+					"type": "integer",
+					"minimum": 1
+				},
+				"h": {
+					"type": "integer",
+					"minimum": 1
+				}
+			}
+		},
+		"sourceUrl": {
+			"type": "string",
+			"format": "uri"
+		},
+		"capturedAt": {
+			"type": "string",
+			"format": "date-time"
+		},
+		"observations": {
+			"type": "object",
+			"additionalProperties": false,
+			"description": "Agent-filled reading of the image. Capped so a reference stays a note, not an essay.",
+			"properties": {
+				"summary": {
+					"type": "string",
+					"maxLength": 400
+				},
+				"hierarchy": {
+					"type": "string",
+					"maxLength": 400
+				},
+				"copy": {
+					"type": "array",
+					"maxItems": 8,
+					"items": {
+						"type": "string",
+						"maxLength": 200
+					}
+				},
+				"components": {
+					"type": "array",
+					"maxItems": 12,
+					"items": {
+						"type": "string",
+						"maxLength": 60
+					}
+				},
+				"motion": {
+					"type": "string",
+					"maxLength": 200
+				},
+				"monetization": {
+					"type": "string",
+					"maxLength": 400
+				}
+			}
+		},
+		"doNotCopy": {
+			"type": "string",
+			"minLength": 1,
+			"description": "What in this reference is the app’s own brand or IP and must not be reproduced. Required and non-empty: the gate refuses a reference that has not been asked this question."
+		},
+		"confidence": {
+			"enum": [
+				"high",
+				"medium",
+				"low"
+			]
+		}
+	}
+}
