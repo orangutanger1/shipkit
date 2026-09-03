@@ -4,7 +4,7 @@
 //   - cognitive complexity (per function, SonarSource spec)
 //   - Halstead difficulty (per function + per file, token-based)
 //   - CRAP (per function, joined with c8's coverage JSON)
-//   - LOC (per file)
+//   - LOC (per file, code lines only — comments and blanks excluded)
 // Exits non-zero listing every violation.
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -298,6 +298,29 @@ function crap(complexity, coveragePercent) {
 	return complexity * complexity * (1 - cov) + complexity;
 }
 
+// --- logical LOC -------------------------------------------------------------
+
+/**
+ * Lines that carry code: blanks and comment-only lines do not count.
+ *
+ * A raw line count makes a documented file look like a complex one, and this
+ * repo pays for types in JSDoc — annotating a 480-line module pushed six of
+ * them over a 500-line limit that was never about prose. Comment ranges are
+ * blanked out of the source before counting, so a trailing `// why` on a real
+ * statement still counts that statement and a thirty-line header block counts
+ * as nothing.
+ *
+ * @param {string} source
+ * @param {import('acorn').Comment[]} comments
+ * @returns {number}
+ */
+function codeLines(source, comments) {
+	const chars = [...source];
+	for (const c of comments)
+		for (let i = c.start; i < c.end && i < chars.length; i++) if (chars[i] !== '\n') chars[i] = ' ';
+	return chars.join('').split('\n').filter((line) => line.trim() !== '').length;
+}
+
 // --- main --------------------------------------------------------------------
 
 const files = [...listMJS(SRC), join(BIN, 'ship')].filter((f) => statSync(f).isFile());
@@ -306,16 +329,25 @@ const violations = [];
 
 for (const file of files) {
 	const rel = relative(ROOT, file);
-	const loc = readFileSync(file, 'utf8').split('\n').length;
-	if (loc >= LIMITS.fileLOC) {
-		violations.push(`${rel}: file has ${loc} LOC (limit < ${LIMITS.fileLOC})`);
-	}
-	if (!file.endsWith('.mjs')) continue;
-
 	const source = readFileSync(file, 'utf8');
+	if (!file.endsWith('.mjs')) {
+		// bin/ship is extensionless and not parsed; raw lines are all there is.
+		const raw = source.split('\n').length;
+		if (raw >= LIMITS.fileLOC) violations.push(`${rel}: file has ${raw} LOC (limit < ${LIMITS.fileLOC})`);
+		continue;
+	}
+
+	/** @type {import('acorn').Comment[]} */
+	const comments = [];
 	const parsed = acorn.parse(source, {
 		ecmaVersion: 'latest', sourceType: 'module', locations: true, ranges: true,
+		onComment: comments,
 	});
+
+	const loc = codeLines(source, comments);
+	if (loc >= LIMITS.fileLOC) {
+		violations.push(`${rel}: file has ${loc} code lines (limit < ${LIMITS.fileLOC})`);
+	}
 	// object → AstNode: the parse result is exactly what the walkers traverse.
 	const ast = /** @type {AstNode} */ (/** @type {object} */ (parsed));
 

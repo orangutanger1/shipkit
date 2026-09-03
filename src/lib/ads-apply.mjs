@@ -86,6 +86,56 @@ export function printSyncSummary(tally, { org, planFile }) {
 	good(`recorded Apple object ids into ${planFile}`);
 	note(`verify: ship ads snapshot --org ${org}`);
 }
+/** What {@link applyKeywords} needs from the sync it belongs to. */
+/** @typedef {{org: string, currency: string, tally: {keywords: number, paused: number}, at: (level: 'campaign'|'adGroup'|'keyword', path: string) => Action, destructive: Action[]}} KeywordCtx */
+
+/**
+ * Reconcile one ad group's keywords: create the new, re-bid the changed, adopt
+ * what Apple already has, and pause what the plan dropped.
+ *
+ * Lifted out of `applyPlan` rather than left as a closure — it was the single
+ * largest contributor to that function's Halstead difficulty, and it needs only
+ * five things from its parent, which is what {@link KeywordCtx} names.
+ *
+ * @param {PlannedAdGroup} g
+ * @param {string} path
+ * @param {string} campaignId
+ * @param {string} adGroupId
+ * @param {KeywordCtx} ctx
+ * @returns {Promise<void>}
+ */
+async function applyKeywords(g, path, campaignId, adGroupId, { org, currency, tally, at, destructive }) {
+	const create = [], update = [];
+	for (const k of g.keywords ?? []) {
+		const bid = round2(k.bid ?? g.defaultBidAmount);
+		const ka = at('keyword', `${path} / ${k.text} ${k.matchType}`);
+		if (ka.op === 'create' || ka.op === 'orphan') create.push({ ...k, bid });
+		else if (ka.op === 'update') update.push({ id: ka.id, bid, status: 'ACTIVE' });
+		else if (ka.op === 'adopt' && ka.adoptFields) k.bid = Number(ka.adoptFields.bidAmount ?? bid);
+		if (ka.id)
+			stampApple(k, { id: ka.id }, { text: k.text, matchType: k.matchType, bidAmount: round2(k.bid ?? bid), status: 'ACTIVE' });
+	}
+	if (create.length) {
+		const made = await createKeywords(org, campaignId, adGroupId, create, currency);
+		tally.keywords += create.length;
+		for (const row of made) {
+			const k = (g.keywords ?? []).find((x) => x.text === row.text && x.matchType === row.matchType);
+			if (k)
+				stampApple(k, row, { text: row.text ?? null, matchType: row.matchType ?? null, bidAmount: round2(k.bid ?? g.defaultBidAmount), status: 'ACTIVE' });
+		}
+	}
+	if (update.length) {
+		await updateKeywords(org, campaignId, adGroupId, update, currency);
+		tally.keywords += update.length;
+	}
+	const stale = destructive.filter((a) => a.level === 'keyword' && a.path.startsWith(`${path} / `));
+	if (stale.length) {
+		warn(`pausing ${stale.length} keyword(s) in "${g.name}": ${stale.map((a) => a.name).join(', ')}`);
+		await pauseKeywords(org, campaignId, adGroupId, stale.map((a) => a.id));
+		tally.paused += stale.length;
+	}
+}
+
 /** @param {{org: string, adamId: string|number, currency: string, planned: PlannedCampaign[], account: {campaigns: SnapshotCampaign[]}, plan$: ReconcileResult}} opts @returns {Promise<{campaigns: number, groups: number, keywords: number, negatives: number, paused: number, pages: number, adopted: number}>} */
 export async function applyPlan({ org, adamId, currency, planned, account, plan$ }) {
 	/** @type {{pages?: Row[]}} */
@@ -93,38 +143,8 @@ export async function applyPlan({ org, adamId, currency, planned, account, plan$
 	const tally = { campaigns: 0, groups: 0, keywords: 0, negatives: 0, paused: 0, pages: 0, adopted: 0 };
 	/** @param {'campaign'|'adGroup'|'keyword'} level @param {string} path @returns {Action} */
 	const at = (level, path) => plan$.actions.find((a) => a.level === level && a.path === path) ?? { op: 'noop', level, path, id: null, name: '', changes: [] };
-	/** @param {PlannedAdGroup} g @param {string} path @param {string} campaignId @param {string} adGroupId @returns {Promise<void>} */
-	const applyKeywords = async (g, path, campaignId, adGroupId) => {
-		const create = [], update = [];
-		for (const k of g.keywords ?? []) {
-			const bid = round2(k.bid ?? g.defaultBidAmount);
-			const ka = at('keyword', `${path} / ${k.text} ${k.matchType}`);
-			if (ka.op === 'create' || ka.op === 'orphan') create.push({ ...k, bid });
-			else if (ka.op === 'update') update.push({ id: ka.id, bid, status: 'ACTIVE' });
-			else if (ka.op === 'adopt' && ka.adoptFields) k.bid = Number(ka.adoptFields.bidAmount ?? bid);
-			if (ka.id)
-				stampApple(k, { id: ka.id }, { text: k.text, matchType: k.matchType, bidAmount: round2(k.bid ?? bid), status: 'ACTIVE' });
-		}
-		if (create.length) {
-			const made = await createKeywords(org, campaignId, adGroupId, create, currency);
-			tally.keywords += create.length;
-			for (const row of made) {
-				const k = (g.keywords ?? []).find((x) => x.text === row.text && x.matchType === row.matchType);
-				if (k)
-					stampApple(k, row, { text: row.text ?? null, matchType: row.matchType ?? null, bidAmount: round2(k.bid ?? g.defaultBidAmount), status: 'ACTIVE' });
-			}
-		}
-		if (update.length) {
-			await updateKeywords(org, campaignId, adGroupId, update, currency);
-			tally.keywords += update.length;
-		}
-		const stale = plan$.destructive.filter((a) => a.level === 'keyword' && a.path.startsWith(`${path} / `));
-		if (stale.length) {
-			warn(`pausing ${stale.length} keyword(s) in "${g.name}": ${stale.map((a) => a.name).join(', ')}`);
-			await pauseKeywords(org, campaignId, adGroupId, stale.map((a) => a.id));
-			tally.paused += stale.length;
-		}
-	};
+	/** @type {KeywordCtx} */
+	const ctx = { org, currency, tally, at, destructive: plan$.destructive };
 	/** @param {PlannedCampaign} cp @param {PlannedAdGroup} g @param {string} campaignId @returns {Promise<void>} */
 	const applyAdGroup = async (cp, g, campaignId) => {
 		const path = `${cp.name} / ${g.name}`;
@@ -153,7 +173,7 @@ export async function applyPlan({ org, adamId, currency, planned, account, plan$
 		});
 		if (!adGroupId) return;
 		stampApple(g, { id: adGroupId }, { name: g.name, defaultBidAmount: round2(g.defaultBidAmount), automatedKeywordsOptIn: Boolean(g.automatedKeywordsOptIn), status: g.status ?? 'ENABLED' });
-		await applyKeywords(g, path, campaignId, adGroupId);
+		await applyKeywords(g, path, campaignId, adGroupId, ctx);
 		if (g.productPage && (await bindProductPage(org, adamId, campaignId, adGroupId, g.productPage, cache))) tally.pages++;
 	};
 	/** @param {PlannedCampaign} cp @returns {Promise<void>} */

@@ -59,16 +59,6 @@ import { resolveSubcommand, strOf } from '../lib/util.mjs';
 /** @typedef {import('../lib/listing-audit.mjs').Finding} Finding */
 /** @typedef {import('../lib/loc-index.mjs').HarvestIndex} HarvestIndex */
 
-/**
- * View any JSON value as an object: objects pass through untouched, anything
- * else reads as an empty row — exactly what property access on a scalar would
- * have yielded.
- *
- * @param {Json|undefined} v
- * @returns {JsonObject}
- */
-const asObject = (v) => (typeof v === 'object' && v !== null && !Array.isArray(v) ? v : {});
-
 /** One locale's seed pass result. */
 /** @typedef {{market: Json, seeds: string[], from: Record<string, string>, titles: number}} SeedRow */
 /** One locale's draft pass result. */

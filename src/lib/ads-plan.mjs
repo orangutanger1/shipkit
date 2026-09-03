@@ -492,14 +492,21 @@ export function searchTermRows(payload) {
 		.filter((r) => r.term);
 }
 /**
- * Apply the kill rule and CPI target to aggregated search-term rows.
- * @param {SearchTermRow[]|null|undefined} [rows]
- * @param {KillOptions} [opts]
- * @returns {DecideResult}
+ * Fold raw search-term rows into one row per term.
+ *
+ * Apple reports a term once per ad group it served in, so spend and installs
+ * for the same words arrive split across rows and no single row is the truth.
+ * The attribution fields (which campaign, which ad group) follow the highest
+ * spend, because that is the placement a negative or a promotion actually has
+ * to be written against.
+ *
+ * Separate from {@link decide} so the aggregation and the kill rule can be read
+ * — and measured — apart.
+ *
+ * @param {SearchTermRow[]|null|undefined} rows
+ * @returns {ScoredTerm[]}
  */
-export function decide(rows, opts = {}) {
-	const rule = resolveKillRule(opts);
-	const { targetCpi: cpi, wasteThreshold, minTaps } = rule;
+function aggregateTerms(rows) {
 	/** @type {Map<string, TermAgg>} */
 	const agg = new Map();
 	for (const r of rows ?? []) {
@@ -519,9 +526,21 @@ export function decide(rows, opts = {}) {
 		}
 		agg.set(term, e);
 	}
-	const terms = [...agg.values()].map((e) => ({
+	return [...agg.values()].map((e) => ({
 		...e, spend: round2(e.spend), cpi: e.installs ? round2(e.spend / e.installs) : null,
 	}));
+}
+
+/**
+ * Apply the kill rule and CPI target to aggregated search-term rows.
+ * @param {SearchTermRow[]|null|undefined} [rows]
+ * @param {KillOptions} [opts]
+ * @returns {DecideResult}
+ */
+export function decide(rows, opts = {}) {
+	const rule = resolveKillRule(opts);
+	const { targetCpi: cpi, wasteThreshold, minTaps } = rule;
+	const terms = aggregateTerms(rows);
 	/** @param {ScoredTerm} e @returns {string} */
 	const evidence = (e) => `${money(e.spend)} over ${e.taps} tap(s) and ${e.impressions} impression(s) for zero installs`;
 	const spent = terms.filter((e) => e.installs === 0 && e.spend > wasteThreshold);
