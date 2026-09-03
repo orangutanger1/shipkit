@@ -37,6 +37,8 @@ ship portfolio   every app at once: revenue, spend, staleness, sunset candidates
 ```bash
 ln -sf /home/myen/shipkit/bin/ship ~/.local/bin/ship
 ln -sfn /home/myen/shipkit/skills/shipping-ios ~/.claude/skills/shipping-ios
+ln -sfn /home/myen/shipkit/skills/researching-apps ~/.claude/skills/researching-apps
+ln -sfn /home/myen/shipkit/skills/designing-apps ~/.claude/skills/designing-apps
 ship doctor
 ```
 
@@ -464,6 +466,8 @@ src/lib/appdeps.mjs       sharp/fontkit/puppeteer resolved from the app repo, no
 src/commands/*.mjs        one module per command
 mcp/servers.json          canonical MCP definitions merged into each repo
 skills/shipping-ios/      the skill agents load before touching a release
+skills/researching-apps/  the `ship research` protocol and its citation gate
+skills/designing-apps/    the token/screen contracts and the anti-slop bar
 templates/                `ship new` scaffold
 ci/                       workflow templates copied into app repos
 .github/actions/setup/    the bootstrap every template `uses:`

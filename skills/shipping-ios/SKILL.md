@@ -116,6 +116,22 @@ Four rules the tool cannot enforce, so they are yours:
   prices the alternative: under $10/mo, older than 90 days, no release in 60 is
   a sunset candidate, and an app that stopped shipping arrives there on its own.
 
+## Building the app itself
+
+Two sibling skills cover the stages before a listing exists, and this skill does
+not repeat them:
+
+- **`researching-apps`** — `ship research plan|fetch|capture|verify|index`.
+  Competitor evidence from the public storefront: full-res screenshots, review
+  corpora, and claims that have to cite them. Credential-free, like `ship scout`.
+- **`designing-apps`** — `design/system.json` and `design/ux.json`, the token
+  and screen contracts, plus the mechanical HIG / anti-slop bar. Read it before
+  generating any UI.
+
+The order is `scout → research → design → build → qa → preflight → release`.
+`ship scout` decides *whether* to build; `ship research` decides *what*, from
+evidence rather than from a model's memory of what an app looks like.
+
 ## Store listings
 
 Listings are authored in `store/staged/<locale>.json` — one human-editable file
