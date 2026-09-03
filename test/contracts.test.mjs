@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { COMMANDS, parseArgs } from '../src/cli.mjs';
+import { COMMANDS, GROUPS, parseArgs } from '../src/cli.mjs';
 
 const NAMES = Object.keys(COMMANDS);
 
@@ -25,7 +25,7 @@ for (const name of NAMES) {
 }
 
 test('every command declares a group the usage screen renders', () => {
-	const groups = new Set(['Setup', 'Discover', 'Ship', 'Grow']);
+	const groups = new Set(GROUPS);
 	for (const [name, spec] of Object.entries(COMMANDS)) {
 		assert.ok(groups.has(spec.group), `${name} has unknown group ${spec.group}`);
 		assert.ok(spec.summary?.length, `${name} has no summary`);

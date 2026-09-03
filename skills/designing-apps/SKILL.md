@@ -15,19 +15,28 @@ the purple gradient, the emoji in the tab bar, four accent colours, a 6pt gap
 next to a 20pt one. Those are not taste failures, they are *countable* failures,
 which is why they get counted.
 
-## Status, read this first
+## The commands
 
-`ship design system|spec|review` is **not built yet** (Shipkit 2.0 roadmap P0
-item 6). What exists today:
+```bash
+ship design system            # draft design/system.json, or gate the one on disk
+ship design system --check    # gate only; never write
+ship design system --force    # redraft from scratch, discarding what is there
+ship design spec [--flows a,b]  # draft design/ux.json over the researched flows
+ship design spec --check
+ship design review [--json]   # the same rules against the implementation
+```
 
-- `schema/design-system.schema.json` and `schema/ux-spec.schema.json` — the real
-  contracts, already loadable through `src/lib/schemas.mjs`.
-- `ship research verify` — the gate on the inputs.
+`system` is the default subcommand. With no file on disk it **drafts**: the
+platform type ramp, a 4pt spacing series, radii, motion durations and the
+reduced-motion answer, each cited to a HIG rule. Colour is absent, and `_todo`
+says so — choosing a hue is the one thing here that cannot be derived, and a
+guessed accent that nobody notices is worse than a missing one that fails a
+gate. Every gate refuses a `_todo` document by name before it looks at anything
+else.
 
-So today you author `design/system.json` and `design/ux.json` by hand against
-those schemas. Every rule below is one the checker will enforce mechanically
-when it lands; writing to them now costs nothing and means the artifacts pass
-on the first run. **Do not claim `ship design` ran.**
+`ship design review` needs a finished `system.json` and reads the app's own
+sources. A file named `theme.ts`/`theme.tsx`/`tokens.ts` is exempt — it is where
+tokens legitimately become literals. Everything else is drift.
 
 ## Inputs, and the citation rule
 
@@ -59,16 +68,28 @@ semantic roles: `background` `surface` `surfaceAlt` `text` `textMuted`
 `textInverse` `accent` `accentText` `border` `success` `warning` `danger`. Each
 is `{value: "#rrggbb", cite}`.
 
-Contrast is arithmetic, so treat it as a gate now: every foreground/background
-pair ≥ **4.5:1**, or ≥ **3:1** at 24pt or larger. Dark theme is not the light
-theme inverted — `#000000` backgrounds with pure-white text is the most common
-dark mode and the worst one.
+Contrast is arithmetic and `--check` computes it: text pairs at **4.5:1**,
+accent and status colours on the background at **3:1** as non-text UI. `border`
+is deliberately not checked — a separator is decorative, and a rule that fails
+every real iOS palette is a rule somebody switches off. Dark theme is checked
+independently and identically: it is not the light theme inverted, and
+`#000000` with pure white is the most common dark mode and the worst one.
+
+The single-accent rule is enforced against the pixels, not the label: the
+declared `accentHue` has to be the hue the accent swatch actually is, and no
+chrome role (`background` `surface` `surfaceAlt` `text` `textMuted`
+`textInverse` `border`) may sit more than 20° off it. Tint neutrals toward the
+accent or leave them grey; `success`, `warning` and `danger` are exempt because
+their hue *is* their meaning.
 
 **Type.** One `family`, and a `ramp` of ≥4 steps, each with `name` `size`
 `lineHeight` `weight` `cite` (and optional `tracking`, `role`). Use the platform
 ramp — the iOS text styles, large title through caption — rather than an
 invented scale; that is what makes Dynamic Type work and what `HIG:typography`
-cites. A ramp whose steps are 16, 17 and 18 is three steps that do one job.
+cites. Sizes must be monotonic, and two steps may share a size only if they
+differ in weight — Apple's own ramp puts headline and body both at 17pt. What
+is refused is two names for one step: 16, 17 and 18 at one weight is three
+steps doing one job.
 
 **Spacing.** A `base` of **4 or 8** and a single `scale` series. One series. A
 layout that mixes a 4pt series with a 6pt one reads as noisy and nobody can say
@@ -77,11 +98,12 @@ why.
 **Radii.** Named, each cited. Every corner in the implementation comes from this
 map — a one-off `borderRadius: 14` is drift.
 
-**Motion.** `durations` (0–1000ms) and `curves`, each cited, plus
+**Motion.** `durations` and `curves`, each cited, plus
 `reducedMotion` — a sentence saying what happens when the OS asks for less
 motion. It is a string field and it is required reading, because an
 implementing agent with no answer there will animate anyway. Motion under
-~200ms reads as instant; over ~400ms reads as slow. Animate to explain a spatial
+~200ms reads as instant; **over 400ms fails the gate** — that is not motion, it
+is waiting. Animate to explain a spatial
 relationship; anything else is decoration you pay for in perceived speed.
 
 **Haptics.** Keyed `"<flow>.<verb>"` — the same vocabulary as analytics, from
@@ -143,19 +165,22 @@ Mechanical, checkable, and each one is a real tell:
 | Screens with no `empty`/`error` state where data can be absent | **0** |
 | Font families | **1**, plus at most a display and a mono |
 
-`ship design review` (when it lands) re-runs these against the **implementation**
-— parsed from the RN theme module and `StyleSheet` — so drift between
-`system.json` and the code is a gate failure. Until then, grep for hex literals
-and numeric `borderRadius`/`padding` in the app source; every hit is a violation
-this list already named.
+`ship design review` runs the countable half of that table against the
+implementation, line by line, and exits non-zero with a file:line for each hit.
+It is a lexical scan and says so: it finds literals that are not in the system —
+hex colours, `borderRadius`, spacing keys, `fontSize`, `duration`, emoji,
+gradients. Duplicate labels and missing empty states are not countable from
+source alone; they are yours, and `ship design spec --check` catches the second
+one from the spec side.
 
 ## The order the work goes in
 
 1. `ship research verify && ship research index` — evidence, or you are guessing.
 2. `product/brief.json` — the job, the north-star action, the activation event.
-3. `design/system.json` — tokens, every one cited. Contrast checked.
-4. `design/ux.json` — screens, states, copy, events, flows.
-5. Only then implement, against those two files and nothing else.
+3. `ship design system` → fill the colour → `ship design system --check`.
+4. `ship design spec` → write the copy and the success conditions →
+   `ship design spec --check`.
+5. Implement against those two files and nothing else, then `ship design review`.
 
 Doing 5 before 3 is how an app ends up with a design system reverse-engineered
 from whatever the first screen happened to use.

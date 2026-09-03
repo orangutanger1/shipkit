@@ -4,8 +4,16 @@ const SHA = 'a'.repeat(64);
 const NOW = '2026-09-02T12:00:00Z';
 
 const token = (value) => ({ value, cite: 'HIG:color/contrast' });
-const SEMANTIC = ['background', 'surface', 'surfaceAlt', 'text', 'textMuted', 'textInverse', 'accent', 'accentText', 'border', 'success', 'warning', 'danger'];
-const theme = (hex) => Object.fromEntries(SEMANTIC.map((k) => [k, token(hex)]));
+
+// A real palette, not filler: the schema would accept twelve copies of one hex,
+// and `checkSystem` would then fail on contrast in a file that is supposed to
+// be the worked example. Both themes clear AA on every checked pair with one
+// accent hue at 212 degrees.
+const PALETTE = {
+	light: { background: '#ffffff', surface: '#f6f8fb', surfaceAlt: '#eaeff6', text: '#0d1b2a', textMuted: '#516278', textInverse: '#ffffff', accent: '#0a58ca', accentText: '#ffffff', border: '#ccd6e2', success: '#0f7b3f', warning: '#8a5300', danger: '#b3261e' },
+	dark: { background: '#0b1220', surface: '#131c2b', surfaceAlt: '#1c2739', text: '#e8eef7', textMuted: '#9fb0c6', textInverse: '#0b1220', accent: '#7fb0ff', accentText: '#0b1220', border: '#2b394d', success: '#5ddb96', warning: '#f0b458', danger: '#ff8f85' },
+};
+const theme = (name) => Object.fromEntries(Object.entries(PALETTE[name]).map(([k, hex]) => [k, token(hex)]));
 
 export const plan = {
 	slug: '2026-09-02',
@@ -88,7 +96,7 @@ export const patterns = {
 export const designSystem = {
 	generatedAt: NOW,
 	brand: { name: 'Demo', direction: 'Calm, dense, and legible at a glance.' },
-	color: { accentHue: 212, themes: { light: theme('#1b6ef3'), dark: theme('#7fb0ff') } },
+	color: { accentHue: 212, themes: { light: theme('light'), dark: theme('dark') } },
 	type: {
 		family: { text: 'SF Pro Text' },
 		ramp: [

@@ -41,6 +41,11 @@ export const COMMANDS = {
 		summary: 'Keyword research: harvest · volume · score · suggest · apply · competitors · audit',
 		load: () => import('./commands/aso.mjs'),
 	},
+	design: {
+		group: 'Build',
+		summary: 'Token and screen contracts: system · spec · review',
+		load: () => import('./commands/design.mjs'),
+	},
 	meta: {
 		group: 'Ship',
 		summary: 'Store listings: lint · stage · pull · apply · migrate · keywords · cpp',
@@ -113,7 +118,8 @@ export const COMMANDS = {
 	},
 };
 
-const GROUPS = ['Setup', 'Discover', 'Ship', 'Grow'];
+/** Group order on the usage screen, and the closed set a command may declare. */
+export const GROUPS = ['Setup', 'Discover', 'Build', 'Ship', 'Grow'];
 
 /**
  * Split argv into long/short flags and positionals. `--flag value` consumes the

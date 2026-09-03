@@ -13,7 +13,9 @@ ship init        adopt an existing repo
 ship new         scaffold a new one, fully wired  (--from a scout brief)
 
 ship scout       before a repo exists: terms · brief · new
+ship research    competitor evidence from the storefront: plan · fetch · capture · verify · index
 ship aso         keyword research: harvest · volume · score · suggest · apply · competitors · audit
+ship design      token and screen contracts: system · spec · review
 ship loc         localization: seed · draft · review · lock · status
 ship meta        store listings: lint · stage · pull · apply · migrate · keywords · cpp
 ship shots       screenshots: sizes · capture · render · verify · figma · plan · validate · upload
@@ -454,6 +456,10 @@ src/log.mjs               Report, table, ShipError, colour
 src/lib/text.mjs          locale-aware tokens: Intl.Segmenter words, code-point counts, brands, support
 src/lib/locales.mjs       staged ⇄ canonical listing model, lint, .strings parser
 src/lib/cpp.mjs           custom product pages: model, lint, stage, ad-group binding
+src/lib/color.mjs         sRGB hue and WCAG contrast — the design gate's arithmetic
+src/lib/design-system.mjs one accent, both themes legible, one spacing series, cited tokens
+src/lib/design-spec.mjs   screens reachable, events derived, every string specified
+src/lib/design-review.mjs the same rules against the implementation, line by line
 src/lib/appstore.mjs      autocomplete harvest, demand × competition scoring, keyword packing
 src/lib/revenuecat.mjs    v2 REST client + paywall audit
 src/lib/native.mjs        OTA-vs-build decision
