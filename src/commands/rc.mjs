@@ -26,6 +26,10 @@ import { WINBACK_PATTERN } from '../lib/paywall.mjs';
 import { emit } from '../lib/output.mjs';
 import { resolveSubcommand } from '../lib/util.mjs';
 
+/** @typedef {import('../lib/revenuecat.mjs').RcRow} RcRow */
+/** @typedef {import('../lib/util.mjs').Json} Json */
+/** @typedef {import('../lib/util.mjs').Flags} Flags */
+
 export const help = `
 ${c.bold('ship rc')} ${c.dim('— RevenueCat monetisation wiring')}
 
@@ -46,20 +50,30 @@ ${c.dim('Project selection: revenuecat.projectId in ship.config.json')}
 ${c.dim('Mutations (create offering, attach product, edit paywall) → MCP: https://mcp.revenuecat.ai/mcp')}
 `;
 
-/** A save/exit offer, by lookup key. It belongs behind "manage subscription", not on the paywall. */
+/**
+ * A save/exit offer, by lookup key. It belongs behind "manage subscription", not on the paywall.
+ * @param {RcRow} o
+ * @returns {boolean}
+ */
 const isWinback = (o) => WINBACK_PATTERN.test(String(o?.lookup_key ?? o?.id ?? ''));
 
 /**
  * A package's products are one level below the package, not inlined in the
  * package list — an offering with packages can still sell nothing.
+ * @param {string} projectId
+ * @param {string} packageId
+ * @returns {Promise<RcRow[]>}
  */
 async function packageProducts(projectId, packageId) {
 	const key = await apiKey();
-	const body = await fetchJSON(
-		`https://api.revenuecat.com/v2/projects/${projectId}/packages/${packageId}/products`,
-		{ headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' } },
+	const body = /** @type {import('../lib/util.mjs').JsonObject} */ (
+		await fetchJSON(
+			`https://api.revenuecat.com/v2/projects/${projectId}/packages/${packageId}/products`,
+			{ headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' } },
+		)
 	);
-	return (body?.items ?? []).map((i) => i.product).filter(Boolean);
+	const items = /** @type {import('../lib/util.mjs').JsonObject[]} */ (body?.items ?? []);
+	return items.map((i) => /** @type {RcRow} */ (i.product)).filter(Boolean);
 }
 
 /** Resolve the project that every project-scoped subcommand operates on. */
@@ -77,17 +91,20 @@ async function context() {
 	return { cfg, project };
 }
 
+/** @param {import('../lib/util.mjs').SubCtx} ctx */
 async function projects({ flags }) {
 	const list = await listProjects();
-	if (flags.json) return emit(list.map((p) => ({ id: p.id, name: p.name })));
+	if (flags.json)
+		return emit(/** @type {Json} */ (list.map((p) => ({ id: p.id, name: p.name }))));
 	heading(`RevenueCat projects (${list.length})`);
 	table(list, [
 		{ header: 'id', get: (p) => p.id },
-		{ header: 'name', get: (p) => p.name },
+		{ header: 'name', get: (p) => /** @type {Json} */ (p.name) },
 	]);
 	return 0;
 }
 
+/** @param {import('../lib/util.mjs').SubCtx} ctx */
 async function status({ flags }) {
 	const { cfg, project } = await context();
 	const [apps, entitlements, offerings, products] = await Promise.all([
@@ -98,14 +115,14 @@ async function status({ flags }) {
 	]);
 	const counts = new Map(
 		await Promise.all(
-			offerings.map(async (o) => [o.id, (await listPackages(project.id, o.id)).length]),
+			offerings.map(async (o) => /** @type {[string, number]} */ ([o.id, (await listPackages(project.id, o.id)).length])),
 		),
 	);
 	const iosApp = apps.find((a) => a.type === 'app_store');
 	const mismatch = iosApp && bundleOf(iosApp) && bundleOf(iosApp) !== cfg.bundleId;
 
 	if (flags.json)
-		return emit({
+		return emit(/** @type {Json} */ ({
 			project: { id: project.id, name: project.name },
 			bundleId: cfg.bundleId,
 			bundleMismatch: !!mismatch,
@@ -117,7 +134,7 @@ async function status({ flags }) {
 				packages: counts.get(o.id) ?? 0,
 			})),
 			products: products.length,
-		});
+		}));
 
 	heading(`${project.name} ${c.dim(project.id)}`);
 	note(`repo bundle id: ${cfg.bundleId}`);
@@ -125,19 +142,19 @@ async function status({ flags }) {
 	heading(`Apps (${apps.length})`);
 	table(apps, [
 		{ header: 'id', get: (a) => a.id },
-		{ header: 'type', get: (a) => a.type },
+		{ header: 'type', get: (a) => /** @type {Json} */ (a.type) },
 		{ header: 'bundle id', get: (a) => bundleOf(a) || c.dim('—') },
 	]);
 	if (mismatch)
 		note(c.yellow(`app_store app is ${bundleOf(iosApp)} but this repo builds ${cfg.bundleId}`));
 
 	heading(`Entitlements (${entitlements.length})`);
-	table(entitlements, [{ header: 'lookup key', get: (e) => e.lookup_key }]);
+	table(entitlements, [{ header: 'lookup key', get: (e) => /** @type {Json} */ (e.lookup_key) }]);
 	if (cfg.revenuecat?.entitlement) note(`app expects: ${cfg.revenuecat.entitlement}`);
 
 	heading(`Offerings (${offerings.length})`);
 	table(offerings, [
-		{ header: 'lookup key', get: (o) => o.lookup_key },
+		{ header: 'lookup key', get: (o) => /** @type {Json} */ (o.lookup_key) },
 		{ header: 'current', get: (o) => (o.is_current ? c.green('yes') : c.dim('no')) },
 		{ header: 'packages', get: (o) => counts.get(o.id) ?? 0 },
 	]);
@@ -147,6 +164,7 @@ async function status({ flags }) {
 	return 0;
 }
 
+/** @param {import('../lib/util.mjs').SubCtx} ctx */
 async function offerings({ flags }) {
 	const { project } = await context();
 	const list = await listOfferings(project.id);
@@ -155,12 +173,12 @@ async function offerings({ flags }) {
 	const detailed = await Promise.all(
 		packages
 			.slice()
-			.sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+			.sort((a, b) => (/** @type {number} */ (a.position) ?? 0) - (/** @type {number} */ (b.position) ?? 0))
 			.map(async (p) => ({ ...p, products: await packageProducts(project.id, p.id) })),
 	);
 
 	if (flags.json)
-		return emit({
+		return emit(/** @type {Json} */ ({
 			offerings: list.map((o) => ({
 				id: o.id,
 				lookup_key: o.lookup_key,
@@ -179,11 +197,11 @@ async function offerings({ flags }) {
 					type: x.type,
 				})),
 			})),
-		});
+		}));
 
 	heading(`Offerings — ${project.name}`);
 	table(list, [
-		{ header: 'lookup key', get: (o) => o.lookup_key },
+		{ header: 'lookup key', get: (o) => /** @type {Json} */ (o.lookup_key) },
 		{ header: 'current', get: (o) => (o.is_current ? c.green('yes') : c.dim('no')) },
 		// A save offer served as the current offering *is* the paywall — worth
 		// seeing next to the `current` column rather than inferring from a name.
@@ -198,7 +216,7 @@ async function offerings({ flags }) {
 	heading(`Packages in "${current.lookup_key}"`);
 	table(detailed, [
 		{ header: 'position', get: (p) => p.position ?? '' },
-		{ header: 'lookup key', get: (p) => p.lookup_key },
+		{ header: 'lookup key', get: (p) => /** @type {Json} */ (p.lookup_key) },
 		{
 			header: 'products',
 			get: (p) =>
@@ -208,6 +226,7 @@ async function offerings({ flags }) {
 	return 0;
 }
 
+/** @param {import('../lib/util.mjs').SubCtx} ctx */
 async function products({ flags }) {
 	const { project } = await context();
 	const list = (await listProducts(project.id)).slice().sort((a, b) => {
@@ -216,12 +235,12 @@ async function products({ flags }) {
 	});
 	if (flags.json)
 		return emit(
-			list.map((p) => ({
+			/** @type {Json} */ (list.map((p) => ({
 				id: p.id,
 				store_identifier: p.store_identifier,
 				type: p.type,
 				app_id: p.app_id,
-			})),
+			}))),
 		);
 	heading(`Products — ${project.name} (${list.length})`);
 	table(list, [
@@ -233,22 +252,24 @@ async function products({ flags }) {
 	return 0;
 }
 
+/** @param {import('../lib/util.mjs').SubCtx} ctx */
 async function entitlements({ flags }) {
 	const { project } = await context();
 	const list = await listEntitlements(project.id);
 	if (flags.json)
 		return emit(
-			list.map((e) => ({ id: e.id, lookup_key: e.lookup_key, display_name: e.display_name })),
+			/** @type {Json} */ (list.map((e) => ({ id: e.id, lookup_key: e.lookup_key, display_name: e.display_name }))),
 		);
 	heading(`Entitlements — ${project.name} (${list.length})`);
 	table(list, [
 		{ header: 'id', get: (e) => e.id },
-		{ header: 'lookup key', get: (e) => e.lookup_key },
+		{ header: 'lookup key', get: (e) => /** @type {Json} */ (e.lookup_key) },
 		{ header: 'display name', get: (e) => e.display_name ?? '' },
 	]);
 	return 0;
 }
 
+/** @param {import('../lib/util.mjs').SubCtx} ctx */
 async function audit({ flags }) {
 	const { cfg, project } = await context();
 	// Which credential answered matters here: this gate's most confusing failure
@@ -256,11 +277,12 @@ async function audit({ flags }) {
 	const via = project.keySource && project.keySource !== 'ambient' ? ` via ${project.keySource.replace(homedir(), '~')}` : '';
 	const report = new Report(`RevenueCat — ${project.name} (${project.id})${via}`);
 	for (const row of await auditProject(cfg, project)) report[row.level](row.name, row.detail);
-	return report.print({ json: flags.json });
+	return report.print({ json: /** @type {boolean|undefined} */ (flags.json) });
 }
 
 const SUB = { status, projects, offerings, products, entitlements, audit };
 
+/** @param {import('../lib/util.mjs').SubCtx} ctx */
 export async function run({ args, flags }) {
 	const { fn, args: rest } = resolveSubcommand({ command: 'rc', args, subs: SUB, fallback: 'status' });
 	return fn({ args: rest, flags });

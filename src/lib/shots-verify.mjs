@@ -8,7 +8,21 @@ import { captionRect, frameFile, glassRect, measureBand, sourceLineCounts } from
 import { baseImage, context, renderCaptionBand, renderDeviceFrame } from './shots-composite.mjs';
 import { captionRuns } from './shots-spec.mjs';
 
-/** Is (x,y) inside any excluded rectangle? */
+/** @typedef {import('./shots-spec.mjs').ShotSpec} ShotSpec */
+/** @typedef {import('./shots-spec.mjs').Captions} Captions */
+/** @typedef {import('./shots-spec.mjs').CaptionRuns} CaptionRuns */
+/** @typedef {import('./shots-composite.mjs').Ctx} Ctx */
+/** @typedef {import('./shots-composite.mjs').BaseImage} BaseImage */
+/** A rect in canvas pixels, as {@link glassRect} and {@link captionRect} return. */
+/** @typedef {{left: number, top: number, width: number, height: number}} Rect */
+
+/**
+ * Is (x,y) inside any excluded rectangle?
+ * @param {Rect[]} rects
+ * @param {number} x
+ * @param {number} y
+ * @returns {boolean}
+ */
 const masked = (rects, x, y) =>
 	rects.some((r) => x >= r.left && x < r.left + r.width && y >= r.top && y < r.top + r.height);
 
@@ -26,6 +40,10 @@ const masked = (rects, x, y) =>
  * colour and the bezel land exactly where the design put them. On stallbook
  * that answer is 1.7–2.3% of pixels at tolerance 8, essentially all of it the
  * one-pixel antialiased rim of the phone body.
+ * @param {import('./appdeps.mjs').NativeModule} sharp
+ * @param {Buffer} aBuf
+ * @param {Buffer} bBuf
+ * @param {{tolerance?: number, ignore?: Rect[]}} [opts]
  */
 async function pixelDelta(sharp, aBuf, bBuf, { tolerance = 0, ignore = [] } = {}) {
 	const [a, b] = await Promise.all(
@@ -50,6 +68,13 @@ async function pixelDelta(sharp, aBuf, bBuf, { tolerance = 0, ignore = [] } = {}
 	return { differing: counted ? differing / counted : 0, max };
 }
 
+/**
+ * @param {Ctx} ctx
+ * @param {ShotSpec} spec
+ * @param {Captions} captions
+ * @param {Record<string, number>} targets
+ * @param {string} sourceLocale
+ */
 async function calibrateDeviceFrame(ctx, spec, captions, targets, sourceLocale) {
 	const { sharp } = ctx;
 	if (!spec.paths.ref || !existsSync(spec.paths.ref))
@@ -62,7 +87,7 @@ async function calibrateDeviceFrame(ctx, spec, captions, targets, sourceLocale) 
 		const rendered = await renderDeviceFrame(ctx, {
 			locale: sourceLocale,
 			frame,
-			copy: captionRuns(captions[sourceLocale][frame.key]),
+			copy: /** @type {CaptionRuns} */ (captionRuns(captions[sourceLocale][frame.key])),
 			targetLines: targets[frame.key],
 		});
 		const refName = refs.find((f) => f.startsWith(frame.key)) ?? refs[i];
@@ -87,6 +112,13 @@ async function calibrateDeviceFrame(ctx, spec, captions, targets, sourceLocale) 
 	return rows;
 }
 
+/**
+ * @param {Ctx} ctx
+ * @param {ShotSpec} spec
+ * @param {Captions} captions
+ * @param {Record<string, number>} targets
+ * @param {string} sourceLocale
+ */
 async function calibrateCaptionBand(ctx, spec, captions, targets, sourceLocale) {
 	const { sharp } = ctx;
 	const rows = [];
@@ -95,7 +127,7 @@ async function calibrateCaptionBand(ctx, spec, captions, targets, sourceLocale) 
 		const { png, size, lines } = await renderCaptionBand(ctx, {
 			locale: sourceLocale,
 			frame,
-			copy: captionRuns(captions[sourceLocale][frame.key]),
+			copy: /** @type {CaptionRuns} */ (captionRuns(captions[sourceLocale][frame.key])),
 			targetLines: targets[frame.key],
 		});
 		const { data, info } = await sharp(png).removeAlpha().raw().toBuffer({ resolveWithObject: true });
@@ -116,7 +148,12 @@ async function calibrateCaptionBand(ctx, spec, captions, targets, sourceLocale) 
 	return rows;
 }
 
-/** Nothing outside the band may move. This is the whole licence for the mode. */
+/**
+ * Nothing outside the band may move. This is the whole licence for the mode.
+ * @param {Ctx} ctx
+ * @param {ShotSpec} spec
+ * @param {string[]} locales
+ */
 async function bandSafety(ctx, spec, locales) {
 	const { sharp } = ctx;
 	const safety = [];
@@ -135,6 +172,12 @@ async function bandSafety(ctx, spec, locales) {
 	return safety;
 }
 
+/**
+ * @param {{data: Buffer, info: {width: number, height: number, channels: number}}} buffer
+ * @param {BaseImage} base
+ * @param {number} y0
+ * @param {number} y1
+ */
 function worstOutsideBand({ data, info }, base, y0, y1) {
 	let worst = 0;
 	for (let y = 0; y < info.height; y += 1) {
@@ -161,6 +204,10 @@ function worstOutsideBand({ data, info }, base, y0, y1) {
  * the live image (the wrap algorithm is right only if it reproduces the
  * designer's line breaks), then assert that every rendered locale differs from
  * the base *nowhere outside the band*.
+ * @param {import('../config.mjs').Config} cfg
+ * @param {ShotSpec} spec
+ * @param {Captions} captions
+ * @param {string[]} locales
  */
 export async function verify(cfg, spec, captions, locales) {
 	const ctx = await context(cfg, spec);

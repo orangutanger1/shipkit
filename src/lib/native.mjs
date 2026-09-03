@@ -12,7 +12,7 @@ import { dirname, join } from 'node:path';
 /** @typedef {import('./util.mjs').JsonObject} JsonObject */
 
 /** The `.asc/native-lock.json` fingerprint written after every native build. */
-/** @typedef {{version: string, deps: Record<string, string>, config: JsonObject}} NativeLock */
+/** @typedef {{version: string, deps: Record<string, string>, config: JsonObject, builtAt?: string}} NativeLock */
 
 /** Packages that never contain native code, so their version drift is OTA-safe. */
 const PURE_JS = new Set([

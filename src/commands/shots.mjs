@@ -75,7 +75,23 @@ ${c.dim('one, bring the images yourself — shipkit will not invent pixels.')}
 
 const IMAGE_RE = /\.(png|jpe?g)$/i;
 
-/** Walk store/screenshots/<locale>/<displayType>/*.{png,jpg,jpeg} and measure every file. */
+/** @typedef {import('../config.mjs').Config} Config */
+/** @typedef {import('../lib/util.mjs').Flags} Flags */
+/** @typedef {import('../lib/util.mjs').SubCtx} SubCtx */
+/** @typedef {import('../lib/shots-spec.mjs').ShotSpec} ShotSpec */
+/** @typedef {import('../lib/shots-spec.mjs').Captions} Captions */
+
+/** @typedef {{file: string, path: string, bytes: number, width: number|null, height: number|null, format: string|null}} ScanFile */
+/** @typedef {{displayType: string, dirName: string, dir: string, relDir: string, count: number, files: ScanFile[]}} ScanGroup */
+/** @typedef {{locale: string, dir: string, groups: ScanGroup[]}} ScanLocale */
+/** @typedef {{root: string, locales: ScanLocale[]}} ScanResult */
+/** @typedef {ScanGroup & {locale: string}} FlatGroup */
+/** @typedef {{locales: Set<string>|null, types: Set<string>|null}} Scope */
+
+/**
+ * @param {Config} cfg
+ * @returns {Promise<ScanResult>}
+ */
 async function scan(cfg) {
 	const root = join(cfg.paths.store, 'screenshots');
 	if (!existsSync(root))
@@ -113,8 +129,13 @@ async function scan(cfg) {
 	return { root, locales };
 }
 
-/** Requested scope: comma-separated flags, absent = everything on disk; `iphone-6.5` matches `IPHONE_65`. */
+/**
+ * Requested scope: comma-separated flags, absent = everything on disk; `iphone-6.5` matches `IPHONE_65`.
+ * @param {Flags} flags
+ * @returns {Scope}
+ */
 export function scopeOf(flags) {
+	/** @param {string|boolean} [v] */
 	const list = (v) =>
 		typeof v === 'string'
 			? v.split(',').map((s) => s.trim()).filter(Boolean)
@@ -127,12 +148,18 @@ export function scopeOf(flags) {
 	};
 }
 
+/** @param {Scope} scope */
 const scopeLabel = (scope) =>
 	[scope.locales ? [...scope.locales].join(',') : null, scope.types ? [...scope.types].join(',') : null]
 		.filter(Boolean)
 		.join(' · ');
 
-/** Every group on disk, flattened, narrowed to `scope`. Callers report an empty match as an error. */
+/**
+ * Every group on disk, flattened, narrowed to `scope`. Callers report an empty match as an error.
+ * @param {ScanResult} plan
+ * @param {Scope} [scope]
+ * @returns {FlatGroup[]}
+ */
 const flatGroups = (plan, scope = { locales: null, types: null }) =>
 	plan.locales
 		.filter((l) => !scope.locales || scope.locales.has(l.locale))
@@ -147,8 +174,12 @@ const flatGroups = (plan, scope = { locales: null, types: null }) =>
  * store. Kind-tagged, because a missing locale and a missing display type are
  * different mistakes, and checked as pairs once both axes exist (`--locale a,b
  * --display-type X,Y` asks for four groups); an absent axis is reported alone.
+ * @param {FlatGroup[]} groups
+ * @param {Scope} scope
+ * @returns {string[]}
  */
 export function unmatched(groups, scope) {
+	/** @param {string|null} locale @param {string|null} type */
 	const has = (locale, type) =>
 		groups.some((g) => (!locale || g.locale === locale) && (!type || typeKey(g.displayType) === type));
 	const miss = [];
@@ -160,6 +191,7 @@ export function unmatched(groups, scope) {
 	return miss;
 }
 
+/** @param {SubCtx} ctx */
 async function sizes({ flags }) {
 	const rows = await fetchSizes({ all: !!flags.all });
 	if (flags.json) return emit(rows);
@@ -179,11 +211,16 @@ async function sizes({ flags }) {
 // asc. Everything below *makes* those PNGs, and only runs for a committed design
 // spec — the heavy libraries are resolved out of the app repo at call time.
 
-/** cfg + spec + caption copy + the locale list, the four things every render subcommand needs. */
+/**
+ * cfg + spec + caption copy + the locale list, the four things every render subcommand needs.
+ * @param {SubCtx} ctx
+ * @param {{required?: boolean}} [opts]
+ * @returns {Promise<{cfg: Config, spec: ShotSpec, captions: Captions, locales: string[]}>}
+ */
 async function renderContext({ args, flags }, { required = true } = {}) {
 	const cfg = await loadConfig();
 	const spec = await loadSpec(cfg, { required });
-	if (!spec) return { cfg, spec: null };
+	if (!spec) return /** @type {{cfg: Config, spec: ShotSpec, captions: Captions, locales: string[]}} */ (/** @type {unknown} */ ({ cfg, spec: null }));
 	const captions = await loadCaptions(spec);
 	const scope = scopeOf(flags);
 	const requested = args.length ? args : scope.locales ? [...scope.locales] : [];
@@ -192,7 +229,10 @@ async function renderContext({ args, flags }, { required = true } = {}) {
 	return { cfg, spec, captions, locales };
 }
 
-/** Acquire the raw inputs; the mode split is the whole reason both modes exist. */
+/**
+ * Acquire the raw inputs; the mode split is the whole reason both modes exist.
+ * @param {SubCtx} ctx
+ */
 async function capture({ args, flags }) {
 	const { cfg, spec, locales } = await renderContext({ args, flags });
 	if (spec.mode === 'caption-band') {
@@ -204,14 +244,17 @@ async function capture({ args, flags }) {
 
 	heading(`Capture ${c.dim(`${locales.length} locale${locales.length === 1 ? '' : 's'} · ${spec.capture?.url ?? ''}`)}`);
 	const shot = await captureWeb(cfg, spec, locales, {
-		onFrame: ({ locale, frame }) => step(`${locale}/${frame}`),
+		onFrame: (/** @type {{locale: string, frame: string}} */ { locale, frame }) => step(`${locale}/${frame}`),
 	});
 	info(`${shot.length} capture${shot.length === 1 ? '' : 's'} → ${relative(cfg.root, spec.paths.raw)}`);
 	note('these are inputs, not deliverables — run `ship shots render` to composite them');
 	return 0;
 }
 
-/** Composite raw captures + caption copy into the tree `upload` reads. */
+/**
+ * Composite raw captures + caption copy into the tree `upload` reads.
+ * @param {SubCtx} ctx
+ */
 async function render({ args, flags }) {
 	const { cfg, spec, captions, locales } = await renderContext({ args, flags });
 	heading(`Render ${c.dim(`${spec.mode} · ${locales.length} locale${locales.length === 1 ? '' : 's'} · ${spec.displayType}`)}`);
@@ -238,13 +281,23 @@ async function render({ args, flags }) {
 	return 0;
 }
 
-/** Calibration + safety: the evidence that the renderer still reproduces the design. */
+/** @typedef {{frame: string, ref: string|null, differing?: number, max?: number, measures?: string}} CalRowDeviceFrame */
+/** @typedef {{frame: string, flat: number, size: number, inkDelta: number, changed: string|null, lines: string[]}} CalRowCaptionBand */
+/** @typedef {{locale: string, maxOutsideBand: number}} SafetyRow */
+/** @typedef {{mode: 'device-frame', calibration: CalRowDeviceFrame[], safety: SafetyRow[]}} VerifyDeviceFrame */
+/** @typedef {{mode: 'caption-band', calibration: CalRowCaptionBand[], safety: SafetyRow[]}} VerifyCaptionBand */
+/** @typedef {VerifyDeviceFrame|VerifyCaptionBand} VerifyResult */
+
+/**
+ * Calibration + safety: the evidence that the renderer still reproduces the design.
+ * @param {SubCtx} ctx
+ */
 async function verifyShots({ args, flags }) {
 	const { cfg, spec, captions, locales } = await renderContext({ args, flags });
-	const res = await verifyRender(cfg, spec, captions, locales);
+	const res = /** @type {VerifyResult} */ (await verifyRender(cfg, spec, captions, locales));
 
 	if (flags.json) {
-		emit(res);
+		emit(/** @type {import('../lib/util.mjs').Json} */ (/** @type {unknown} */ (res)));
 	} else if (res.mode === 'device-frame') {
 		heading(`Calibration ${c.dim('re-render of the source locale vs the design tool\'s own export')}`);
 		table(res.calibration, [
@@ -272,19 +325,22 @@ async function verifyShots({ args, flags }) {
 	// band means the band bounds are wrong and artwork is being destroyed.
 	const fails = [];
 	if (res.mode === 'caption-band') {
-		const drift = res.calibration.filter((r) => !r.changed && Math.abs(r.inkDelta) > (flags['ink-tolerance'] ?? 2));
+		const drift = res.calibration.filter((r) => !r.changed && Math.abs(r.inkDelta) > /** @type {number} */ (/** @type {unknown} */ (flags['ink-tolerance'] ?? 2)));
 		if (drift.length) fails.push(`ink width drifted on ${drift.map((r) => r.frame).join(', ')}`);
 		const bled = res.safety.filter((r) => r.maxOutsideBand > 0);
 		if (bled.length) fails.push(`pixels changed outside the band for ${bled.map((r) => r.locale).join(', ')}`);
 	} else {
-		const off = res.calibration.filter((r) => (r.differing ?? 1) > (flags['pixel-tolerance'] ?? 0.03));
+		const off = res.calibration.filter((r) => (r.differing ?? 1) > /** @type {number} */ (/** @type {unknown} */ (flags['pixel-tolerance'] ?? 0.03)));
 		if (off.length) fails.push(`reference mismatch on ${off.map((r) => r.frame).join(', ')}`);
 	}
 	if (fails.length && !flags.json) for (const f of fails) warn(f);
 	return fails.length ? 1 : 0;
 }
 
-/** Figma, which is a quota and not a service you call: the default drift check is cheap, --export spends the day's budget. */
+/**
+ * Figma, which is a quota and not a service you call: the default drift check is cheap, --export spends the day's budget.
+ * @param {SubCtx} ctx
+ */
 async function figma({ args, flags }) {
 	const { cfg, spec } = await renderContext({ args, flags });
 	const token = await figmaToken();
@@ -321,7 +377,7 @@ async function figma({ args, flags }) {
 			info(`exported ${files.length} node${files.length === 1 ? '' : 's'} → ${relative(cfg.root, dir)}`);
 			note('commit these — they are build inputs, and the quota will not serve them again today');
 		} catch (err) {
-			if (!err.quota) throw err;
+			if (!(/** @type {{quota?: boolean}} */ (err)).quota) throw err;
 			// The committed copies are exactly the fallback this design bought.
 			warn('Figma render quota exhausted (429) — keeping the committed exports');
 			note('this is survivable by design; re-run tomorrow if you actually need new artwork');
@@ -331,9 +387,14 @@ async function figma({ args, flags }) {
 	return drift.drifted ? 1 : 0;
 }
 
+/** @typedef {{displayType: string, dir: string, count: number, files: Omit<ScanFile, 'path'>[]}} PlanGroup */
+/** @typedef {{generatedAt: string, app: string|undefined, root: string, locales: {locale: string, groups: PlanGroup[]}[], totals?: {locales: number, groups: number, files: number}}} PlanOutput */
+
+/** @param {SubCtx} ctx */
 async function plan({ flags }) {
 	const cfg = await loadConfig();
 	const found = await scan(cfg);
+	/** @type {PlanOutput} */
 	const out = {
 		generatedAt: new Date().toISOString(),
 		app: cfg.name,
@@ -352,7 +413,7 @@ async function plan({ flags }) {
 	await mkdir(join(cfg.root, '.asc'), { recursive: true });
 	await writeFile(file, `${JSON.stringify(out, null, '\t')}\n`);
 
-	if (flags.json) return emit(out);
+	if (flags.json) return emit(/** @type {import('../lib/util.mjs').Json} */ (/** @type {unknown} */ (out)));
 	heading(`Screenshot inventory ${c.dim(out.root)}`);
 	table(groups, [
 		{ header: 'LOCALE', get: (g) => g.locale },
@@ -376,6 +437,8 @@ async function plan({ flags }) {
  * `asc screenshots validate` runs per group on top, and its findings fold in.
  * `--locale`/`--display-type` narrow it to the same groups `upload` would push;
  * `pre` lets `upload` hand over the config and inventory it already read.
+ * @param {{flags: Flags}} ctx
+ * @param {{cfg?: Config, found?: ScanResult}} [pre]
  */
 async function validate({ flags }, pre = {}) {
 	const cfg = pre.cfg ?? (await loadConfig());
@@ -417,12 +480,12 @@ async function validate({ flags }, pre = {}) {
 			fallback: null,
 			allowFail: true,
 		});
-		for (const finding of ascFindings(res)) {
+		for (const finding of ascFindings(/** @type {Parameters<typeof ascFindings>[0]} */ (res))) {
 			if (finding.level === 'fail') report.fail(`asc ${label}`, finding.message);
 			else report.warn(`asc ${label}`, finding.message);
 		}
 	}
-	return report.print({ json: flags.json });
+	return report.print({ json: !!flags.json });
 }
 
 /**
@@ -431,6 +494,7 @@ async function validate({ flags }, pre = {}) {
  * is incoherent: with --locale only those locales move; without it, asc's
  * app-scoped fan-out walks every locale directory on disk, so render must cover
  * every configured locale too — hence the same scope resolution, not a separate list.
+ * @param {SubCtx} ctx
  */
 async function renderChain({ args, flags }) {
 	if (!flags.render) return 0;
@@ -443,6 +507,7 @@ async function renderChain({ args, flags }) {
 	return 0;
 }
 
+/** @param {{args?: string[], flags: Flags}} ctx */
 async function upload({ args = [], flags }) {
 	const cfg = await loadConfig();
 	const rendered = await renderChain({ args, flags });
@@ -457,7 +522,7 @@ async function upload({ args = [], flags }) {
 	}
 
 	const appId = requireAppId(cfg);
-	const version = await resolveVersion(cfg, flags.version);
+	const version = await resolveVersion(cfg, /** @type {string|undefined} */ (flags.version));
 
 	const scope = scopeOf(flags);
 	const groups = flatGroups(found, scope);
@@ -475,19 +540,21 @@ async function upload({ args = [], flags }) {
 	// grown past 10 is rejected at submission.
 	const mode = flags.replace ? ['--replace'] : ['--skip-existing'];
 
-	await capPreflight({ appId, version, groups, replace: !!flags.replace, force: !!flags.force });
+	const ascGroups = /** @type {import('../lib/shots-asc.mjs').ShotGroup[]} */ (/** @type {unknown} */ (groups));
+	await capPreflight({ appId, version, groups: ascGroups, replace: !!flags.replace, force: !!flags.force });
 
-	const results = scope.locales ? await uploadPerLocale({ appId, version, groups, mode }) : await uploadAppScoped({
-		appId, version, platform: cfg.asc.platform ?? 'IOS', root: join(cfg.paths.store, 'screenshots'), groups, mode,
+	const results = scope.locales ? await uploadPerLocale({ appId, version, groups: ascGroups, mode }) : await uploadAppScoped({
+		appId, version, platform: cfg.asc.platform ?? 'IOS', root: join(cfg.paths.store, 'screenshots'), groups: ascGroups, mode,
 	});
 	return reportUpload({ appId, version, results, flags });
 }
 
 const SUB = { sizes, capture, render, verify: verifyShots, figma, plan, validate, upload };
 
+/** @param {SubCtx} ctx */
 export async function run({ args, flags }) {
 	const [sub = 'sizes', ...rest] = args;
-	const fn = SUB[sub];
+	const fn = SUB[/** @type {keyof typeof SUB} */ (sub)];
 	if (!fn)
 		throw new ShipError(`shots: unknown subcommand "${sub}"`, {
 			hint: `try: ${Object.keys(SUB).join(', ')}`,

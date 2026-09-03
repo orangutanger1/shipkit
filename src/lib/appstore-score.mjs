@@ -7,9 +7,25 @@ import { median } from './util.mjs';
 import { charCount, indexedWords, isNoSpaceLang, stopwordsFor, words } from './text.mjs';
 import { topResults } from './appstore-client.mjs';
 
+/** A live storefront search/lookup result, viewed loosely — the fields this module reads. */
+/** @typedef {{trackName?: string, sellerName?: string, userRatingCount?: number, releaseDate?: string, trackId?: number, averageUserRating?: number, trackViewUrl?: string, price?: number}} AppRow */
+/** One harvested term's artifact entry, or the legacy `string[]` seed-list shape. */
+/** @typedef {{seeds?: string[], rank?: number}} TermEntry */
+/** `.asc/aso/*-volume.json`: hand or MCP-sourced popularity per term. */
+/** @typedef {{terms?: Record<string, number|{popularity?: number, difficulty?: number}>}} VolumeFile */
+/** `.asc/analytics/<locale>-terms.json`: measured impressions per term. */
+/** @typedef {{rows?: {term?: string, impressions?: number}[]}} AnalyticsFile */
+/** One row of {@link demandTable}'s output. */
+/** @typedef {{demand: number, source: 'analytics'|'volume'|'rank', difficulty?: number}} DemandRow */
+
+/** @param {number} n */
 const clamp100 = (n) => clamp(Math.round(n), 0, 100);
 
-/** Drop brand names and malformed phrases; keep 1-4 word queries a human would type. */
+/**
+ * Drop brand names and malformed phrases; keep 1-4 word queries a human would type.
+ * @param {string[]} terms
+ * @param {{minWords?: number, maxWords?: number, exclude?: string[]}} [opts]
+ */
 export function pickCandidates(terms, { minWords = 1, maxWords = 4, exclude = [] } = {}) {
 	const noise = exclude.length ? new RegExp(exclude.join('|'), 'i') : null;
 	const out = new Set();
@@ -27,11 +43,19 @@ export function pickCandidates(terms, { minWords = 1, maxWords = 4, exclude = []
 
 const STOP_SUFFIX = /\b(free|pro|app|apps)\s*$/i;
 
-/** Seeds of a candidate, tolerating the legacy `term: string[]` artifact shape. */
+/**
+ * Seeds of a candidate, tolerating the legacy `term: string[]` artifact shape.
+ * @param {TermEntry|string[]} entry
+ */
 const seedsOf = (entry) => (Array.isArray(entry) ? entry : (entry?.seeds ?? []));
+/** @param {TermEntry|string[]} entry */
 const rankOf = (entry) => (Array.isArray(entry) || typeof entry?.rank !== 'number' ? null : entry.rank);
 
-/** Whole days since an ISO timestamp; null when the storefront gave us nothing to date. */
+/**
+ * Whole days since an ISO timestamp; null when the storefront gave us nothing to date.
+ * @param {string|null|undefined} iso
+ * @param {number} [now]
+ */
 function ageInDays(iso, now = Date.now()) {
 	const t = Date.parse(iso ?? '');
 	return Number.isFinite(t) ? Math.max(0, Math.floor((now - t) / DAY_MS)) : null;
@@ -44,7 +68,7 @@ function ageInDays(iso, now = Date.now()) {
  * free volume proxy, and a term several different seeds surface is a hub term
  * rather than a long-tail accident. A legacy artifact carries no rank at all;
  * those get the neutral middle so seed count still orders them.
- * @param {object|string[]} entry
+ * @param {TermEntry|string[]} entry
  * @param {{maxRank?: number}} [opts] worst rank observed in this harvest
  */
 export function demand(entry, { maxRank = 12 } = {}) {
@@ -58,6 +82,7 @@ export function demand(entry, { maxRank = 12 } = {}) {
  * Measured impressions beat every heuristic. `.asc/analytics/<locale>-terms.json`
  * is log-scaled against its own busiest term, so 0 impressions means 0 demand —
  * a term real users never typed is not an opportunity, it is a guess we disproved.
+ * @param {AnalyticsFile|null} [analytics]
  */
 function measuredDemand(analytics) {
 	const out = new Map();
@@ -75,9 +100,9 @@ function measuredDemand(analytics) {
 /**
  * Demand for every harvested term, 0-100, by source precedence:
  * measured impressions > hand/MCP volume file > autocomplete rank.
- * @param {Record<string, object|string[]>} terms
- * @param {{volume?: object, analytics?: object}} [sources]
- * @returns {Map<string, {demand: number, source: 'analytics'|'volume'|'rank', difficulty?: number}>}
+ * @param {Record<string, TermEntry|string[]>} terms
+ * @param {{volume?: VolumeFile|null, analytics?: AnalyticsFile|null}} [sources]
+ * @returns {Map<string, DemandRow>}
  */
 export function demandTable(terms, { volume = null, analytics = null } = {}) {
 	const entries = Object.entries(terms ?? {});
@@ -89,7 +114,8 @@ export function demandTable(terms, { volume = null, analytics = null } = {}) {
 		const key = term.toLocaleLowerCase();
 		const known = volume?.terms?.[term] ?? volume?.terms?.[key];
 		const popularity = typeof known === 'number' ? known : known?.popularity;
-		const difficulty = typeof known?.difficulty === 'number' ? known.difficulty : undefined;
+		const knownDifficulty = /** @type {{difficulty?: number}|undefined} */ (known)?.difficulty;
+		const difficulty = typeof knownDifficulty === 'number' ? knownDifficulty : undefined;
 		const seen = measured.get(key);
 		if (seen !== undefined) out.set(term, { demand: seen, source: 'analytics', difficulty });
 		else if (typeof popularity === 'number') out.set(term, { demand: clamp100(popularity), source: 'volume', difficulty });
@@ -128,6 +154,7 @@ const ARTIFACT_RE = new RegExp(`\\b(${ARTIFACT_NOUNS.join('|')})\\b`, 'i');
  * convention is to jam the category noun onto the brand, and a plain `\blog\b`
  * never fires on it. Splitting first also keeps "Catalog" and "Biology" out,
  * which a bare substring test would wrongly count.
+ * @param {string|null|undefined} s
  */
 const camelSplit = (s) =>
 	String(s ?? '')
@@ -141,6 +168,8 @@ const camelSplit = (s) =>
  * Plus" and "HiveLog", so a title word counts when it is a prefix or a suffix
  * of the subject word, or the subject starts with it. Three characters is the
  * floor — below it ("ac", "rv") a prefix match is noise, so those compare whole.
+ * @param {string[]} titleWords
+ * @param {string} subject
  */
 function subjectHit(titleWords, subject) {
 	for (const w of titleWords) {
@@ -172,7 +201,7 @@ function subjectHit(titleWords, subject) {
  * built this, ever — and a term dies to either. Read together they name which:
  * high commodity with ratings is a served market (no room), high commodity
  * without them is a race (no payoff).
- * @param {object[]} results live top-10 from {@link topResults}
+ * @param {AppRow[]} results live top-10 from {@link topResults}
  * @param {{term?:string, locale?:string, tractionFloor?:number}} [opts]
  */
 export function commodity(results, { term = '', locale = 'en', tractionFloor = 25 } = {}) {
@@ -253,7 +282,7 @@ export function commodity(results, { term = '', locale = 'en', tractionFloor = 2
  * The window is a year, not a quarter: the wave that produces these does not
  * finish in ninety days, and an app from eleven months ago with two ratings is
  * still competing for the phrase you were going to buy.
- * @param {object[]} results live top-10 from {@link topResults}
+ * @param {AppRow[]} results live top-10 from {@link topResults}
  * @param {{term?:string, now?:number, freshDays?:number, tractionFloor?:number}} [opts]
  */
 export function saturation(results, { term = '', now = Date.now(), freshDays = 365, tractionFloor = 25 } = {}) {
@@ -270,7 +299,7 @@ export function saturation(results, { term = '', now = Date.now(), freshDays = 3
 	const n = rows.length;
 	// An unknown release date is not evidence of a flood; it is excluded from
 	// the ratio rather than counted as old, so a lookup gap cannot fake a pass.
-	const dated = rows.filter((r) => r.ageDays !== null);
+	const dated = /** @type {Array<typeof rows[number] & {ageDays: number}>} */ (rows.filter((r) => r.ageDays !== null));
 	const fresh = dated.filter((r) => r.ageDays <= freshDays);
 	const quarter = dated.filter((r) => r.ageDays <= 90);
 	const freshUnproven = fresh.filter((r) => r.ratings < tractionFloor);
@@ -324,7 +353,7 @@ export function saturation(results, { term = '', now = Date.now(), freshDays = 3
  * opportunity × (1 − saturation/100)` is what the sweep ranks by. `opportunity`
  * is unmodified because it is the number every earlier artifact recorded.
  * @param {string} term
- * @param {object[]} results live top-10 from {@link topResults}
+ * @param {AppRow[]} results live top-10 from {@link topResults}
  * @param {{demand?: number, now?: number}} [opts] demand 0-100; omitted means "unknown", i.e. no discount
  */
 export function score(term, results, { demand: demandScore = 100, now = Date.now() } = {}) {
@@ -341,8 +370,8 @@ export function score(term, results, { demand: demandScore = 100, now = Date.now
 	const crowding = 1 - Math.min(1, exact / 5); // 5+ exact-title matches → 0
 	const competition = Math.round(100 * (0.4 * weakness + 0.35 * moat + 0.25 * crowding));
 	const demandValue = clamp100(demandScore);
-	const flood = saturation(results, { term, now });
-	const same = commodity(results, { term });
+	const flood = /** @type {NonNullable<ReturnType<typeof saturation>>} */ (saturation(results, { term, now }));
+	const same = /** @type {NonNullable<ReturnType<typeof commodity>>} */ (commodity(results, { term }));
 	const opportunity = Math.round((demandValue / 100) * competition);
 
 	return {
@@ -379,10 +408,11 @@ export function score(term, results, { demand: demandScore = 100, now = Date.now
  * Score many keywords sequentially (one storefront, so one request at a time).
  * @param {string[]} terms
  * @param {{country: string, lang: string}} market
- * @param {{onProgress?: Function, demands?: Map<string, object>|Record<string, object>}} [opts]
+ * @param {{onProgress?: Function, demands?: Map<string, DemandRow|number>|Record<string, DemandRow|number>}} [opts]
  *   `demands` takes a plain 0-100 number or a {@link demandTable} row per term.
  */
 export async function scoreAll(terms, market, { onProgress, demands } = {}) {
+	/** @param {string} term */
 	const demandOf = (term) => {
 		const row = demands instanceof Map ? demands.get(term) : demands?.[term];
 		return typeof row === 'object' && row !== null ? row.demand : row;
@@ -410,7 +440,7 @@ export async function scoreAll(terms, market, { onProgress, demands } = {}) {
  * point: `Glovebox` collides with `... - Glovebox`, not with `Gloveboxes Inc`
  * substring noise, and an exact title equality is a different severity.
  * @param {string} name candidate brand word(s)
- * @param {object[]} results search results for that name
+ * @param {AppRow[]} results search results for that name
  * @param {{now?:number}} [opts]
  */
 export function brandCollisions(name, results, { now = Date.now() } = {}) {
@@ -442,6 +472,8 @@ export function brandCollisions(name, results, { now = Date.now() } = {}) {
  * Locale-aware on both axes, because neither default is right outside English:
  * `カレンダー予定` is two tokens and no spaces, and the limit counts code points,
  * so a whitespace split plus `String.length` overspends a Japanese field twice over.
+ * @param {Array<string|{keyword: string}>} scored
+ * @param {{limit?: number, alreadyIndexed?: string, locale?: string}} [opts]
  */
 export function packKeywords(scored, { limit = 100, alreadyIndexed = '', locale = 'en' } = {}) {
 	const indexed = indexedWords(alreadyIndexed, locale);
@@ -465,6 +497,12 @@ export function packKeywords(scored, { limit = 100, alreadyIndexed = '', locale 
 	return { keywords: chosen.join(','), used: length, limit, dropped: indexed.size };
 }
 
+/**
+ * @param {number} i
+ * @param {number} total
+ * @param {string} label
+ * @param {*} [extra]
+ */
 export function progressLine(i, total, label, extra) {
 	const pct = String(Math.round((100 * i) / total)).padStart(3);
 	note(`${c.dim(`[${pct}%]`)} ${label}${extra !== undefined ? c.dim(` → ${extra}`) : ''}`);

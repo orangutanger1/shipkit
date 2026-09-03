@@ -27,6 +27,15 @@ import { eas, run as execRun } from '../exec.mjs';
 import { ShipError, c, good, heading, info, note, step, table, warn } from '../log.mjs';
 import { otaSafety } from '../lib/native.mjs';
 
+/** @typedef {import('../config.mjs').Config} Config */
+/** @typedef {import('../lib/util.mjs').Flags} Flags */
+/** @typedef {import('../lib/util.mjs').Json} Json */
+/** @typedef {import('../lib/util.mjs').JsonObject} JsonObject */
+/** @typedef {Awaited<ReturnType<typeof otaSafety>>} Verdict */
+/** @typedef {{kind: 'added'|'removed'|'changed'|'config', name: string, detail: string}} DriftRow */
+/** One entry of `eas update --json`'s published array, as {@link verifyServed} reads it. */
+/** @typedef {{platform?: string, id?: string}} UpdateEntry */
+
 export const help = `
 ${c.bold('ship ota')} ${c.dim('— publish a JS-only update, but only when that is actually safe')}
 
@@ -55,8 +64,13 @@ ${c.bold('Exit codes')}
   ${c.dim('0 safe (or published)  ·  1 drift detected — run `ship build` instead')}
 `;
 
-/** Drift rows, flattened so one table tells the whole story. */
+/**
+ * Drift rows, flattened so one table tells the whole story.
+ * @param {Verdict} verdict
+ * @returns {DriftRow[]}
+ */
 function driftRows(verdict) {
+	/** @type {DriftRow[]} */
 	const rows = [];
 	for (const name of verdict.added) rows.push({ kind: 'added', name, detail: verdict.current.deps[name] ?? '' });
 	for (const name of verdict.removed)
@@ -71,9 +85,14 @@ function driftRows(verdict) {
 	return rows;
 }
 
+/** @type {Record<DriftRow['kind'], (s: string) => string>} */
 const KIND_COLOUR = { added: c.green, removed: c.red, changed: c.yellow, config: c.magenta };
 
-/** eas prefixes warnings sometimes; take the JSON wherever it starts. */
+/**
+ * eas prefixes warnings sometimes; take the JSON wherever it starts.
+ * @param {string} text
+ * @returns {Json|null}
+ */
 function salvageJSON(text) {
 	const t = String(text ?? '').trim();
 	for (const start of [0, t.search(/[[{]/)]) {
@@ -93,6 +112,11 @@ function salvageJSON(text) {
  * somewhere else, or a runtime version no installed binary reports. Protocol 1
  * answers in `multipart/mixed`; the manifest is the first JSON object up to the
  * next boundary, and a protocol 0 bare-JSON response reads unchanged.
+ * @param {string} url
+ * @param {string} platform
+ * @param {string} runtimeVersion
+ * @param {string} branch
+ * @returns {Promise<JsonObject>}
  */
 async function servedManifest(url, platform, runtimeVersion, branch) {
 	const res = await fetch(url, {
@@ -117,11 +141,14 @@ async function servedManifest(url, platform, runtimeVersion, branch) {
 	try {
 		return JSON.parse(body.trim());
 	} catch (err) {
-		throw new ShipError(`the update server answered with something that is not a manifest: ${err.message}`);
+		throw new ShipError(`the update server answered with something that is not a manifest: ${/** @type {Error} */ (err).message}`);
 	}
 }
 
-/** The export-and-verify loop: rebuild per platform and prove the secrets landed in the bytes. */
+/**
+ * The export-and-verify loop: rebuild per platform and prove the secrets landed in the bytes.
+ * @param {{app: string, platforms: string[], required: string[], publicKeys: string[]}} opts
+ */
 async function exportAndVerify({ app, platforms, required, publicKeys }) {
 	for (const platform of platforms) {
 		// `--clear` is load-bearing, not hygiene. EXPO_PUBLIC_* values are inlined
@@ -149,18 +176,21 @@ async function exportAndVerify({ app, platforms, required, publicKeys }) {
 
 		// The value, not the variable name: `process.env.X` is compiled away, so
 		// the only proof that inlining happened is the secret itself in the bytes.
-		const absent = required.filter((key) => !text.includes(process.env[key]));
+		const absent = required.filter((key) => !text.includes(/** @type {string} */ (process.env[key])));
 		if (absent.length)
 			throw new ShipError(`${absent.join(', ')} did not reach the ${platform} bundle — this is the crash, refusing to publish`);
-		const unverified = publicKeys.filter((k) => !required.includes(k) && !text.includes(process.env[k]));
+		const unverified = publicKeys.filter((k) => !required.includes(k) && !text.includes(/** @type {string} */ (process.env[k])));
 		good(`${platform}: ${basename(bundlePath)} verified (md5 ${digest})`);
 		if (unverified.length) note(`${unverified.join(', ')} defined but not inlined — fine if they are optional`);
 	}
 }
 
-/** Prove the branch actually serves what `eas update` just published. */
+/**
+ * Prove the branch actually serves what `eas update` just published.
+ * @param {{cfg: Config, platforms: string[], entries: UpdateEntry[], branch: string, version: string}} opts
+ */
 async function verifyServed({ cfg, platforms, entries, branch, version }) {
-	const updatesUrl = (await readExpoConfig(cfg))?.updates?.url;
+	const updatesUrl = /** @type {{url?: string}|undefined} */ ((await readExpoConfig(cfg))?.updates)?.url;
 	for (const platform of platforms) {
 		const update = entries.find((e) => e?.platform === platform) ?? entries[0];
 		if (!update?.id) throw new ShipError(`eas update published nothing identifiable for ${platform}`);
@@ -181,6 +211,7 @@ async function verifyServed({ cfg, platforms, entries, branch, version }) {
  * The inner half: runs under `eas env:exec <environment>`, so process.env is
  * exactly what the published bundle will be built with. Every check here is
  * the difference between the 2026-08-25 incident and its absence.
+ * @param {{cfg: Config, flags: Flags, version: string}} opts
  */
 async function publishInner({ cfg, flags, version }) {
 	const app = cfg.paths.app;
@@ -227,12 +258,13 @@ async function publishInner({ cfg, flags, version }) {
 			hint: (res.stderr || res.stdout).trim().split('\n').slice(-6).join('\n'),
 		});
 	const published = salvageJSON(res.stdout);
-	const entries = Array.isArray(published) ? published : published ? [published] : [];
+	const entries = /** @type {UpdateEntry[]} */ (Array.isArray(published) ? published : published ? [published] : []);
 
 	await verifyServed({ cfg, platforms, entries, branch, version });
 	return 0;
 }
 
+/** @param {import('../lib/util.mjs').SubCtx} ctx */
 export async function run({ args, flags }) {
 	if (args.length)
 		throw new ShipError(`ota: unexpected argument "${args[0]}"`, {
@@ -240,7 +272,7 @@ export async function run({ args, flags }) {
 		});
 
 	const cfg = await loadConfig();
-	const version = await resolveVersion(cfg, flags.version);
+	const version = await resolveVersion(cfg, /** @type {string|undefined} */ (flags.version));
 
 	if (flags.inner) return publishInner({ cfg, flags, version });
 
