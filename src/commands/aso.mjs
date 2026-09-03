@@ -61,6 +61,22 @@ import {
 // The volume importer is pure payload handling; the test suite pins it from here.
 export { normaliseVolume } from '../lib/aso-report.mjs';
 
+/** @typedef {import('../config.mjs').Config} Config */
+/** @typedef {import('../lib/util.mjs').Flags} Flags */
+/** @typedef {import('../lib/util.mjs').SubCtx} SubCtx */
+/** @typedef {import('../lib/locales.mjs').StagedListing} StagedListing */
+/** @typedef {{country: string, lang: string}} Market */
+/**
+ * One pipeline stage, run once or swept over every locale.
+ * @typedef {{
+ *   name: string,
+ *   run: (cfg: Config, locale: string, market: Market, flags: Flags) => Promise<any>,
+ *   print: (out: any) => any,
+ *   ok?: (out: any) => boolean,
+ *   summary: (out: any) => object,
+ * }} Stage
+ */
+
 export const help = `
 ${c.bold('ship aso')} ${c.dim('— App Store keyword research and packing')}
 
@@ -97,16 +113,25 @@ ${c.dim('Artifacts: aso/<locale>/{candidates,volume,scored,competitors}.json')}
 ${c.dim('Order: harvest → volume (optional) → score → suggest → apply')}
 `;
 
+/** @type {(cfg: Config, locale: string, kind: string) => string} */
 const artifactPath = (cfg, locale, kind) => join(cfg.paths.aso, locale, `${kind}.json`);
 
+/** @type {(cfg: Config, locale: string, kind: string, data: any) => Promise<string>} */
 const writeArtifact = (cfg, locale, kind, data) => writeJSON(artifactPath(cfg, locale, kind), data);
 
+/** @type {Record<string, string>} */
 const NEXT_STAGE = {
 	candidates: 'ship aso harvest',
 	scored: 'ship aso score',
 	competitors: 'ship aso competitors',
 };
 
+/**
+ * @param {Config} cfg
+ * @param {string} locale
+ * @param {string} kind
+ * @returns {Promise<any>}
+ */
 async function readArtifact(cfg, locale, kind) {
 	const file = artifactPath(cfg, locale, kind);
 	if (!existsSync(file))
@@ -118,13 +143,17 @@ async function readArtifact(cfg, locale, kind) {
 	return readJSONIfExists(file);
 }
 
-/** Optional inputs (volume, analytics) never block a stage: absent means "no signal". */
+/**
+ * Optional inputs (volume, analytics) never block a stage: absent means "no signal".
+ * @param {string} file
+ * @returns {Promise<any>}
+ */
 async function readOptional(file) {
 	if (!existsSync(file)) return null;
 	try {
 		return JSON.parse(await readFile(file, 'utf8'));
 	} catch (err) {
-		warn(`ignoring ${file}: ${err.message}`);
+		warn(`ignoring ${file}: ${/** @type {Error} */ (err).message}`);
 		return null;
 	}
 }
@@ -134,6 +163,10 @@ async function readOptional(file) {
  * weekly, so the cache turns a re-run into seconds and, more importantly,
  * keeps a 403 wall halfway through a sweep from costing the locales already paid for.
  */
+/**
+ * @param {Config} cfg
+ * @param {Flags} flags
+ */
 function configureCache(cfg, flags) {
 	useCache({
 		dir: join(cfg.paths.root, '.asc', 'cache', 'appstore'),
@@ -141,7 +174,11 @@ function configureCache(cfg, flags) {
 	});
 }
 
-/** Config + the locale/market pair every subcommand operates on. */
+/**
+ * Config + the locale/market pair every subcommand operates on.
+ * @param {Flags} flags
+ * @returns {Promise<{cfg: Config, locale: string, market: Market}>}
+ */
 async function context(flags) {
 	const cfg = await loadConfig();
 	const locale = String(flags.locale ?? cfg.asc.primaryLocale);
@@ -150,6 +187,7 @@ async function context(flags) {
 	return { cfg, locale, market };
 }
 
+/** @param {string} locale */
 function requireMarket(locale) {
 	const market = marketFor(locale);
 	if (!market)
@@ -159,8 +197,15 @@ function requireMarket(locale) {
 	return market;
 }
 
+/** @type {(cfg: Config, locale: string) => Promise<StagedListing|null>} */
 const listingFor = async (cfg, locale) => (await readStaged(cfg)).find((s) => s.locale === locale) ?? null;
 
+/**
+ * @param {Config} cfg
+ * @param {string} locale
+ * @param {Market} market
+ * @param {Flags} flags
+ */
 async function harvestOne(cfg, locale, market, flags) {
 	const { seeds, origin, mismatch } = await seedsFor(cfg, locale, flags, listingFor);
 	if (!seeds.length)
@@ -170,10 +215,12 @@ async function harvestOne(cfg, locale, market, flags) {
 
 	announceSeeds(cfg, { locale, market, seeds, origin, mismatch, json: flags.json });
 
+	/** @param {Record<string, any>} terms */
 	const save = async (terms) => {
 		const artifact = { generatedAt: new Date().toISOString(), locale, market, seeds, terms };
 		return { artifact, file: await writeArtifact(cfg, locale, 'candidates', artifact) };
 	};
+	/** @param {Record<string, any>} partial */
 	const onPartial = async (partial) => {
 		const { file } = await save(partial);
 		warn(`${locale}: kept ${Object.keys(partial).length} candidates harvested before the wall → ${file}`);
@@ -184,6 +231,7 @@ async function harvestOne(cfg, locale, market, flags) {
 	return { locale, market, seeds, origin, mismatch, terms, artifact, file, count: Object.keys(terms).length };
 }
 
+/** @type {Stage} */
 const HARVEST = {
 	name: 'harvest',
 	run: harvestOne,
@@ -201,6 +249,12 @@ async function harvest({ flags }) {
 	return out.count ? 0 : 1;
 }
 
+/**
+ * @param {Config} cfg
+ * @param {string} locale
+ * @param {Market} _market
+ * @param {Flags} flags
+ */
 async function volumeOne(cfg, locale, _market, flags) {
 	const file = artifactPath(cfg, locale, 'volume');
 	const existing = await readOptional(file);
@@ -212,7 +266,7 @@ async function volumeOne(cfg, locale, _market, flags) {
 		try {
 			raw = JSON.parse(await readFile(source, 'utf8'));
 		} catch (err) {
-			throw new ShipError(`${source} is not valid JSON`, { hint: err.message });
+			throw new ShipError(`${source} is not valid JSON`, { hint: /** @type {Error} */ (err).message });
 		}
 		const imported = normaliseVolume(raw, locale);
 		if (!Object.keys(imported.terms).length)
@@ -228,6 +282,7 @@ async function volumeOne(cfg, locale, _market, flags) {
 	return { locale, file, artifact: { ...VOLUME_TEMPLATE, locale }, imported: 0, source: null, template: true };
 }
 
+/** @type {Stage} */
 const VOLUME = {
 	name: 'volume',
 	run: volumeOne,
@@ -244,13 +299,24 @@ async function volume({ flags }) {
 	return 0;
 }
 
-/** Demand per candidate term: measured impressions, else volume.json, else autocomplete rank. */
+/**
+ * Demand per candidate term: measured impressions, else volume.json, else autocomplete rank.
+ * @param {Config} cfg
+ * @param {string} locale
+ * @param {Record<string, any>} terms
+ */
 async function demandFor(cfg, locale, terms) {
 	const volumeFile = await readOptional(artifactPath(cfg, locale, 'volume'));
 	const analytics = await readOptional(join(cfg.paths.analytics, `${locale}-terms.json`));
 	return demandTable(terms, { volume: volumeFile, analytics });
 }
 
+/**
+ * @param {Config} cfg
+ * @param {string} locale
+ * @param {Market} market
+ * @param {Flags} flags
+ */
 async function scoreOne(cfg, locale, market, flags) {
 	const candidates = await readArtifact(cfg, locale, 'candidates');
 	const terms = candidates.terms ?? {};
@@ -290,6 +356,7 @@ async function scoreOne(cfg, locale, market, flags) {
 	return { locale, market, scored, artifact, file, count: scored.length };
 }
 
+/** @type {Stage} */
 const SCORE = {
 	name: 'score',
 	run: scoreOne,
@@ -311,6 +378,9 @@ async function score({ flags }) {
  * The shared suggest/apply computation.
  * `strict` is for apply: suggesting against a missing listing is still useful
  * research, but writing one requires a file to write into.
+ * @param {Config} cfg
+ * @param {string} locale
+ * @param {{strict?: boolean}} [opts]
  */
 async function proposal(cfg, locale, { strict = false } = {}) {
 	const artifact = await readArtifact(cfg, locale, 'scored');
@@ -326,6 +396,7 @@ async function proposal(cfg, locale, { strict = false } = {}) {
 	return { listing, ...packedProposal(scored, listing?.data ?? {}, locale, minVolume) };
 }
 
+/** @type {Stage} */
 const SUGGEST = {
 	name: 'suggest',
 	run: (cfg, locale) => proposal(cfg, locale),
@@ -349,11 +420,14 @@ async function suggest({ flags }) {
  * Apple throttles per storefront, so a locale that hits a wall must not cost the
  * others their refresh: failures are collected, never thrown. Every locale
  * failing is not throttling, it is a broken setup, and that exits non-zero.
+ * @param {Flags} flags
+ * @param {Stage} stage
  */
 async function sweep(flags, stage) {
 	const cfg = await loadConfig();
 	configureCache(cfg, flags);
 	const locales = cfg.store.locales?.length ? cfg.store.locales : [sourceLocale(cfg)];
+	/** @type {any[]} */
 	const results = [];
 	let failed = 0;
 
@@ -373,9 +447,9 @@ async function sweep(flags, stage) {
 			if (!flags.json) stage.print(out);
 		} catch (err) {
 			failed++;
-			warn(`${locale}: ${err.message} — keeping the last ${stage.name}`);
-			if (err.hint) note(c.dim(err.hint));
-			results.push({ locale, ok: false, error: err.message });
+			warn(`${locale}: ${/** @type {Error} */ (err).message} — keeping the last ${stage.name}`);
+			if (/** @type {ShipError} */ (err).hint) note(c.dim(/** @type {ShipError} */ (err).hint));
+			results.push({ locale, ok: false, error: /** @type {Error} */ (err).message });
 		}
 	}
 

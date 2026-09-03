@@ -21,6 +21,12 @@ import { CONFIG_NAME, SHIPKIT_ROOT, saveConfig } from '../config.mjs';
 import { isDryRun } from '../exec.mjs';
 import { ShipError, c, good, heading, info, note, step, warn } from '../log.mjs';
 
+/** @typedef {import('../lib/util.mjs').Flags} Flags */
+/** @typedef {import('../lib/util.mjs').Json} Json */
+/** @typedef {import('../lib/util.mjs').JsonObject} JsonObject */
+/** @typedef {import('../lib/scout-scoring.mjs').ScoutBrief & {file: string, slug?: string, seeds?: string[]}} Brief */
+/** @typedef {import('../lib/scout-scoring.mjs').StagedDraft} Listing */
+
 export const help = `
 ${c.bold('ship new')} ${c.dim('— scaffold a new Expo iOS app, wired to the pipeline')}
 
@@ -53,9 +59,11 @@ const DOTFILES = { _gitignore: '.gitignore', _npmrc: '.npmrc' };
 const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
 const BUNDLE_RE = /^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/;
 
-/** Every placeholder the template may reference. Unknown ones are left alone. */
+/** Every placeholder the template may reference. Unknown ones are left alone.
+ * @type {(text: string, vars: Record<string, string>) => string} */
 const fill = (text, vars) => text.replace(/__([A-Z_]+)__/g, (m, key) => (key in vars ? vars[key] : m));
 
+/** @type {(slug: string) => string} */
 const titleCase = (slug) =>
 	slug
 		.split('-')
@@ -63,7 +71,11 @@ const titleCase = (slug) =>
 		.map((w) => w[0].toUpperCase() + w.slice(1))
 		.join(' ');
 
-/** Relative paths of every template file, depth-first, directories implied. */
+/** Relative paths of every template file, depth-first, directories implied.
+ * @param {string} dir
+ * @param {string} [base]
+ * @returns {AsyncGenerator<string, void, undefined>}
+ */
 async function* walk(dir, base = dir) {
 	for (const entry of await readdir(dir, { withFileTypes: true })) {
 		const abs = join(dir, entry.name);
@@ -72,7 +84,8 @@ async function* walk(dir, base = dir) {
 	}
 }
 
-/** Template-relative path → on-disk path, un-prefixing dotfiles as it goes. */
+/** Template-relative path → on-disk path, un-prefixing dotfiles as it goes.
+ * @type {(rel: string) => string} */
 const outputName = (rel) =>
 	rel
 		.split('/')

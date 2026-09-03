@@ -11,13 +11,32 @@ import { c, good, heading, info, note, table, warn } from '../log.mjs';
 import { charCount, indexedWords, isCovered, isNoSpaceLang } from './text.mjs';
 import { keywordList, lintListing } from './locales.mjs';
 
+/** @typedef {import('../config.mjs').Config} Config */
+/** @typedef {import('./locales.mjs').StagedListing} StagedListing */
+/** @typedef {import('./locales.mjs').ListingData} ListingData */
+/** @typedef {import('./util.mjs').Flags} Flags */
+/** @typedef {{id?: string|number|null, name?: string}} CompetitorRef */
+/** A scored candidate, tolerating the bare-string legacy shape. */
+/** @typedef {{keyword: string, opportunity?: number, demand?: number, demandSource?: string, competition?: number, medianRatings?: number, weakAppsTop10?: number, difficulty?: number, top3?: CompetitorRef[]}} ScoredTerm */
+/** @typedef {{name?: string, trackName?: string, sellerName?: string, userRatingCount?: number, averageUserRating?: number, price?: number, primaryGenreName?: string, subtitle?: string, trackId?: string|number}} StoreApp */
+
 /** Shortest first: one- and two-word queries are the high-volume heads. */
 export const byLength = (a, b) => a.length - b.length || a.localeCompare(b);
 
-/** Terms scored by an earlier run, tolerating the pre-demand `scored` key. */
+/**
+ * Terms scored by an earlier run, tolerating the pre-demand `scored` key.
+ * @param {{terms?: ScoredTerm[], scored?: ScoredTerm[]}|null|undefined} artifact
+ * @returns {ScoredTerm[]}
+ */
 export const scoredTerms = (artifact) => artifact?.terms ?? artifact?.scored ?? [];
 
-/** Scored terms whose every word is already covered by name/subtitle. */
+/**
+ * Scored terms whose every word is already covered by name/subtitle.
+ * @param {(ScoredTerm|string)[]} scored
+ * @param {string} alreadyIndexed
+ * @param {string} locale
+ * @returns {string[]}
+ */
 function coveredTerms(scored, alreadyIndexed, locale) {
 	const indexed = indexedWords(alreadyIndexed, locale);
 	if (!indexed.size) return [];
@@ -26,7 +45,12 @@ function coveredTerms(scored, alreadyIndexed, locale) {
 		.filter((t) => isCovered(t, indexed, locale));
 }
 
-/** Annotate scored terms with where their demand came from, and difficulty when known. */
+/**
+ * Annotate scored terms with where their demand came from, and difficulty when known.
+ * @param {ScoredTerm[]} scored
+ * @param {Map<string, {source: string, difficulty?: number}>} demands
+ * @returns {void}
+ */
 export function mergeDemands(scored, demands) {
 	for (const entry of scored) {
 		const row = demands.get(entry.keyword);
@@ -38,7 +62,11 @@ export function mergeDemands(scored, demands) {
 
 // --- harvest seeds ----------------------------------------------------------
 
-/** The locale the app is authored in; everything else is a translation. */
+/**
+ * The locale the app is authored in; everything else is a translation.
+ * @param {Config} cfg
+ * @returns {string}
+ */
 export const sourceLocale = (cfg) => cfg.loc.sourceLocale ?? cfg.asc.primaryLocale;
 
 /**
@@ -48,6 +76,11 @@ export const sourceLocale = (cfg) => cfg.loc.sourceLocale ?? cfg.asc.primaryLoca
  * mistake in a multi-market harvest, so it warns instead of quietly proceeding.
  * `listingFor` is injected (the command's staged-listing reader) and only paid
  * for when the config provides no seeds at all.
+ * @param {Config} cfg
+ * @param {string} locale
+ * @param {Flags} flags
+ * @param {(cfg: Config, locale: string) => Promise<StagedListing|null>} listingFor
+ * @returns {Promise<{seeds: string[], origin: string, mismatch: boolean}>}
  */
 export async function seedsFor(cfg, locale, flags, listingFor) {
 	const split = (s) =>
@@ -97,13 +130,19 @@ export const VOLUME_TEMPLATE = {
  * A Platform API v1 response wraps its payload in `result`, and the popularity
  * report wraps it again in `rows`. Unwrapping here rather than at the call site is
  * what lets `--file` take a saved API response with no editing.
+ * @param {any} raw
+ * @returns {any}
  */
 const unwrapResult = (raw) => {
 	const result = raw?.result ?? raw;
 	return result?.rows ?? result;
 };
 
-/** `term`/`keyword` are ours, `text` is v1 keyword suggestions, `searchTerm` is the popularity report. */
+/**
+ * `term`/`keyword` are ours, `text` is v1 keyword suggestions, `searchTerm` is the popularity report.
+ * @param {any} row
+ * @returns {any}
+ */
 const termOf = (row) => row?.term ?? row?.keyword ?? row?.text ?? row?.searchTerm;
 
 /**
@@ -112,13 +151,19 @@ const termOf = (row) => row?.term ?? row?.keyword ?? row?.text ?? row?.searchTer
  * unchanged. `searchPopularityInGenre` is genre-relative and is the fallback when the
  * absolute column is absent. `searchPopularity1to5` is deliberately not read: on a
  * 0-100 axis a 5 would bury the term under every rank-estimated candidate.
+ * @param {any} value
+ * @returns {any}
  */
 const popularityOf = (value) =>
 	typeof value === 'object' && value !== null
 		? (value.popularity ?? value.volume ?? value.searchPopularity1to100 ?? value.searchPopularityInGenre)
 		: value;
 
-/** WEEKLY_SUN_SAT rows are keyed `week`; MONTHLY rows and our own dumps vary. */
+/**
+ * WEEKLY_SUN_SAT rows are keyed `week`; MONTHLY rows and our own dumps vary.
+ * @param {any} row
+ * @returns {string}
+ */
 const dateOf = (row) => String(row?.week ?? row?.date ?? row?.month ?? '');
 
 /**
@@ -131,10 +176,16 @@ const dateOf = (row) => String(row?.week ?? row?.date ?? row?.month ?? '');
  * alternative — a bespoke importer per endpoint — is three parsers for one number:
  *   POST /v1/suggestions/keywords/query           → {result: [{text, popularity}]}
  *   POST /v1/insights/apps/search-term-popularity → {result: {rows: [{searchTerm, …}]}}
+ * @param {any} raw
+ * @param {string} locale
+ * @returns {{generatedAt: string, locale: string, terms: Record<string, {popularity: number, difficulty?: number}>}}
  */
 export function normaliseVolume(raw, locale) {
+	/** @type {Record<string, {popularity: number, difficulty?: number}>} */
 	const terms = {};
+	/** @type {Map<string, string>} */
 	const dated = new Map();
+	/** @param {any} term @param {any} value @param {string} [at] */
 	const add = (term, value, at = '') => {
 		const key = String(term ?? '').trim().toLocaleLowerCase();
 		if (!key) return;
@@ -146,6 +197,7 @@ export function normaliseVolume(raw, locale) {
 		const seen = dated.get(key);
 		if (seen !== undefined && seen > at) return;
 		dated.set(key, at);
+		/** @type {{popularity: number, difficulty?: number}} */
 		const row = { popularity: Math.max(0, Math.min(100, popularity)) };
 		const difficulty = Number(value?.difficulty);
 		if (Number.isFinite(difficulty)) row.difficulty = difficulty;
@@ -163,6 +215,10 @@ export function normaliseVolume(raw, locale) {
 /**
  * The shared suggest/apply computation, given the staged listing's data: pack
  * the best terms into the 100-char field and diff against what is authored now.
+ * @param {ScoredTerm[]} scored
+ * @param {ListingData} data
+ * @param {string} locale
+ * @param {number} minVolume
  */
 export function packedProposal(scored, data, locale, minVolume) {
 	const alreadyIndexed = `${data.name ?? ''} ${data.subtitle ?? ''}`.trim();
@@ -188,8 +244,14 @@ export function packedProposal(scored, data, locale, minVolume) {
 
 // --- competitors ------------------------------------------------------------
 
-/** Top competitor ids off scored terms, in first-seen order (the `--ids` default). */
+/**
+ * Top competitor ids off scored terms, in first-seen order (the `--ids` default).
+ * @param {ScoredTerm[]} scored
+ * @param {number} [max]
+ * @returns {string[]}
+ */
 export function topCompetitorIds(scored, max = 3) {
+	/** @type {Set<string>} */
 	const seen = new Set();
 	for (const s of scored) {
 		for (const t of s.top3 ?? []) if (t.id) seen.add(String(t.id));
@@ -198,7 +260,10 @@ export function topCompetitorIds(scored, max = 3) {
 	return [...seen].slice(0, max);
 }
 
-/** The competitor artifact's per-app rows, projected off the iTunes lookup result. */
+/**
+ * The competitor artifact's per-app rows, projected off the iTunes lookup result.
+ * @param {StoreApp[]} apps
+ */
 export function competitorRows(apps) {
 	return apps.map((a) => ({
 		id: a.trackId,
@@ -211,10 +276,16 @@ export function competitorRows(apps) {
 	}));
 }
 
-/** Words the competing apps index, most-shared first. */
+/**
+ * Words the competing apps index, most-shared first.
+ * @param {StoreApp[]} apps
+ * @param {string} locale
+ * @returns {{word: string, apps: number}[]}
+ */
 export function competitorVocabulary(apps, locale) {
 	// The lookup endpoint has no subtitle field, so the marketing subtitle only
 	// shows up as the tail of trackName ("Glovebox: Car Maintenance Log").
+	/** @type {Map<string, number>} */
 	const freq = new Map();
 	for (const a of apps)
 		for (const w of indexedWords(`${a.trackName ?? ''} ${a.subtitle ?? ''}`, locale))

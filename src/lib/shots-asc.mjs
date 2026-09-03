@@ -9,6 +9,22 @@
 import { asc, ascMutate } from '../exec.mjs';
 import { ShipError, c, info, note, step, warn } from '../log.mjs';
 
+/** @typedef {import('./util.mjs').Json} Json */
+
+/** A `sizes` row: display type + family + the dimensions Apple accepts for it. */
+/** @typedef {{displayType: string, family?: string, dimensions?: {width: number|string, height: number|string}[]}} SizeRow */
+/** @typedef {{width: number, height: number}} Dims */
+
+/** One rendered directory: a locale/displayType pair and what is on disk for it. */
+/** @typedef {{locale: string, displayType: string, count: number, dir: string, files: {width: number, height: number}[]}} ShotGroup */
+
+/** A single upload call's outcome, per-locale or app-scoped. */
+/** @typedef {{locale?: string, locales?: string[], displayType: string, count: number, ok: boolean, result: Json|null}} UploadResult */
+
+/** One `errors[]`/`warnings[]` entry from `asc screenshots validate`: a bare string or an object. */
+/** @typedef {string|{message?: string, detail?: string}} FindingItem */
+/** @typedef {{file?: string, path?: string, errors?: FindingItem[], warnings?: FindingItem[]}} FindingsRow */
+
 /** Apple caps a single locale/displayType group at 10 images. */
 export const MAX_PER_GROUP = 10;
 
@@ -20,18 +36,21 @@ export const MAX_PER_GROUP = 10;
  * flattened `APPLETV` leaves `LETV`, so an `APPLE_TV` directory could never
  * match asc's own `APP_APPLE_TV`. Anchor on the separator instead.
  */
+/** @param {string} s */
 export const typeKey = (s) =>
 	String(s)
 		.toUpperCase()
 		.replace(/^(?:APP|IMESSAGE_APP)[_-]/, '')
 		.replace(/[^A-Z0-9]/g, '');
 
-/** The directory name an operator writes for an asc display type: APP_IPHONE_65 → IPHONE_65. */
+/** The directory name an operator writes for an asc display type: APP_IPHONE_65 → IPHONE_65. @param {string} displayType */
 export const dirNameOf = (displayType) => String(displayType).replace(/^(?:APP|IMESSAGE_APP)_/, '');
 
+/** @param {SizeRow} row */
 export const dimsOf = (row) =>
 	(row.dimensions ?? []).map((d) => ({ width: Number(d.width), height: Number(d.height) }));
 
+/** @param {Dims[]} dims */
 export const fmtDims = (dims) => dims.map((d) => `${d.width}x${d.height}`).join('  ');
 
 /**
@@ -39,12 +58,14 @@ export const fmtDims = (dims) => dims.map((d) => `${d.width}x${d.height}`).join(
  * Memoized: `upload` gates on `validate`, and asking Apple the same question
  * twice in one process is a round-trip that can also rate-limit.
  */
+/** @type {Map<boolean, SizeRow[]>} */
 const SIZE_ROWS = new Map();
+/** @param {{all?: boolean}} [opts] @returns {Promise<SizeRow[]>} */
 export async function fetchSizes({ all = true } = {}) {
 	if (SIZE_ROWS.has(all)) return SIZE_ROWS.get(all);
 	const args = ['screenshots', 'sizes'];
 	if (all) args.push('--all');
-	const data = await asc(args, { fallback: null });
+	const data = /** @type {{sizes?: SizeRow[], data?: SizeRow[]}|SizeRow[]|null} */ (await asc(args, { fallback: null }));
 	const rows = Array.isArray(data) ? data : (data?.sizes ?? data?.data ?? []);
 	if (!Array.isArray(rows) || !rows.length)
 		throw new ShipError('asc screenshots sizes returned nothing', {
@@ -59,25 +80,37 @@ export async function fetchSizes({ all = true } = {}) {
  * across N locales asked ASC the same question N times, and ASC answers a burst
  * with 429s.
  */
+/** @type {Map<string, string>} */
 const VERSION_IDS = new Map();
+/**
+ * @param {string} appId
+ * @param {string} version
+ * @returns {Promise<string|null>}
+ */
 async function versionId(appId, version) {
 	const key = `${appId}\u0000${version}`;
 	if (!VERSION_IDS.has(key)) {
-		const versions = await asc(
-			['versions', 'list', '--app', appId, '--version', version, '--platform', 'IOS'],
-			{ fallback: null, allowFail: true },
+		const versions = /** @type {{data?: {id?: string}[]}|null} */ (
+			await asc(['versions', 'list', '--app', appId, '--version', version, '--platform', 'IOS'], {
+				fallback: null,
+				allowFail: true,
+			})
 		);
 		const id = versions?.data?.[0]?.id;
 		if (id) VERSION_IDS.set(key, id);
 		else return null;
 	}
-	return VERSION_IDS.get(key);
+	return /** @type {string} */ (VERSION_IDS.get(key));
 }
 
 /**
  * Resolve the appStoreVersionLocalization id. It is the only handle asc accepts
  * for a single-locale upload: app-scoped fan-out demands that the immediate
  * children of --path be locale directories, so it cannot be narrowed to one.
+ * @param {string} appId
+ * @param {string} version
+ * @param {string} locale
+ * @returns {Promise<string>}
  */
 export async function localizationId(appId, version, locale) {
 	const vid = await versionId(appId, version);
@@ -85,10 +118,12 @@ export async function localizationId(appId, version, locale) {
 		throw new ShipError(`app ${appId} has no ${version} version`, {
 			hint: 'create the version in ASC first (`ship meta stage` then `ship meta apply`)',
 		});
-	const locs = await asc(['localizations', 'list', '--version', vid, '--locale', locale], {
-		fallback: null,
-		allowFail: true,
-	});
+	const locs = /** @type {{data?: {id?: string, attributes?: {locale?: string}}[]}|null} */ (
+		await asc(['localizations', 'list', '--version', vid, '--locale', locale], {
+			fallback: null,
+			allowFail: true,
+		})
+	);
 	const id = locs?.data?.find((l) => l.attributes?.locale === locale)?.id ?? locs?.data?.[0]?.id;
 	if (!id)
 		throw new ShipError(`version ${version} has no ${locale} localization`, {
@@ -102,14 +137,20 @@ export async function localizationId(appId, version, locale) {
  * cannot see this, and it is the half of the arithmetic Apple's cap is applied
  * to — uploads happen from other machines, and an earlier run of this command
  * counts too.
+ * @param {string} appId
+ * @param {string} version
+ * @param {string} locale
  * @returns {Promise<Map<string, {n:number, dims:Set<string>}>>}
  */
 async function remoteSets(appId, version, locale) {
 	const vlid = await localizationId(appId, version, locale);
-	const res = await asc(['screenshots', 'list', '--version-localization', vlid], {
-		fallback: null,
-		allowFail: true,
-	});
+	const res = /** @type {{sets?: {set?: {attributes?: {screenshotDisplayType?: string}}, screenshots?: {attributes?: {imageAsset?: {width?: number, height?: number}}}[]}[]}|null} */ (
+		await asc(['screenshots', 'list', '--version-localization', vlid], {
+			fallback: null,
+			allowFail: true,
+		})
+	);
+	/** @type {Map<string, {n:number, dims:Set<string>}>} */
 	const byType = new Map();
 	for (const s of Array.isArray(res?.sets) ? res.sets : []) {
 		const key = typeKey(s.set?.attributes?.screenshotDisplayType ?? '');
@@ -139,9 +180,10 @@ async function remoteSets(appId, version, locale) {
  * The cap arithmetic is deliberately pessimistic: identical bytes really are
  * skipped, but nothing here knows the remote checksums, and guessing low turns
  * a caught error into a rejection.
+ * @param {{remote?: number, local: number, remoteDims?: string[], localDims?: string[], replace?: boolean}} opts
  * @returns {{over:boolean, total:number, appending:boolean, mixed:string[]}}
  */
-export function capVerdict({ remote = 0, local, remoteDims = [], localDims = [], replace = false } = {}) {
+export function capVerdict({ remote = 0, local, remoteDims = [], localDims = [], replace = false } = /** @type {{local:number}} */ ({})) {
 	if (replace) return { over: false, total: local, appending: false, mixed: [] };
 	const total = remote + local;
 	const mixed = remote > 0 ? remoteDims.filter((d) => !localDims.includes(d)) : [];
@@ -152,11 +194,14 @@ export function capVerdict({ remote = 0, local, remoteDims = [], localDims = [],
  * `asc screenshots validate` shapes vary by version — a `valid` boolean, an
  * `errors`/`warnings` pair, or a `results` array. Normalise defensively rather
  * than trusting one shape, and stay silent when it says nothing is wrong.
+ * @param {{errors?: FindingItem[], warnings?: FindingItem[], results?: FindingsRow[], valid?: boolean, message?: string, reason?: string}|null} res
  * @returns {{level:'fail'|'warn', message:string}[]}
  */
 export function ascFindings(res) {
 	if (!res || typeof res !== 'object') return [];
+	/** @type {{level:'fail'|'warn', message:string}[]} */
 	const out = [];
+	/** @param {'fail'|'warn'} level @param {FindingItem} v */
 	const push = (level, v) => {
 		const message = typeof v === 'string' ? v : (v?.message ?? v?.detail ?? JSON.stringify(v));
 		if (message) out.push({ level, message });
@@ -171,7 +216,7 @@ export function ascFindings(res) {
 	return out;
 }
 
-/** A `results[]` row names the file it is about; a bare error/warning does not. */
+/** A `results[]` row names the file it is about; a bare error/warning does not. @param {{file?: string, path?: string}} r @param {FindingItem} v */
 const resultText = (r, v) => `${r.file ?? r.path ?? ''} ${typeof v === 'string' ? v : (v?.message ?? '')}`.trim();
 
 /**
@@ -179,9 +224,11 @@ const resultText = (r, v) => `${r.file ?? r.path ?? ''} ${typeof v === 'string' 
  * --replace clears the set anyway, and when --force says the operator has
  * decided. A set that would land over the cap, or hold two generations of the
  * same frame at different dimensions, is a blocker; a mere append is a warning.
+ * @param {{appId: string, version: string, groups: ShotGroup[], replace: boolean, force: boolean}} opts
  */
 export async function capPreflight({ appId, version, groups, replace, force }) {
 	if (replace || force) return;
+	/** @type {string[]} */
 	const blockers = [];
 	for (const locale of new Set(groups.map((g) => g.locale))) {
 		const remote = await remoteSets(appId, version, locale);
@@ -209,8 +256,11 @@ export async function capPreflight({ appId, version, groups, replace, force }) {
  * once and reused across its display types. asc's app-scoped fan-out cannot be
  * narrowed to a locale — it demands that the immediate children of --path be
  * locale directories — so each group is pushed against its own localization.
+ * @param {{appId: string, version: string, groups: ShotGroup[], mode: string[]}} opts
+ * @returns {Promise<UploadResult[]>}
  */
 export async function uploadPerLocale({ appId, version, groups, mode }) {
+	/** @type {UploadResult[]} */
 	const results = [];
 	for (const locale of new Set(groups.map((g) => g.locale))) {
 		const vlid = await localizationId(appId, version, locale);
@@ -231,8 +281,11 @@ export async function uploadPerLocale({ appId, version, groups, mode }) {
  * the locale directories under store/screenshots itself, and only files under a
  * matching display type directory are uploaded. Our layout is exactly what it
  * expects.
+ * @param {{appId: string, version: string, platform: string, root: string, groups: ShotGroup[], mode: string[]}} opts
+ * @returns {Promise<UploadResult[]>}
  */
 export async function uploadAppScoped({ appId, version, platform, root, groups, mode }) {
+	/** @type {UploadResult[]} */
 	const results = [];
 	for (const displayType of new Set(groups.map((g) => g.displayType))) {
 		const mine = groups.filter((g) => g.displayType === displayType);
@@ -263,6 +316,7 @@ export async function uploadAppScoped({ appId, version, platform, root, groups, 
  * How an upload row names itself. The per-locale path owns one pair; the
  * app-scoped path is one call covering every locale on disk, so name the
  * display type and count them rather than concatenating fifteen tags.
+ * @param {UploadResult} r
  */
 const uploadLabel = (r) =>
 	r.locale
@@ -274,6 +328,7 @@ const uploadLabel = (r) =>
  * nothing downstream re-checks, `ship preflight` only samples the primary
  * locale, and CI gates on the exit code. Report every attempt, then fail on any
  * rejection.
+ * @param {{appId: string, version: string, results: UploadResult[], flags: {json?: boolean}}} opts
  */
 export function reportUpload({ appId, version, results, flags }) {
 	const failed = results.filter((r) => !r.ok);

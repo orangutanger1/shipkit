@@ -41,6 +41,14 @@ import {
 	writeNpmScripts,
 } from '../lib/init-write.mjs';
 
+/** @typedef {import('../lib/util.mjs').Flags} Flags */
+/** @typedef {import('../lib/util.mjs').Json} Json */
+/** @typedef {import('../lib/util.mjs').JsonObject} JsonObject */
+/** @typedef {import('../lib/init-detect.mjs').ScanHit} ScanHit */
+/** @typedef {import('../lib/init-write.mjs').ConfigChange} ConfigChange */
+/** @typedef {{file: string, name: string, text: string}} DynamicConfig */
+/** @typedef {{expo: any, dynamic: DynamicConfig|null, dynBundle: string|null, bundleId: string, easJsonFile: string, easJson: any, ascAppId: string|null, ascSource: string, ascApp: JsonObject|null}} Identity */
+
 export const help = `
 ${c.bold('ship init')} ${c.dim('— adopt an existing app repo')}
 
@@ -63,8 +71,15 @@ ${c.dim('          asc.appId · store.locales · legal urls · revenuecat.entitl
 
 // ---------------------------------------------------------------- detection
 
+/**
+ * @param {string} root
+ * @param {string} appPath
+ * @returns {Promise<Identity>}
+ */
 async function detectIdentity(root, appPath) {
+	/** @type {any} */
 	const appJson = (await readJSONOrNull(join(appPath, 'app.json'))) ?? {};
+	/** @type {any} */
 	const expo = appJson.expo ?? appJson;
 	const dynamic = await findDynamicConfig(appPath);
 
@@ -78,6 +93,7 @@ async function detectIdentity(root, appPath) {
 		});
 
 	const easJsonFile = existsSync(join(appPath, 'eas.json')) ? join(appPath, 'eas.json') : join(root, 'eas.json');
+	/** @type {any} */
 	const easJson = (await readJSONOrNull(easJsonFile)) ?? {};
 	const easAscId = easJson.submit?.production?.ios?.ascAppId ?? null;
 	let ascAppId = easAscId ? String(easAscId) : null;
@@ -91,11 +107,19 @@ async function detectIdentity(root, appPath) {
 	return { expo, dynamic, dynBundle, bundleId, easJsonFile, easJson, ascAppId, ascSource, ascApp };
 }
 
+/**
+ * @param {string} label
+ * @param {Json} value
+ * @param {string} [source]
+ */
 function detection(label, value, source) {
 	const val = value === null || value === undefined || value === '' ? c.dim('not found') : c.bold(String(value));
 	process.stdout.write(`  ${c.cyan(label.padEnd(22))} ${val}${source ? ` ${c.dim(source)}` : ''}\n`);
 }
 
+/**
+ * @param {{root: string, appDir: string, identity: Identity, easProjectId: string|null, easOwner: string|null, easChannel: string|null}} ctx
+ */
 function printDetections({ root, appDir, identity, easProjectId, easOwner, easChannel }) {
 	const { expo, dynamic, dynBundle, bundleId, easJsonFile, ascAppId, ascSource, ascApp } = identity;
 
@@ -105,13 +129,17 @@ function printDetections({ root, appDir, identity, easProjectId, easOwner, easCh
 	const name = ascApp?.name ?? expo.name ?? null;
 	detection('name', name, ascApp?.name ? 'App Store Connect' : 'app.json expo.name');
 	detection('version', expo.version ?? null, 'app.json expo.version');
-	detection('bundleId', bundleId, dynBundle ? `${dynamic.name} (overrides app.json)` : 'app.json expo.ios');
+	detection('bundleId', bundleId, dynBundle ? `${/** @type {{name: string}} */ (dynamic).name} (overrides app.json)` : 'app.json expo.ios');
 	detection('eas.projectId', easProjectId, 'app.json expo.extra.eas');
 	detection('eas.owner', easOwner, expo.owner ? 'app.json expo.owner' : '');
 	detection('eas.channel', easChannel, easChannel ? `${relative(root, easJsonFile)} build.production` : '');
 	detection('asc.appId', ascAppId, ascSource);
 }
 
+/**
+ * @param {string} storeDir
+ * @param {string} primaryLocale
+ */
 async function detectLocales(storeDir, primaryLocale) {
 	let locales = await localesIn(join(storeDir, 'staged'));
 	let localeSource = 'store/staged/*.json';
@@ -126,6 +154,10 @@ async function detectLocales(storeDir, primaryLocale) {
 	return { locales, localeSource };
 }
 
+/**
+ * @param {{appDir: string, identity: Identity, easProjectId: string|null, easOwner: string|null, easChannel: string|null, locales: string[], legal: Record<'privacyUrl'|'supportUrl'|'marketingUrl', string|null>, revenuecat: JsonObject}} ctx
+ * @returns {JsonObject}
+ */
 function detectedConfig({ appDir, identity, easProjectId, easOwner, easChannel, locales, legal, revenuecat }) {
 	const { bundleId, ascAppId, ascApp, expo } = identity;
 	return {
@@ -153,10 +185,17 @@ function detectedConfig({ appDir, identity, easProjectId, easOwner, easChannel, 
 }
 
 
+/**
+ * @param {JsonObject} merged
+ * @param {{bundleId: string, primaryLocale: string, stagedCount: number, appInfoCount: number, versionCount: number}} ctx
+ */
 function printNextSteps(merged, ctx) {
 	const { bundleId, primaryLocale, stagedCount, appInfoCount, versionCount } = ctx;
+	/** @type {any} */
+	const m = merged;
+	/** @type {string[]} */
 	const steps = [];
-	if (!merged.asc?.appId)
+	if (!m.asc?.appId)
 		steps.push(
 			`No App Store Connect app record for ${c.bold(bundleId)}.\n` +
 				`  Create one at https://appstoreconnect.apple.com/apps (+ → New App), then re-run ${c.cyan('ship init')}\n` +
@@ -168,11 +207,11 @@ function printNextSteps(merged, ctx) {
 				? `Store listings exist but are not staged — ${c.cyan('ship meta migrate')} converts the canonical tree into ${c.cyan('store/staged/*.json')}.`
 				: `No store listings yet — ${c.cyan('ship meta pull')} downloads what App Store Connect already has, or write ${c.cyan(`store/staged/${primaryLocale}.json`)} by hand and run ${c.cyan('ship meta lint')}.`,
 		);
-	if (!merged.revenuecat?.projectId)
+	if (!m.revenuecat?.projectId)
 		steps.push(`RevenueCat project not linked — ${c.cyan('ship rc projects')} lists the ids, then set ${c.cyan('revenuecat.projectId')}.`);
-	if (!merged.ads?.orgId)
+	if (!m.ads?.orgId)
 		steps.push(`No Apple Search Ads org — ${c.cyan('ship ads status')} shows whether credentials are stored and how to add them.`);
-	if (!merged.legal?.privacyUrl)
+	if (!m.legal?.privacyUrl)
 		steps.push(`No privacy policy URL — App Store review rejects without one. Set ${c.cyan('legal.privacyUrl')} in ${CONFIG_NAME}.`);
 	steps.push(`Confirm the machine is wired up: ${c.cyan('ship doctor')}, then ${c.cyan('ship status')} for the release dashboard.`);
 
@@ -183,6 +222,10 @@ function printNextSteps(merged, ctx) {
 
 // -------------------------------------------------------------------- entry
 
+/**
+ * @param {{root: string, detected: JsonObject, force: boolean}} ctx
+ * @returns {Promise<JsonObject>}
+ */
 async function writeConfigStep({ root, detected, force }) {
 	step(CONFIG_NAME);
 	const configFile = join(root, CONFIG_NAME);
@@ -194,8 +237,9 @@ async function writeConfigStep({ root, detected, force }) {
 
 	let merged = detected;
 	if (existing && !force) {
+		/** @type {ConfigChange[]} */
 		const changes = [];
-		merged = mergeFill(existing, detected, changes);
+		merged = mergeFill(/** @type {JsonObject} */ (existing), detected, changes);
 		if (changes.length) {
 			info(`filling ${changes.length} empty field${changes.length === 1 ? '' : 's'}; every other value kept as-is`);
 			for (const ch of changes) note(`${ch.path}: ${shown(ch.from)} ${c.dim('→')} ${c.green(shown(ch.to))}`);
@@ -216,18 +260,24 @@ async function writeConfigStep({ root, detected, force }) {
 		note(`${c.yellow('would write')} ${CONFIG_NAME}`);
 		preview(configText);
 	} else {
-		await saveConfig(merged, configFile);
+		await saveConfig(/** @type {any} */ (merged), configFile);
 		good(`wrote ${CONFIG_NAME}`);
 	}
 	return merged;
 }
 
-/** A source scan hit: value, or "ambiguous", or nothing — each with its own label. */
+/**
+ * A source scan hit: value, or "ambiguous", or nothing — each with its own label.
+ * @param {ScanHit} hit
+ */
 function detectionSource({ value, ambiguous, all }) {
-	if (ambiguous) return `ambiguous: ${all.join(', ')} — left unset`;
+	if (ambiguous) return `ambiguous: ${/** @type {string[]} */ (all).join(', ')} — left unset`;
 	return value ? 'app sources' : '';
 }
 
+/**
+ * @param {{root: string, appDir: string, appPath: string, storeDir: string, identity: Identity}} ctx
+ */
 async function detectStep({ root, appDir, appPath, storeDir, identity }) {
 	const easProjectId = identity.expo.extra?.eas?.projectId ?? null;
 	const easOwner = identity.expo.owner ?? null;
@@ -266,6 +316,7 @@ async function detectStep({ root, appDir, appPath, storeDir, identity }) {
 	};
 }
 
+/** @param {{args: string[], flags: Flags}} ctx */
 export async function run({ args, flags }) {
 	const root = resolve(String(flags.dir ?? args[0] ?? process.cwd()));
 	if (!existsSync(root)) throw new ShipError(`no such directory: ${root}`);
