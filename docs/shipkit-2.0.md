@@ -110,7 +110,7 @@ scripts/metrics.mjs  acorn-based complexity/CRAP/LOC gate
 | 5 | Apple Ads v5 sunset 2027-01-26 not yet migrated (notes exist, no client). | P0 |
 | 6 | Onboarding/paywall *analysis* exists (`lib/paywall.mjs`); nothing *designs* them. | P1 |
 | 7 | `status`/`portfolio` report state; they don't diagnose or recommend. | P1 |
-| 8 | Analytics `bottleneck` stops at "which stage"; no cause, no action. | P1 |
+| 8 | ~~Analytics `bottleneck` stops at "which stage"; no cause, no action.~~ **Done** — `ship analytics diagnose`. | P1 |
 | 9 | `astro` MCP is Mac-only + SSH-tunnel — fragile dependency in `doctor`. | P2 |
 | 10 | Two `slugify` implementations (`scout-scoring` ASCII vs `cpp` Unicode). | P3 |
 | 11 | 68 files modified + 1 untracked test uncommitted right now. | blocker |
@@ -156,7 +156,7 @@ subscription is a new file, not a refactor. Neither is implemented.
 | --- | --- |
 | **Appfigures — free 1 year** | v2 API: `/reports/estimates` (downloads + revenue), `/ranks`, `/aso` (keyword ranks), `/reviews`, `/featured`. This is the metrics dimension. **Verify at redemption that the student tier includes API access and estimates** — entry ASO API access is ~$9/mo and estimates are a "Premium Intelligence" dataset, so the tier matters. |
 | **GitHub Pro** | 3,000 Actions min/mo on private repos. macOS bills at **10×** → **300 macOS min/mo**. |
-| **Sentry** (50K errors, 100K txns/mo) | Crash rate + release health into `ship status`. Fills the "quality problem" branch of `analytics diagnose`. |
+| **Sentry** (50K errors, 100K txns/mo) | Release health into `ship status`. **Not** needed for `analytics diagnose`'s quality branch after all — Apple's own `App Crashes` report carries the crash rate, and `analytics pull` reads it. Sentry would add stack traces and per-release detail Apple does not give. |
 | Figma | Already integrated (`lib/figma.mjs`). |
 | **Azure DevOps** (in the age 13–17 Azure offer) | Azure Pipelines: 1 free Microsoft-hosted parallel job, **1,800 min/mo** for private projects — and Azure bills **wall-clock minutes with no OS multiplier**, so those are 1,800 *macOS* minutes against GitHub Pro's 300. See §7.2. |
 | Application Insights (same offer) | Would duplicate Sentry and needs an Azure resource to point at. Skipped — Sentry is a key and a DSN. |
@@ -455,11 +455,22 @@ declares which tier can prove it; a Tier-1-only run reports motion/native/a11y a
    cannot stand in for a direct reading. Both are recorded in
    `docs/apple-ads-platform-api.md`; floor readings are dropped rather than
    written, so an unmeasured term keeps its autocomplete-rank estimate.
-3. **P1 — `ship analytics diagnose`.** Extend the existing `bottleneck` from "which
-   stage" to a decision table: impressions↑/page-views↓ → *listing*;
-   installs↑/activation↓ → *onboarding*; activation↑/retention↓ → *core loop*;
-   retention↑/subscription↓ → *monetization*; crash-rate↑ (Sentry) → *quality*.
-   Each verdict names the flows to re-research and the `ux.json` screens implicated.
+3. **P1 — `ship analytics diagnose`. DONE.** Six stages from impression to
+   renewal, each pass/fail/unknown against a benchmark; the culprit is the
+   *earliest* failure, because every later stage is measured on users the
+   earlier one already lost. Crash rate is judged first and outranks the funnel:
+   a crashing app fails everything downstream as a symptom. The verdict names a
+   flow group (`lib/flows.mjs`) and the `design/ux.json` screens that implement
+   it.
+
+   **Sentry is not needed for the quality branch.** Apple's own Analytics
+   Reports API serves `App Crashes`, `App Sessions Standard` and `App Store
+   Installation and Deletion Standard` — crash rate, engagement and the deletion
+   rate that stands in for retention. `analytics pull` now reads them.
+
+   Fixing `pull` to reach them turned up four bugs that made it non-functional
+   against a live account; see the commit. An unmeasured stage reports
+   `unknown` and names the command that would answer it — never `pass`.
 4. **P2 — experiments over Custom Product Pages.** `product/experiments.json`
    (hypothesis, variant, metric, window, result, decision) joined to
    `ship analytics pull`. Apple serves; Shipkit records.
@@ -512,7 +523,8 @@ preflight → release → ads → analytics diagnose → research plan`.
 8. Apple Ads Platform API v1 client migration.
 
 **P1 — the learning loop**
-9. `ship analytics diagnose` decision table (+ Sentry crash input).
+9. `ship analytics diagnose` decision table (crash input comes from Apple's own
+   `App Crashes` report, not Sentry).
 10. Real keyword popularity from the Platform API.
 11. `product/brief.json` extended out of `scout brief`, seeded from review themes.
 12. `templates/app` grows from the design-system output: token module, themed

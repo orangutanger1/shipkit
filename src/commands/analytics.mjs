@@ -50,11 +50,14 @@ import {
 } from '../lib/report-parse.mjs';
 import {
 	ascJSON,
+	REPORTS,
 	collectSegments,
 	downloadSegments,
 	requireCredentials,
 	windowOf,
 } from '../lib/analytics-api.mjs';
+import { foldReports } from '../lib/analytics-fold.mjs';
+import { diagnose, implicated, revenueOf, unmeasured, verdictRows, wantsLow } from '../lib/analytics-diagnose.mjs';
 import { CONVERSION, ONBOARDING, conversionTier, onboardingFunnel, pct as fraction } from '../lib/paywall.mjs';
 
 // The pure parsing surface moved to lib/report-parse.mjs; re-exported here so
@@ -75,6 +78,7 @@ ${c.dim('usage:')} ship analytics [subcommand] [flags]
 
   ${c.cyan('funnel')}      ${c.dim('default')} impressions → page views → installs, and which stage is the bottleneck
   ${c.cyan('onboarding')}  ${c.green('offline')} onboarding step → paywall reach → install→paid tier
+  ${c.cyan('diagnose')}    every stage from impression to renewal, and the one worth fixing
   ${c.cyan('terms')}       ranked search terms, and the ones that convert but are ${c.bold('missing from the keyword field')}
   ${c.cyan('pull')}        fetch from App Store Connect ${c.dim('(or --file <export> to import a manual export)')}
 
@@ -90,6 +94,8 @@ ${c.bold('Flags')}
   ${c.cyan('--dry-run')}         print every mutation, write nothing
 
 ${c.dim('Artifacts: .asc/analytics/<locale>-terms.json · -funnel.json · -onboarding.json')}
+${c.dim('`pull` reads six named Apple reports at DAILY granularity; the funnel file carries')}
+${c.dim('deletion, session and crash blocks when Apple produced those reports for the app.')}
 ${c.dim('`ship aso score` uses the terms file as measured demand; `ship loc draft` as provenance.')}
 `;
 
@@ -196,6 +202,8 @@ async function pull({ flags }) {
 
 	let folded;
 	let source;
+	/** @type {ReturnType<typeof foldReports>|null} */
+	let health = null;
 	if (strOf(flags.file)) {
 		say.step(`importing ${strOf(flags.file)}`);
 		const got = await pullFromFile(strOf(flags.file), { territory });
@@ -205,7 +213,7 @@ async function pull({ flags }) {
 		await requireCredentials();
 		const appId = requireAppId(cfg);
 		say.step(`App Store Connect analytics for ${appId} ${c.dim(`${from} → ${to}`)}`);
-		const { requestId, segments } = await collectSegments(appId, { from, to });
+		const { requestId, segments } = await collectSegments(appId, { from, to }, say);
 		if (!requestId) {
 			if (dry) {
 				say.info(`--dry-run: would create an ONGOING analytics report request for ${appId}`);
@@ -224,16 +232,20 @@ async function pull({ flags }) {
 				hint: 'Apple backfills roughly the last 365 days but only after the request has been active for up to 48 h. Widen the window with --from, or import an export with --file.',
 			});
 		say.info(`${segments.length} report segment${segments.length === 1 ? '' : 's'} to download`);
-		const { records, downloaded } = await downloadSegments(segments, say);
+		const { byReport, downloaded } = await downloadSegments(segments, say);
 		if (!downloaded)
 			throw new ShipError('every analytics segment download failed', {
 				hint: 'the request exists but its data could not be fetched — `asc analytics view --request-id <id> --include-segments` shows the state of each instance',
 			});
-		folded = foldRecords(records, { territory });
-		if (!folded.matched)
-			throw new ShipError('the downloaded reports have no impression / page view / install columns', {
-				hint: `columns seen: ${Object.keys(records[0] ?? {}).join(', ') || '(no rows)'}\nApple renames report columns without notice; open an issue with that list.`,
+		const report = foldReports(byReport, { names: REPORTS, territory });
+		if (!report.reports.includes(REPORTS.engagement) && !report.reports.includes(REPORTS.downloads))
+			throw new ShipError('Apple produced none of the reports the funnel is built from', {
+				hint: `wanted ${REPORTS.engagement} or ${REPORTS.downloads}; got ${report.reports.join(', ') || '(nothing)'}\nApple renames reports without notice — open an issue with that list.`,
 			});
+		// Terms come from the search-term web export, not the API: none of these
+		// reports carries a search-term column.
+		folded = { terms: [], funnel: report.funnel, matched: true };
+		health = report;
 		source = 'asc';
 	}
 
@@ -247,7 +259,16 @@ async function pull({ flags }) {
 		territory: territory ?? 'all',
 		rows: folded.terms,
 	};
-	const funnel = { generatedAt, locale, source, from, to, ...folded.funnel };
+	// The health blocks ride in the funnel file rather than in files of their own:
+	// they come from the same pull over the same window, and `diagnose` reads
+	// them beside the funnel or not at all. Absent means "Apple produced no such
+	// report", which is a different answer from zero.
+	const funnel = {
+		generatedAt, locale, source, from, to, ...folded.funnel,
+		...(health?.retention ? { retention: health.retention } : {}),
+		...(health?.sessions ? { sessions: health.sessions } : {}),
+		...(health?.crashes ? { crashes: health.crashes } : {}),
+	};
 
 	if (dry) {
 		say.info(`--dry-run: would write ${termsFile(cfg, locale)} (${folded.terms.length} terms)`);
@@ -521,7 +542,75 @@ async function onboarding({ flags }) {
 }
 
 /** @type {Record<string, (ctx: {flags: Flags, args?: string[]}) => Promise<number>>} */
-const SUB = { funnel, onboarding, terms, pull };
+// ─── diagnose ───────────────────────────────────────────────────────────────
+
+/**
+ * `ship analytics diagnose` — the whole chain from impression to renewal, and
+ * the one stage worth working on this week.
+ *
+ * `funnel` says which of three store stages leaks. This reads the same pull
+ * plus the onboarding export and Apple's deletion, session and crash reports,
+ * and turns the answer into work: a flow group to re-research and the
+ * `design/ux.json` screens that implement it.
+ * @param {{flags: Flags, args?: string[]}} ctx @returns {Promise<number>}
+ */
+async function diagnoseCmd({ flags }) {
+	const cfg = await loadConfig();
+	const locale = strOf(flags.locale) ?? (await targetLocales(cfg, flags))[0] ?? cfg.asc?.primaryLocale ?? 'en-US';
+
+	const funnelDoc = /** @type {import('../lib/analytics-diagnose.mjs').FunnelDoc|null} */ (await readJSONIfExists(funnelFile(cfg, locale)));
+	const onboardingDoc = /** @type {any} */ (await readJSONIfExists(onboardingFile(cfg, locale)));
+	if (!funnelDoc && !onboardingDoc)
+		throw new ShipError(`nothing to diagnose for ${locale}`, {
+			hint: `run \`ship analytics pull --locale ${locale}\` first; \`ship analytics onboarding --file <export>\` adds the stages after install`,
+		});
+
+	const steps = Array.isArray(onboardingDoc?.steps) ? onboardingDoc.steps : [];
+	const out = diagnose(
+		funnelDoc,
+		steps.length ? onboardingFunnel(steps) : null,
+		revenueOf(onboardingDoc, funnelDoc, parseSpreadsheetNumber),
+	);
+	const ux = /** @type {{screens?: Array<{id?: string, route?: string, flow?: string}>}|null} */ (await readJSONIfExists(join(cfg.paths.design, 'ux.json')));
+	const where = implicated(out.culprit, ux);
+
+	if (flags.json) return emit({ locale, ...out, ...where });
+	printDiagnosis(locale, out, where);
+	return out.culprit ? 1 : 0;
+}
+
+/** @param {string} locale @param {ReturnType<typeof diagnose>} out @param {ReturnType<typeof implicated>} where */
+function printDiagnosis(locale, out, where) {
+	heading(`Diagnosis: ${locale}`);
+	table(verdictRows(out), [
+		{ header: 'stage', get: (v) => v.stage },
+		{ header: 'measured', get: (v) => (v.measured === null ? c.dim('—') : pct(v.measured, 1)) },
+		{ header: 'healthy', get: (v) => `${wantsLow(v) ? '≤' : '≥'} ${pct(v.benchmark, 1)}` },
+		{ header: 'verdict', get: (v) => VERDICT[v.verdict](v.verdict) },
+	]);
+	for (const v of unmeasured(out)) note(c.dim(`${v.stage} unmeasured — ${v.needs}`));
+	if (!out.culprit) {
+		good('no stage is under its benchmark');
+		return;
+	}
+	heading(`Work on: ${out.culprit.stage}`);
+	warn(out.culprit.means);
+	info(out.culprit.fix);
+	if (where.flows.length) note(`re-research: ${c.cyan(where.flows.join(', '))}`);
+	if (where.screens.length)
+		table(where.screens, [
+			{ header: 'screen', get: (s) => s.id },
+			{ header: 'route', get: (s) => s.route },
+			{ header: 'flow', get: (s) => s.flow },
+		]);
+	else note(c.dim('no design/ux.json — `ship design spec` names the screens these flows land on'));
+}
+
+/** @type {Record<string, (s: string) => string>} */
+const VERDICT = { pass: c.green, fail: c.red, unknown: c.dim };
+
+/** @type {Record<string, (ctx: {flags: Flags, args?: string[]}) => Promise<number>>} */
+const SUB = { funnel, onboarding, terms, pull, diagnose: diagnoseCmd };
 
 /** @param {{args: string[], flags: Flags}} ctx @returns {Promise<number|void>} */
 export async function run({ args, flags }) {

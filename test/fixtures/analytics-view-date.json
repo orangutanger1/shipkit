@@ -1,0 +1,74 @@
+{
+	"requestId": "841f7624-2233-43e8-ada1-48dbb755ed2c",
+	"data": [
+		{
+			"id": "r3-841f7624-2233-43e8-ada1-48dbb755ed2c",
+			"name": "App Downloads Standard",
+			"category": "COMMERCE",
+			"instances": [
+				{
+					"id": "9d9e0f96-ab0a-4693-b9fb-905fa0a97348",
+					"processingDate": "2026-08-28",
+					"granularity": "DAILY",
+					"segments": [
+						{
+							"id": "7e055502-4a89-4ab1-a5ba-b1b5ce2ff023",
+							"downloadUrl": "https://asp-us-west-2.s3.us-west-2.amazonaws.com/reports/6797103341/aa_downloads/daily/ongoing/20260828/1787911977001/2r93o51frui8m.csv.gz?<signed>"
+						},
+						{
+							"id": "1e8517b6-a3bc-4a3b-b467-f6d2fe3f67d1",
+							"downloadUrl": "https://asp-us-west-2.s3.us-west-2.amazonaws.com/reports/6797103341/aa_downloads/daily/ongoing/20260828/1787911977001/2r93o55frui8m.csv.gz?<signed>"
+						}
+					]
+				}
+			]
+		},
+		{
+			"id": "r6-841f7624-2233-43e8-ada1-48dbb755ed2c",
+			"name": "App Store Installation and Deletion Standard",
+			"category": "APP_USAGE",
+			"instances": [
+				{
+					"id": "41ccf443-a9eb-41ec-a777-e913d71d4881",
+					"processingDate": "2026-08-28",
+					"granularity": "DAILY",
+					"segments": [
+						{
+							"id": "6c659e47-4992-465d-83fe-ec970618429e",
+							"downloadUrl": "https://asp-us-west-2.s3.us-west-2.amazonaws.com/reports/6797103341/app_installs_deletes/daily/ongoing/20260828/1787898217359/1c0us51feql3s.csv.gz?<signed>"
+						}
+					]
+				}
+			]
+		},
+		{
+			"id": "r14-841f7624-2233-43e8-ada1-48dbb755ed2c",
+			"name": "App Store Discovery and Engagement Standard",
+			"category": "APP_STORE_ENGAGEMENT",
+			"instances": [
+				{
+					"id": "7949f2a1-b032-4e33-8475-58ec7ba1bc3b",
+					"processingDate": "2026-08-28",
+					"granularity": "DAILY",
+					"segments": [
+						{
+							"id": "752bf269-60c3-4361-9218-279dc79378cb",
+							"downloadUrl": "https://asp-us-west-2.s3.us-west-2.amazonaws.com/reports/6797103341/discovery_and_engagement/daily/ongoing/20260828/1788026231904/2lt2vt1j8tbad.csv.gz?<signed>"
+						}
+					]
+				},
+				{
+					"id": "a12eb9d3-5b6d-4a27-af50-aa0fc0dd030d",
+					"processingDate": "2026-08-28",
+					"granularity": "WEEKLY",
+					"segments": [
+						{
+							"id": "9ee31be3-27f7-4fca-9980-a9ba9f34d536",
+							"downloadUrl": "https://asp-us-west-2.s3.us-west-2.amazonaws.com/reports/6797103341/discovery_and_engagement/weekly/ongoing/20260828/1788026231904/2lt2vstj8tbad.csv.gz?<signed>"
+						}
+					]
+				}
+			]
+		}
+	]
+}

@@ -5,7 +5,7 @@
 // flat "forbidden for security reasons" rather than a 401 — so every failure
 // here names exactly what is missing instead of forwarding Apple's sentence or
 // asc's usage.
-import { mkdtemp, readFile, readdir } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ASC, run as exec } from '../exec.mjs';
@@ -33,7 +33,7 @@ import { strOf } from './util.mjs';
  * }} NodeRow
  */
 /** One downloaded report segment, ready for `analytics download`. */
-/** @typedef {{report: string, requestId: string, instance: string, id: string}} SegmentRow */
+/** @typedef {{report: string, requestId: string, instance: string, id: string, date: string}} SegmentRow */
 
 /**
  * @param {string} text
@@ -172,86 +172,169 @@ export function windowOf(flags) {
 	return { from, to };
 }
 
-const REPORT_WANTED = /discovery|engagement|install|download/i;
-const MAX_INSTANCES = 120;
+/**
+ * The reports `pull` reads, one per concern, keyed by what it asks them.
+ *
+ * A closed list rather than a name pattern, because Apple serves the same
+ * numbers several ways and folding more than one of them into a single funnel
+ * silently multiplies it. On 2026-08-28 this app had, all matching
+ * `/discovery|engagement|install|download/`: Discovery and Engagement
+ * **Standard** (1,273 impressions) and **Detailed** (1,086) — the same day cut
+ * two ways — plus Web Preview Engagement, which is the *website* surface, not
+ * the App Store.
+ */
+export const REPORTS = /** @type {const} */ ({
+	engagement: 'App Store Discovery and Engagement Standard',
+	downloads: 'App Downloads Standard',
+	installDelete: 'App Store Installation and Deletion Standard',
+	sessions: 'App Sessions Standard',
+	crashes: 'App Crashes',
+	subscriptions: 'App Store Subscription State Report Standard',
+});
+
+/** @type {Set<string>} */
+const REPORT_NAMES = new Set(Object.values(REPORTS));
+
+/**
+ * The only granularity `pull` reads.
+ *
+ * Apple publishes a DAILY *and* a WEEKLY instance of the same report under one
+ * processingDate — on 2026-08-28 this app had both, at 1,273 and 600
+ * impressions. Summing them counts the week on top of the day.
+ */
+const GRANULARITY = 'DAILY';
+
+/**
+ * Every day in an inclusive window, as YYYY-MM-DD.
+ * @param {string} from
+ * @param {string} to
+ * @returns {string[]}
+ */
+export function daysBetween(from, to) {
+	/** @type {string[]} */
+	const out = [];
+	for (let t = Date.parse(`${from}T00:00:00Z`); t <= Date.parse(`${to}T00:00:00Z`); t += DAY_MS) out.push(isoDay(t));
+	return out;
+}
+
+/**
+ * The segments in one `analytics view --date <day> --include-segments` answer.
+ *
+ * That payload is asc's own flattening, not JSON:API — `data[].instances[]
+ * .segments[]`, with no `type` keys — so it is read structurally rather than
+ * through {@link nodesOf}.
+ *
+ * @param {Json|undefined} payload
+ * @param {{requestId: string, wanted?: Set<string>, granularity?: string}} opts
+ * @returns {SegmentRow[]}
+ */
+export function segmentsOfView(payload, { requestId, wanted = REPORT_NAMES, granularity = GRANULARITY }) {
+	const reports = Array.isArray(/** @type {any} */ (payload)?.data) ? /** @type {any[]} */ (/** @type {any} */ (payload).data) : [];
+	/** @type {SegmentRow[]} */
+	const out = [];
+	for (const report of reports) {
+		const name = String(report?.name ?? '');
+		if (!wanted.has(name)) continue;
+		for (const instance of Array.isArray(report?.instances) ? report.instances : []) {
+			if (String(instance?.granularity ?? granularity) !== granularity) continue;
+			const date = String(instance?.processingDate ?? '').slice(0, 10);
+			for (const seg of Array.isArray(instance?.segments) ? instance.segments : [])
+				if (seg?.id) out.push({ report: name, requestId, instance: String(instance.id ?? ''), id: String(seg.id), date });
+		}
+	}
+	return out;
+}
 
 /**
  * Reports Apple has finished producing for this app, and their downloadable segments.
  *
+ * This walks the window a day at a time rather than reports → instances →
+ * segments, because `asc analytics reports links` returns bare relationship
+ * identifiers — `{type, id}` and nothing else. There is no `processingDate` on
+ * them to filter a window by, so the old three-level walk discarded every
+ * instance it found and the command died claiming Apple had produced none.
+ * `analytics view --date <day> --include-segments` answers with the report, its
+ * instance *and* that instance's processingDate in one payload, and asks only
+ * about the days we want: one call per day against 157+ for the walk.
+ *
  * @param {string} appId
  * @param {{from: string, to: string}} window
+ * @param {Say} [say]
  * @returns {Promise<{requestId: Json|undefined, segments: SegmentRow[]}>}
  */
-export async function collectSegments(appId, { from, to }) {
+export async function collectSegments(appId, { from, to }, say) {
 	const requests = nodesOf(await ascJSON(['analytics', 'requests', '--app', appId, '--paginate'], {
 		what: 'list analytics report requests',
 	}), 'analyticsReportRequests');
 	const usable = requests.filter((r) => !r.stoppedDueToInactivity);
 	if (!usable.length) return { requestId: null, segments: [] };
 
-	const requestId = (usable.find((r) => r.accessType === 'ONGOING') ?? usable[0]).id;
-	const view = await ascJSON(
-		['analytics', 'view', '--request-id', String(requestId), '--include-segments', '--paginate'],
-		{ what: 'list the reports in an analytics request' },
-	);
-	const reports = nodesOf(view, 'analyticsReports').filter((r) => REPORT_WANTED.test(String(r.name ?? '')));
-	if (!reports.length) return { requestId, segments: [] };
-
+	const requestId = String((usable.find((r) => r.accessType === 'ONGOING') ?? usable[0]).id ?? '');
+	const days = daysBetween(from, to);
+	/** @type {SegmentRow[]} */
 	const segments = [];
-	for (const report of reports) {
-		const links = await ascJSON(['analytics', 'reports', 'links', '--report-id', String(report.id), '--paginate'], {
-			what: 'list report instances',
-		});
-		const instances = nodesOf(links, 'analyticsReportInstances')
-			.filter((i) => {
-				const day = String(i.processingDate ?? '').slice(0, 10);
-				return day >= from && day <= to;
-			})
-			.sort((a, b) => String(a.processingDate).localeCompare(String(b.processingDate)));
-		for (const instance of instances.slice(0, MAX_INSTANCES)) {
-			const segs = nodesOf(
-				await ascJSON(['analytics', 'instances', 'links', '--instance-id', String(instance.id), '--paginate'], {
-					what: 'list report segments',
-				}),
-				'analyticsReportSegments',
-			);
-			for (const seg of segs)
-				segments.push({
-					report: String(report.name ?? ''),
-					requestId: String(requestId ?? ''),
-					instance: String(instance.id ?? ''),
-					id: String(seg.id ?? ''),
-				});
-		}
+	/** @type {Set<string>} */
+	const seen = new Set();
+	for (const [i, day] of days.entries()) {
+		const view = await ascJSON(
+			['analytics', 'view', '--request-id', requestId, '--date', day, '--include-segments', '--paginate'],
+			{ what: `list the reports produced on ${day}` },
+		);
+		for (const seg of segmentsOfView(view, { requestId }))
+			if (!seen.has(seg.id)) {
+				seen.add(seg.id);
+				segments.push(seg);
+			}
+		const left = days.length - i - 1;
+		say?.note(`${day} · ${segments.length} segment${segments.length === 1 ? '' : 's'} so far ${left ? `(${left} day${left === 1 ? '' : 's'} left)` : ''}`.trim());
 	}
 	return { requestId, segments };
 }
 
 /**
- * Download every segment into one throwaway directory and read whatever asc
- * named the files. `say` is the caller's quiet-aware logger so `--json` output
- * stays clean without this module owning the flag.
+ * Download every segment and read whatever asc named the files, keeping each
+ * report's rows apart.
+ *
+ * Two reasons for the shape of this, both found against a live account:
+ *
+ *   · asc names the file it writes after the *instance*, not the segment, so
+ *     two segments of one instance collide. Verified: instance 9d9e0f96's two
+ *     segments are 5 and 8 rows of different data under one filename. Each
+ *     download therefore gets its own directory.
+ *   · these reports do not share a header. Folding a concatenated pile reads
+ *     every row through whichever report happened to be parsed first, and
+ *     silently drops the rest — so rows come back grouped by report name.
+ *
+ * `say` is the caller's quiet-aware logger so `--json` output stays clean
+ * without this module owning the flag.
  *
  * @param {SegmentRow[]} segments
  * @param {Say} say
- * @returns {Promise<{records: Array<Record<string,string>>, downloaded: number, dir: string}>}
+ * @returns {Promise<{byReport: Record<string, Array<Record<string,string>>>, downloaded: number, dir: string}>}
  */
 export async function downloadSegments(segments, say) {
 	const dir = await mkdtemp(join(tmpdir(), 'ship-analytics-'));
+	/** @type {Record<string, Array<Record<string,string>>>} */
+	const byReport = {};
 	let ok = 0;
-	for (const seg of segments) {
+	for (const [i, seg] of segments.entries()) {
+		const into = join(dir, String(i));
+		await mkdir(into, { recursive: true });
 		const res = await exec(
 			ASC,
 			['analytics', 'download', '--request-id', seg.requestId, '--instance-id', seg.instance, '--segment-id', seg.id, '--decompress'],
-			{ cwd: dir, allowFail: true },
+			{ cwd: into, allowFail: true },
 		);
-		if (res.code === 0) ok++;
-		else say.warn(`segment ${seg.id} did not download: ${tail(`${res.stdout}\n${res.stderr}`, 1)}`);
+		if (res.code !== 0) {
+			say.warn(`segment ${seg.id} did not download: ${tail(`${res.stdout}\n${res.stderr}`, 1)}`);
+			continue;
+		}
+		ok++;
+		const rows = (byReport[seg.report] ??= []);
+		for (const f of await readdir(into)) {
+			if (!/\.(csv|tsv|txt)$/i.test(f)) continue;
+			rows.push(...parseDelimited(await readFile(join(into, f), 'utf8')));
+		}
 	}
-	const records = [];
-	for (const f of await readdir(dir)) {
-		if (!/\.(csv|tsv|txt)$/i.test(f)) continue;
-		records.push(...parseDelimited(await readFile(join(dir, f), 'utf8')));
-	}
-	return { records, downloaded: ok, dir };
+	return { byReport, downloaded: ok, dir };
 }

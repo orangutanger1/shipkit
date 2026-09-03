@@ -284,6 +284,21 @@ it lands. The stage after it has its own numbers, and they live in
 `src/lib/paywall.mjs` as code rather than prose because they are contested
 business rules: `ONBOARDING`, `CONVERSION`, `LADDER`.
 
+`ship analytics diagnose` reads the whole chain at once — impressions, page
+views, installs, paywall reach, deletions, sessions, paid, crashes — and names
+one stage to work on. Two rules make it worth trusting:
+
+- **The culprit is the earliest failing stage, not the worst one.** Every later
+  stage is measured on the users an earlier one already lost, so a catastrophic
+  paywall under a leaking product page is a number about nobody.
+- **A stage with no data is `unknown`, never a pass.** It names the command that
+  would answer it instead. Apple does not produce every report for every app.
+
+Crash rate is judged before the funnel and outranks it: a crashing app fails
+everything downstream as a symptom. That number is Apple's own `App Crashes`
+report — no third-party SDK — and arrives with `ship analytics pull` alongside
+the deletion rate and session counts. See `docs/apple-analytics-reports.md`.
+
 ```bash
 ship analytics onboarding --file export.csv        # a PostHog-style funnel export
 ship analytics onboarding --locale en-US           # or .asc/analytics/en-US-onboarding.json

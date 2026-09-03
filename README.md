@@ -480,7 +480,7 @@ ci/                       workflow templates copied into app repos
 .github/actions/setup/    the bootstrap every template `uses:`
 .github/workflows/ci.yml  shipkit's own CI — lint, tests, scaffold smoke, actionlint
 schema/                   JSON Schema for ship.config.json
-docs/                     Apple Ads Platform API v1 migration + backlog
+docs/                     Apple Ads Platform API v1 migration; Analytics Reports API
 .oxlintrc.json            static checks — `npx oxlint src bin` must report zero errors
 test/                     `node --test test/` — no deps, no network, no fixtures on disk
 ```
