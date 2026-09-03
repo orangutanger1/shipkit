@@ -7,17 +7,30 @@ on it. The **backlog** is new capability worth taking once a client exists.
 
 ## Status
 
+Verified live against a real ad account (org 23259140) on 2026-09-03, read-only.
+Everything in the table below is an observed response, not a reading of the PDF —
+the preview guide is wrong or incomplete in four places and they are marked.
+
 | Fact | Evidence |
 | --- | --- |
-| Platform API host is live | `GET https://api.ads.apple.com/v1/me` → `401` (routing, not DNS/404) |
-| `asc` 2.5.0 speaks v5 only | binary carries `api.searchads.apple.com`, `v5/campaigns/{campaignId}/adgroups/{adgroupId}/targetingkeywords`; zero occurrences of `api.ads.apple.com`, `adAccountId`, `v1/insights` |
-| `asc ads api request --path …` cannot reach v1 | the raw passthrough resolves against the searchads base URL |
-| Campaign Management API v5 sunsets | **2027-01-26** — every `asc ads` call in `src/commands/ads.mjs` returns an error after that date |
+| Platform API v1 is live and usable today | `GET /v1/me` → `200 {"result":{"orgId":23259140,"userId":107265077}}` |
+| Auth needs no new code | `asc ads auth token --confirm --output json` returns a bearer token from the stored profile. v5 and v1 take the same token, so shipkit does its own HTTP while handling **no private key and storing no credential**. |
+| `X-AP-Context` accepts either spelling | `adAccountId=<id>` and `orgId=<id>` both returned `200`. The ad account id **is** the old org id. |
+| `asc` 2.5.0 cannot reach v1 at all | `--path v1/me` → `Error: --path must start with v5/`; a full `https://api.ads.apple.com/...` URL → `Error: --path must be an Apple Ads v5 URL`. The raw passthrough is genuinely closed. |
+| Campaign Management API v5 sunsets | **2027-01-26** |
+| **The performance-report endpoint was not found** | `reports/*` is routed but every v1 path under it 404s into the *legacy* envelope. Blocks `pullReport`, and therefore `ads report`, `ads mine`, `ads snapshot` and `ship status ads`. **A full cutover is impossible until this is known.** |
 
-So nothing below can be built until either `asc` ships Platform API support or
-shipkit does its own HTTP. Authentication is **unchanged** between the two APIs
-(same client-credentials token), so a direct client is viable; only the base URL,
-the `X-AP-Context` value, and the request/response envelopes differ.
+### Reading the two error envelopes
+
+The host serves two services, and which envelope comes back tells you which one
+answered — this is the fastest way to tell a wrong path from a wrong body:
+
+| Shape | Means |
+| --- | --- |
+| `{"result": …, "pagination": …}` | v1 answered |
+| `{"error":{"code","details":[{code,message,info:{field}}]}}` | v1 rejected the body — `details[].info.field` names the offending key |
+| `{"data":null,"pagination":null,"error":{"errors":[{messageCode,…}]}}` | the **legacy** service answered; the path is not a v1 path |
+| `503` + nginx HTML | the path prefix is **not routed at all**. This is a typo in the path, *not* an outage — `ad-groups/query` 503s and `adgroups/query` works. |
 
 ## Done
 
@@ -29,46 +42,67 @@ the `X-AP-Context` value, and the request/response envelopes differ.
 
 ## Migration — required before 2027-01-26
 
-Structural changes that hit code we already have:
+### Verified request grammar
 
-| Where | v5 today | v1 |
+```jsonc
+// POST https://api.ads.apple.com/v1/<resource>/query
+{
+  "filters":    [{ "field": "campaignId", "operator": "EQUALS", "value": 2144514548 }],
+  "pagination": { "pageSize": 2, "offset": 0 }
+}
+```
+
+- the key is **`value`** (singular), not `values` — `values` is rejected outright;
+- `campaignId` **must** use `EQUALS`; `IN` is refused with
+  `campaignId condition must use EQUALS operator`;
+- pagination is **`{pageSize, offset}`** — `limit`, `size` and `maxResults` are all rejected;
+- the response echoes `pagination` back, so paging is offset arithmetic over `pageSize`;
+- `result` is a **bare array** for every `query` endpoint, not `{rows: […]}`.
+
+### Structural changes that hit code we already have
+
+| Where | v5 today | v1 (verified) |
 | --- | --- | --- |
 | base URL | `api.searchads.apple.com/api/v5/` | `api.ads.apple.com/v1/` |
-| context header | `X-AP-Context: orgId=…` | `X-AP-Context: adAccountId=…` |
+| context header | `X-AP-Context: orgId=…` | `adAccountId=…` (the same number) |
 | `ads.mjs` `orgOf`/`requireOrg` | `ads.orgId`, `ASC_ADS_ORG_ID` | `adAccountId`; the old `parentOrgId` becomes `orgId` |
-| response envelope | `data` | `result` |
-| list/find | `POST …/find`, `conditions`, `orderBy`, `ASCENDING` | `POST …/query`, `filters`, `sorting`, `ASC` |
-| hierarchy | parent ids in the path | flat top-level resources, parent ids in the body |
-| `ads.mjs` `mine` search-term payload | `selector: { orderBy, pagination }` | top-level `filters` / `sorting` / `pagination` |
-| `lib/asa.mjs` `resolveBidding`, `ads.mjs` `adGroupBody` | `defaultBidAmount` | `bidStrategy.bid` |
-| `ads.mjs` `campaignBody` | campaign `adamId` | `promotedObjectId` + `promotedObjectType: "APPSTORE_APP"` (immutable after create) |
-| `ads.mjs` `campaignBody` | `dailyBudgetAmount` — campaign only, and lifetime budget is already rejected | `dailyBudget` only; still no ad-group budget |
-| `ads.mjs` `adGroupBody` | `pricingModel: 'CPC'` | doc uses `CPT` / `bidStrategyType: MANUAL_CPT` throughout |
-| `ads.mjs` `updateKeywords` | keyword `status: 'ACTIVE'` | `'ENABLED'` (same for negative keywords) |
-| `ads.mjs` `bindProductPage` | ad body carries `creativeType` + `productPageId` | `creativeType` removed from the ad object; create a **Creative** first, ad references `creativeId` |
-| `ads.mjs` `reportRows`/`totalsOf` | `res.data.reportingDataResponse.row`, `total` or summed `granularity` | `result.rows[].totalMetrics` / `granularMetrics` / `metadata`, plus `summary.grandTotal` |
-| report options | `returnRowsWithNoMetrics: true` | `options.includeRows: ["EMPTY_METRICS"]` — mutually exclusive with `groupBy` |
-| `ads.mjs` `LEVELS` | selector fields are Apple's, and the error message over-reports them: there is no `installs`, and `campaignId` is rejected at ad-group level | re-verify the whole projection: v1 renames the metric block |
-| `lib/cpp.mjs:15-17` | Ads exposes `/v5/apps/{adamId}/product-pages`, joined **by name** | `POST /v1/product-pages/query` returns a real `productPageId`; creatives take it in `destination.parameters` |
+| response envelope | `data` | `result` (bare array on `query`) + sibling `pagination` |
+| list/find | `POST …/find`, `conditions`, `orderBy` | `POST …/query`, `filters`, `sorting` — see the grammar above |
+| **ad group path** | `ad-groups` | **`adgroups`** — no hyphen. *The preview guide is wrong here; the hyphenated path 503s.* |
+| hierarchy | parent ids in the path | flat top-level resources, parent id as a `filters` entry |
+| campaign geo + placement | `countriesOrRegions`, `supplySources` | **`targeting: {countryOrRegion: {include: […]}, supplyPlacement: {include: […]}}`**. *Not mentioned in the preview guide at all; found by reading a live campaign.* |
+| campaign budget | `dailyBudgetAmount: {amount, currency}` | **`dailyBudget: {value: {amount, currency}}`** — one level deeper than the guide states. Lifetime budget is gone. |
+| ad group bid | `defaultBidAmount` | `bidStrategy: {bid: {amount, currency}, bidStrategyGoal: "TAP", bidStrategyType: "MANUAL_CPT"}` |
+| keyword bid | `bidAmount` | plain **`bid`: {amount, currency}** — not `bidStrategy.bid`, which is the ad-group spelling |
+| campaign app | `adamId` | `promotedObjectId` (string) + `promotedObjectType: "APPSTORE_APP"`, immutable after create |
+| `adGroupBody` | `pricingModel: 'CPC'` | no `pricingModel`; `bidStrategyType: MANUAL_CPT` carries it |
+| `updateKeywords` | keyword `status: 'ACTIVE'` | `'ENABLED'` (same for negative keywords) |
+| `bindProductPage` | ad body carries `creativeType` + `productPageId` | create a **Creative** first, ad references `creativeId`. Live creative shape: `{creativeType: "DEFAULT_PRODUCT_PAGE", destination: {destinationType: "APP_STORE_PRODUCT_PAGE", parameters: {adamId}, url}}` |
+| `lib/cpp.mjs:15-17` | `/v5/apps/{adamId}/product-pages`, joined **by name** | `POST /v1/product-pages/query` returns a real `productPageId`; creatives take it in `destination.parameters` |
+| `reportRows`/`totalsOf` | `res.data.reportingDataResponse.row` | **unknown — endpoint not found.** Blocks the cutover. |
+
+New fields worth reading that v5 never returned: `deleted`, `displayStatus`,
+`systemStatus`, `systemStatusLimitingReasons` (backlog 6), `paymentModel`,
+`regulationResponses`, and `automatedKeywordsRequired` on ad groups.
+Times come back as `2026-08-23T18:28:09.044` — **no trailing `Z`**, so
+`parseAppleTime` must not assume one.
 
 Also deprecated: ad group `cpaCap` (we never emitted it) and lifetime budget.
 `automatedKeywordsOptIn` survives.
 
-The creative split is the sharpest edge: `bindProductPage` becomes two calls plus a
-new entity to reconcile idempotently.
+Report-shape constraints from the preview guide, unverified because the endpoint
+is not reachable — treat as unconfirmed until it is:
 
-Report-shape constraints worth knowing before rewriting `ads mine`:
-
-- all report types except campaign-level require a `campaignId` filter, so the
-  per-campaign fan-out in `pullReport` survives structurally;
-- ad-group-scoped keyword/search-term reports are gone as endpoints — filter by
-  `adGroupId` on the consolidated one instead;
-- search-term reports: **ORTZ only** (no UTC), no `HOURLY`, and `groupBy` excludes
-  `storefront`, `ageRange`, `gender`, `countryCode`, `adminArea`, `locality`.
+- all report types except campaign-level require a `campaignId` filter;
+- ad-group-scoped keyword/search-term reports are gone as endpoints;
+- search-term reports: ORTZ only, no `HOURLY`, restricted `groupBy`.
 
 ## Backlog — new capability, in the order worth taking
 
 ### 1. Real popularity into `aso volume`
+
+**Verified reachable** (`400 REQUIRED_VALUE_FIELD filters` on an empty body — the
+endpoint exists and validates).
 
 `POST /v1/suggestions/keywords/query` takes `terms IN [...]` + `countriesOrRegions`
 and returns `{text, popularity}` on the 0-100 axis. That is the per-term lookup the
@@ -82,7 +116,7 @@ rank proxy.
 
 ### 2. Eligibility preflight before `ads sync`
 
-`POST /v1/eligibilities/apps/query` returns one record per
+**Verified reachable.** `POST /v1/eligibilities/apps/query` returns one record per
 (supplyPlacement × countryOrRegion × deviceClass) with `state: ELIGIBLE|INELIGIBLE`
 and a `reasons` array. Today `ads sync` will create a campaign targeting storefronts
 where the app cannot serve and you find out from a zero-impression report a week
@@ -90,7 +124,7 @@ later. Belongs in `ship preflight` or as a gate inside `ads sync`.
 
 ### 3. Impression share in `ads report`
 
-`POST /v1/insights/apps/impression-share/query` — in v5 this was async
+**Verified reachable.** `POST /v1/insights/apps/impression-share/query` — in v5 this was async
 (`POST /v5/custom-reports` → poll → `GET /v5/custom-reports/{id}`), which is why we
 never used it; v1 is a single synchronous call and adds `FIRST_SLOT` alongside
 `ALL_SLOTS`. It answers the question `ads report` currently cannot: the
@@ -106,7 +140,7 @@ results instead of all-or-nothing.
 
 ### 5. Search term popularity as a seed source
 
-`POST /v1/insights/apps/search-term-popularity/query` — filters `genre` +
+**Verified reachable.** `POST /v1/insights/apps/search-term-popularity/query` — filters `genre` +
 `countryOrRegion`, granularity `WEEKLY_SUN_SAT` or `MONTHLY`, returns
 `rankInGenre`, `searchPopularityInGenre`, `searchPopularity1to100`,
 `searchPopularity1to5`.

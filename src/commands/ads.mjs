@@ -22,6 +22,7 @@ import {
 	applyPlan, monetisationSignal, printReconciliation, printSyncSummary, realisedCpt, reportMonetisation,
 } from '../lib/ads-apply.mjs';
 import { scoredTerms, writeArtifact, writePaidTerms } from '../lib/ads-artifacts.mjs';
+import { v1Account, v1Me } from '../lib/ads-http.mjs';
 import { printMining, printReport, printSnapshot } from '../lib/ads-print.mjs';
 import {
 	buildPlan, convertingTerms, decide, parseSplit, planBindings, printPlan, renderOnly, renderPlan, searchTermRows,
@@ -60,6 +61,7 @@ ${c.dim('usage:')} ship ads [subcommand] [flags]
   ${c.cyan('snapshot')}   read the live account — ids, statuses, bids, negatives, performance
   ${c.cyan('sync')}       reconcile campaign-plan.json with the live account, by object id
   ${c.cyan('mine')}       search-term report → negative keywords + Exact promotions + ASO feedback
+  ${c.cyan('v1')}         probe the Platform API v1 account this repo would migrate to
 ${c.bold('Flags')}
   ${c.cyan('--org <id>')}          Apple Ads organization id ${c.dim('(default: ads.orgId in ship.config.json)')}
   ${c.cyan('--campaign <id>')}     campaign id ${c.dim('(keywords, report; mine: one campaign instead of all)')}
@@ -541,7 +543,47 @@ async function mine({ flags }) {
 	return 0;
 }
 
-const SUB = { status, login, campaigns, keywords, report, plan, snapshot, sync, mine };
+/**
+ * `ship ads v1` — does Platform API v1 answer for this account, and with what?
+ *
+ * Every other subcommand still runs on Campaign Management API v5 through asc,
+ * which sunsets 2027-01-26. This one talks to v1 directly so the migration can
+ * be verified against a real account before anything is cut over to it. It only
+ * ever reads.
+ * @param {AdsCtx & {account?: typeof v1Account}} ctx @returns {Promise<number>}
+ */
+async function v1({ flags, account = v1Account }) {
+	const cfg = await loadConfig(undefined, { optional: true });
+	await gate(cfg);
+	const adAccountId = requireOrg(cfg, flags);
+	const me = await v1Me({ adAccountId });
+	if (!me.ok) {
+		if (flags.json) return emit({ ok: false, adAccountId, detail: me.detail });
+		heading(`Apple Ads Platform API v1 · account ${adAccountId}`);
+		warn(me.detail);
+		return 1;
+	}
+
+	const { campaigns: campaignRows, adGroups: groups, keywords: keywordRows } = await account({ adAccountId });
+	if (flags.json) return emit({ ok: true, adAccountId, me, campaigns: campaignRows, adGroups: groups, keywords: keywordRows });
+
+	heading(`Apple Ads Platform API v1 · account ${adAccountId}`);
+	good(`reachable — org ${me.orgId}, user ${me.userId}`);
+	table(campaignRows, [
+		{ header: 'id', get: (r) => r.id ?? '' },
+		{ header: 'campaign', get: (r) => r.name ?? '' },
+		{ header: 'status', get: (r) => r.displayStatus ?? r.status ?? '' },
+		{ header: 'daily', get: (r) => money(r.dailyBudget) },
+		{ header: 'geo', get: (r) => (r.countriesOrRegions ?? []).join(',') },
+		{ header: 'limited by', get: (r) => (r.limitingReasons ?? []).join(',') },
+	]);
+	step(`${campaignRows.length} campaigns · ${groups.length} ad groups · ${keywordRows.length} keywords`);
+	note('every other `ship ads` subcommand still runs on v5, which sunsets 2027-01-26');
+	note('reports are not migrated: the v1 performance-report endpoint is not published yet');
+	return 0;
+}
+
+const SUB = { status, login, campaigns, keywords, report, plan, snapshot, sync, mine, v1 };
 
 /** @param {{args: string[], flags: Flags}} ctx @returns {Promise<number|void>} */
 export async function run({ args, flags }) {
