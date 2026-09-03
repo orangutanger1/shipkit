@@ -530,7 +530,7 @@ function reportMigrate(cfg, { versionSrc, appInfoSrc }, done, skipped, dry) {
  */
 export async function migrate({ flags }) {
 	const cfg = await requireConfig();
-	const { from, appInfoDir } = migrateSourceDirs(cfg, flags);
+	const { from, appInfoDir } = await migrateSourceDirs(cfg, flags);
 
 	heading(`${cfg.name} — migrate .strings → staged/`);
 	const versionSrc = from ? await readStringsDir(from, '--from') : new Map();
