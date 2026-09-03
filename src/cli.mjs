@@ -33,7 +33,7 @@ export const COMMANDS = {
 	},
 	research: {
 		group: 'Discover',
-		summary: 'Competitor evidence from the public storefront: plan',
+		summary: 'Competitor evidence from the public storefront: plan · fetch · capture · verify · index',
 		load: () => import('./commands/research.mjs'),
 	},
 	aso: {

@@ -55,6 +55,9 @@ export function marketFor(locale) {
 export const MIN_INTERVAL_MS = 1000;
 const BACKOFF_MS = 20_000;
 
+/** The two statuses Apple refuses with; everything else is a plain retry. */
+const REFUSED = new Set([403, 429]);
+
 /** country → { last, until }. One gate per storefront, because that is how Apple counts. */
 const gates = new Map();
 
@@ -120,12 +123,15 @@ async function cacheWrite(file, meta, body) {
 /**
  * One HTTP GET, gated per storefront and cached on disk.
  * @param {string} url
- * @param {{headers?: object, country?: string, endpoint?: string, term?: string, tries?: number, hard?: boolean}} opts
+ * @param {{headers?: object, country?: string, endpoint?: string, term?: string, tries?: number, hard?: boolean, bytes?: boolean}} opts
  *   `endpoint`+`term` opt the call into the cache; `hard` throws {@link StorefrontWall}
  *   on refusal instead of returning null, for sweeps that must stop and save.
+ *   `bytes` returns a Buffer and skips the cache: screenshots are committed as
+ *   research assets, so a second copy under .cache buys nothing.
+ * @returns {Promise<any>} body, or null when Apple never answered
  */
-async function throttledFetch(url, { headers = {}, country = 'US', endpoint, term, tries = 5, hard = false } = {}) {
-	const file = endpoint && cache.dir ? cacheFile(endpoint, term ?? '', country) : null;
+export async function throttledFetch(url, { headers = {}, country = 'US', endpoint, term, tries = 5, hard = false, bytes = false } = {}) {
+	const file = endpoint && cache.dir && !bytes ? cacheFile(endpoint, term ?? '', country) : null;
 	if (file && cache.read) {
 		const hit = await cacheRead(file);
 		if (hit !== null) return hit;
@@ -141,7 +147,7 @@ async function throttledFetch(url, { headers = {}, country = 'US', endpoint, ter
 				signal: AbortSignal.timeout(25_000),
 			});
 			gate.last = Date.now();
-			if (res.status === 429 || res.status === 403) {
+			if (REFUSED.has(res.status)) {
 				gate.until = gate.last + BACKOFF_MS;
 				if (attempt === tries - 1) {
 					if (hard) throw new StorefrontWall(country);
@@ -154,6 +160,7 @@ async function throttledFetch(url, { headers = {}, country = 'US', endpoint, ter
 				await sleep(3000);
 				continue;
 			}
+			if (bytes) return Buffer.from(await res.arrayBuffer());
 			const body = await res.text();
 			if (file && cache.write) await cacheWrite(file, { endpoint, term, country }, body);
 			return body;
