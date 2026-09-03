@@ -81,9 +81,9 @@ export const slugFor = (now, name) => (name ? `${now.slice(0, 10)}-${String(name
 /**
  * Build the plan. Every path in it is repo-relative so the artifact is
  * diffable and portable; the command resolves them against research.dir.
- * @type {(input: {cfg: Config, competitors: CompetitorRow[], flows: string[], slug: string, country: string, apps?: number, now?: string}) => ResearchPlan}
+ * @type {(input: {cfg: Config, competitors: CompetitorRow[], flows: string[], slug: string, country: string, apps?: number, brief?: any, now?: string}) => ResearchPlan}
  */
-export function buildPlan({ cfg, competitors, flows, slug, country, apps, now = new Date().toISOString() }) {
+export function buildPlan({ cfg, competitors, flows, slug, country, apps, brief = null, now = new Date().toISOString() }) {
 	const budget = {
 		...cfg.research.budget,
 		apps: Math.min(apps ?? cfg.research.budget.apps, cfg.research.budget.apps),
@@ -100,7 +100,11 @@ export function buildPlan({ cfg, competitors, flows, slug, country, apps, now = 
 		createdAt: now,
 		provider,
 		country,
-		product: { category: cfg.product.category, audience: cfg.product.audience },
+		// The brief wins over the config block: `product.audience` in
+		// ship.config.json is a one-line identity, and product/brief.json is the
+		// artifact that had to justify itself. Config remains the fallback for a
+		// repo that never drafted one.
+		product: productOf(cfg, brief),
 		flows,
 		apps: ranked,
 		sorts: [...SORTS],
@@ -113,5 +117,22 @@ export function buildPlan({ cfg, competitors, flows, slug, country, apps, now = 
 			patterns: `${slug}/patterns.json`,
 			index: `${slug}/index.json`,
 		},
+	};
+}
+
+/**
+ * The product context a plan is researched against.
+ *
+ * `audience` prefers the brief's `user.who`, because that sentence was gated —
+ * it cites review themes and survived `ship product brief --check`, where the
+ * config field is whatever somebody typed during `ship new`.
+ * @param {any} cfg
+ * @param {any} brief
+ * @returns {{category: string|null, audience: string|null}}
+ */
+function productOf(cfg, brief) {
+	return {
+		category: cfg?.product?.category ?? null,
+		audience: brief?.user?.who ?? cfg?.product?.audience ?? null,
 	};
 }

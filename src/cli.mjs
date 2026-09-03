@@ -31,6 +31,11 @@ export const COMMANDS = {
 		summary: 'Idea front door before a repo exists: terms · brief · new',
 		load: () => import('./commands/scout.mjs'),
 	},
+	product: {
+		group: 'Discover',
+		summary: 'What the app is, drafted from the scout brief and gated: brief',
+		load: () => import('./commands/product.mjs'),
+	},
 	research: {
 		group: 'Discover',
 		summary: 'Competitor evidence from the public storefront: plan · fetch · capture · verify · index',

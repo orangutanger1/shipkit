@@ -104,7 +104,7 @@ scripts/metrics.mjs  acorn-based complexity/CRAP/LOC gate
 | # | Finding | Severity |
 | --- | --- | --- |
 | 1 | `templates/app` is one screen. "Build" = scaffold, not build. | P0 |
-| 2 | No product brief beyond `scout brief` (keyword-shaped, not product-shaped). | P0 |
+| 2 | ~~No product brief beyond `scout brief` (keyword-shaped, not product-shaped).~~ **Done** — `ship product brief`. | P0 |
 | 3 | No design system, UX spec, flow model, or component inventory. | P0 |
 | 4 | No post-implementation visual/behavioural QA. `preflight` gates the *store*, not the *app*. | P0 |
 | 5 | Apple Ads v5 sunset 2027-01-26 not yet migrated (notes exist, no client). | P0 |
@@ -497,15 +497,16 @@ ship design review                             # implementation vs system, mecha
 
 ship qa             [--tier 1|2] [--baseline]  # capture, check, report
 
-ship scout brief                               # now also writes product/brief.json
+ship product brief  [--from <scout brief>]     # draft, or gate the one on disk
 ship analytics diagnose                        # new subcommand
 ship preflight                                 # now requires a passing qa report
 ```
 
 Composition:
-`scout brief → research plan → research fetch → [agent] → research verify →
-research index → design system → design spec → [agent implements] → qa →
-preflight → release → ads → analytics diagnose → research plan`.
+`scout brief → product brief → research plan → research fetch → [agent] →
+research verify → research index → product brief (re-draft, jobs from themes) →
+design system → design spec → [agent implements] → qa → preflight → release →
+ads → analytics diagnose → research plan`.
 
 ---
 
@@ -526,7 +527,13 @@ preflight → release → ads → analytics diagnose → research plan`.
 9. `ship analytics diagnose` decision table (crash input comes from Apple's own
    `App Crashes` report, not Sentry).
 10. Real keyword popularity from the Platform API.
-11. `product/brief.json` extended out of `scout brief`, seeded from review themes.
+11. **DONE.** `product/brief.json` via `ship product brief` — a new command, not a
+    side effect of `scout brief`. Scout is repo-free by design and runs before the
+    repo exists, and the brief has to be re-drafted once research themes land, so
+    the write needs a re-runnable home inside the repo. The market half (verdict,
+    viability, incumbent prices, gate-derived risks) is recomputed on every
+    re-draft; the authored half is carried forward. `research plan` reads
+    `user.who` from it in preference to `product.audience` in the config.
 12. `templates/app` grows from the design-system output: token module, themed
     primitives, real onboarding + paywall routes wired to RevenueCat.
 

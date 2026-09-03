@@ -13,6 +13,7 @@ ship init        adopt an existing repo
 ship new         scaffold a new one, fully wired  (--from a scout brief)
 
 ship scout       before a repo exists: terms · brief · new
+ship product     what the app is, drafted from the scout brief and gated: brief
 ship research    competitor evidence from the storefront: plan · fetch · capture · verify · index
 ship aso         keyword research: harvest · volume · score · suggest · apply · competitors · audit
 ship design      token and screen contracts: system · spec · review
@@ -29,7 +30,7 @@ ship release     preflight → meta → build → submit, gated at every step
 
 ship rc          RevenueCat: status · offerings · products · entitlements · audit
 ship ads         Apple Search Ads: status · plan · snapshot · sync · mine · report
-ship analytics   App Store analytics: pull · terms · funnel · onboarding
+ship analytics   App Store analytics: pull · terms · funnel · onboarding · diagnose
 ship price       territory pricing: show · plan · apply · audit
 ship status      one dashboard: review state, builds, revenue, ad spend, OTA safety
 ship portfolio   every app at once: revenue, spend, staleness, sunset candidates
@@ -241,7 +242,8 @@ next one's input.
 graph LR
   SC[ship scout terms<br/>category sweep, no repo] --> BR[ship scout brief<br/>go/no-go + drafted listing]
   BR --> NEW[ship new --from<br/>the keyword becomes the app]
-  NEW --> LOC[ship loc seed/draft/review<br/>native terms per market]
+  NEW --> PB[ship product brief<br/>what it is, not just what it ranks for]
+  PB --> LOC[ship loc seed/draft/review<br/>native terms per market]
   LOC --> M[ship meta apply<br/>listing ships]
   M --> CPP[ship meta cpp<br/>one page per ad group]
   CPP --> ADS[ship ads sync<br/>exact · discovery · competitor · brand]
@@ -250,7 +252,8 @@ graph LR
   AN --> V[ship aso score<br/>demand × competition]
   V --> LOC
   M --> RC[ship rc audit<br/>paywall converts]
-  AN --> PORT[ship portfolio<br/>double down or sunset]
+  AN --> DX[ship analytics diagnose<br/>the one stage worth fixing]
+  DX --> PORT[ship portfolio<br/>double down or sunset]
 ```
 
 Bid only on terms the listing already targets. Bidding on terms your metadata

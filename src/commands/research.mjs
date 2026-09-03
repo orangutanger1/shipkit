@@ -68,6 +68,9 @@ async function plan({ flags }) {
 
 	const { file, apps } = await competitorSet(cfg, locale);
 	const flows = resolveFlows(cfg.research.flows, strOf(flags.flows));
+	// Optional on purpose: research is how a brief gets its themes, so demanding
+	// a finished brief first would close the loop before it opens.
+	const brief = await readJSONIfExists(join(cfg.paths.product, 'brief.json'));
 	const now = new Date().toISOString();
 	const slug = slugFor(now, strOf(flags.name));
 	const doc = buildPlan({
@@ -77,6 +80,7 @@ async function plan({ flags }) {
 		slug,
 		country: market.country,
 		apps: flags.apps === undefined ? undefined : Number(flags.apps),
+		brief,
 		now,
 	});
 

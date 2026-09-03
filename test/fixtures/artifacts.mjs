@@ -144,8 +144,34 @@ export const qaReport = {
 	summary: { pass: 1, warn: 0, fail: 0, skipped: 1 },
 };
 
+
+/** A filled product brief: the market half computed, the product half authored. */
+export const productBrief = {
+	$schema: '../schema/product-brief.schema.json',
+	generatedAt: NOW,
+	slug: 'car-maintenance-log',
+	term: 'car maintenance log',
+	source: 'scout/us/car-maintenance-log-brief.json',
+	market: { country: 'us', lang: 'en-US' },
+	verdict: { go: true, viability: 41, reasons: [] },
+	jobs: [{
+		job: 'Remember what the car already had done, without keeping the receipts',
+		// The label is the one on the themes fixture: the citation check joins them.
+		evidence: ['logging friction'],
+		servedBy: ['create'],
+	}],
+	user: { who: 'People who service their own car', context: 'Standing in the driveway, oily hands, right after the job' },
+	valueProp: 'Every service your car has had, in one tap and never on a receipt.',
+	northStar: { action: 'log a completed service', flow: 'create' },
+	activation: { event: 'create_completed', within: 'first-session' },
+	retention: { loop: 'The next service is due, and only this app knows when', flows: ['reminder', 'notification'] },
+	monetization: { model: 'subscription', priceUsd: 19.99, period: 'annual', gate: 'more than one vehicle, and export' },
+	risks: [{ risk: 'The top three all ship reminders already', severity: 'high', source: 'scout' }],
+};
+
 /** Every fixture keyed by the schema it must satisfy. */
 export const ARTIFACTS = {
+	'product-brief': productBrief,
 	'research-plan': plan,
 	'research-reference': reference,
 	'research-reviews': reviews,

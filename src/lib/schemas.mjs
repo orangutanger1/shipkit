@@ -9,6 +9,7 @@ import { validate } from './schema.mjs';
 
 /** Artifacts a gate validates, in pipeline order. */
 export const SCHEMAS = /** @type {const} */ ([
+	'product-brief',
 	'research-plan',
 	'research-reference',
 	'research-reviews',

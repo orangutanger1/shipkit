@@ -1,0 +1,428 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://github.com/mayfield/shipkit/schema/product-brief.schema.json",
+	"title": "product brief",
+	"description": "product/brief.json — what the app is, who it is for, and what would make it work. `ship scout brief` answers whether a keyword is winnable; this answers whether there is a product behind it. The market half is computed from the scout brief and cannot be edited into something the storefront does not say; the product half is the agent's, and every claim in it cites a review theme.",
+	"type": "object",
+	"required": [
+		"slug",
+		"market",
+		"verdict",
+		"jobs",
+		"user",
+		"valueProp",
+		"northStar",
+		"activation",
+		"retention",
+		"monetization",
+		"risks"
+	],
+	"additionalProperties": false,
+	"patternProperties": {
+		"^_": {
+			"description": "Annotation kept beside the data it explains. Ignored by every loader."
+		}
+	},
+	"properties": {
+		"$schema": {
+			"type": "string"
+		},
+		"generatedAt": {
+			"type": "string",
+			"format": "date-time"
+		},
+		"slug": {
+			"type": "string",
+			"pattern": "^[a-z0-9][a-z0-9-]*$"
+		},
+		"term": {
+			"type": "string",
+			"minLength": 1,
+			"description": "The keyword the scout brief was built on, kept so the two artifacts can be re-joined."
+		},
+		"source": {
+			"type": "string",
+			"description": "Path of the scout brief this was drafted from. Provenance, not an input: nothing re-reads it."
+		},
+		"market": {
+			"type": "object",
+			"required": [
+				"country",
+				"lang"
+			],
+			"additionalProperties": false,
+			"properties": {
+				"country": {
+					"type": "string",
+					"pattern": "^[a-z]{2}$"
+				},
+				"lang": {
+					"type": "string",
+					"minLength": 2
+				}
+			}
+		},
+		"verdict": {
+			"type": "object",
+			"required": [
+				"go",
+				"viability",
+				"reasons"
+			],
+			"additionalProperties": false,
+			"description": "Copied from the scout brief. Computed, never authored — a `go` typed in by hand is the failure this whole artifact exists to prevent.",
+			"properties": {
+				"go": {
+					"type": "boolean"
+				},
+				"viability": {
+					"type": "integer",
+					"minimum": 0,
+					"maximum": 100
+				},
+				"reasons": {
+					"type": "array",
+					"items": {
+						"type": "string",
+						"minLength": 1
+					}
+				}
+			}
+		},
+		"jobs": {
+			"type": "array",
+			"minItems": 1,
+			"maxItems": 5,
+			"description": "Jobs to be done, most important first. Each is a job a real reviewer described, not one the product would like to serve.",
+			"items": {
+				"type": "object",
+				"required": [
+					"job",
+					"evidence"
+				],
+				"additionalProperties": false,
+				"properties": {
+					"job": {
+						"type": "string",
+						"minLength": 8,
+						"maxLength": 160,
+						"description": "Phrased as the user's situation and desired outcome, not as a feature."
+					},
+					"evidence": {
+						"type": "array",
+						"minItems": 1,
+						"description": "Theme labels from research/<slug>/themes.json backing this job. A job with no theme behind it is a guess wearing a citation's clothes.",
+						"items": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					"servedBy": {
+						"type": "array",
+						"items": {
+							"type": "string",
+							"enum": [
+								"first-launch",
+								"welcome",
+								"value-prop",
+								"personalization",
+								"permission",
+								"account",
+								"first-value",
+								"home",
+								"navigation",
+								"search",
+								"discovery",
+								"detail",
+								"create",
+								"edit",
+								"settings",
+								"paywall",
+								"trial",
+								"upsell",
+								"feature-gate",
+								"pricing",
+								"restore",
+								"re-engagement",
+								"notification",
+								"streak",
+								"progress",
+								"reminder",
+								"empty",
+								"loading",
+								"error",
+								"offline",
+								"undo",
+								"destructive"
+							],
+							"description": "A flow id from src/lib/flows.mjs. The closed vocabulary is the join key across research, ux.json, analytics events and QA."
+						}
+					}
+				}
+			}
+		},
+		"user": {
+			"type": "object",
+			"required": [
+				"who",
+				"context"
+			],
+			"additionalProperties": false,
+			"properties": {
+				"who": {
+					"type": "string",
+					"minLength": 8,
+					"maxLength": 120
+				},
+				"context": {
+					"type": "string",
+					"minLength": 8,
+					"maxLength": 240,
+					"description": "When and where they reach for this. A brief that cannot name the moment cannot name the first screen."
+				},
+				"notFor": {
+					"type": "string",
+					"maxLength": 240,
+					"description": "Who this deliberately does not serve. The scope the roadmap may not quietly widen into."
+				}
+			}
+		},
+		"valueProp": {
+			"type": "string",
+			"minLength": 12,
+			"maxLength": 200,
+			"description": "One sentence, in the user's words. If it does not survive being read aloud to a stranger it is not one."
+		},
+		"northStar": {
+			"type": "object",
+			"required": [
+				"action",
+				"flow"
+			],
+			"additionalProperties": false,
+			"description": "The single action that means the product worked. One, not a dashboard.",
+			"properties": {
+				"action": {
+					"type": "string",
+					"minLength": 4,
+					"maxLength": 120
+				},
+				"flow": {
+					"type": "string",
+					"enum": [
+						"first-launch",
+						"welcome",
+						"value-prop",
+						"personalization",
+						"permission",
+						"account",
+						"first-value",
+						"home",
+						"navigation",
+						"search",
+						"discovery",
+						"detail",
+						"create",
+						"edit",
+						"settings",
+						"paywall",
+						"trial",
+						"upsell",
+						"feature-gate",
+						"pricing",
+						"restore",
+						"re-engagement",
+						"notification",
+						"streak",
+						"progress",
+						"reminder",
+						"empty",
+						"loading",
+						"error",
+						"offline",
+						"undo",
+						"destructive"
+					],
+					"description": "A flow id from src/lib/flows.mjs. The closed vocabulary is the join key across research, ux.json, analytics events and QA."
+				}
+			}
+		},
+		"activation": {
+			"type": "object",
+			"required": [
+				"event",
+				"within"
+			],
+			"additionalProperties": false,
+			"description": "The moment a new install becomes a user. `ship analytics diagnose` reads the activation stage against this.",
+			"properties": {
+				"event": {
+					"type": "string",
+					"pattern": "^(first[-_]launch|welcome|value[-_]prop|personalization|permission|account|first[-_]value|home|navigation|search|discovery|detail|create|edit|settings|paywall|trial|upsell|feature[-_]gate|pricing|restore|re[-_]engagement|notification|streak|progress|reminder|empty|loading|error|offline|undo|destructive)[._](viewed|started|completed|skipped|dismissed|failed|granted|denied)$",
+					"description": "A `<flow>_<verb>` event name, as `eventName()` in src/lib/flows.mjs builds it — so the app emits, the funnel counts and the brief names the same string."
+				},
+				"within": {
+					"type": "string",
+					"enum": [
+						"first-session",
+						"day-1",
+						"day-7"
+					],
+					"description": "How long a user has to reach it before they are lost. Not a target; the window the funnel is measured over."
+				}
+			}
+		},
+		"retention": {
+			"type": "object",
+			"required": [
+				"loop",
+				"flows"
+			],
+			"additionalProperties": false,
+			"description": "Why anyone opens it a second time. An app with no answer here is a one-session utility, which is a fine thing to be and an expensive thing to acquire for.",
+			"properties": {
+				"loop": {
+					"type": "string",
+					"minLength": 12,
+					"maxLength": 240
+				},
+				"flows": {
+					"type": "array",
+					"minItems": 1,
+					"items": {
+						"type": "string",
+						"enum": [
+							"first-launch",
+							"welcome",
+							"value-prop",
+							"personalization",
+							"permission",
+							"account",
+							"first-value",
+							"home",
+							"navigation",
+							"search",
+							"discovery",
+							"detail",
+							"create",
+							"edit",
+							"settings",
+							"paywall",
+							"trial",
+							"upsell",
+							"feature-gate",
+							"pricing",
+							"restore",
+							"re-engagement",
+							"notification",
+							"streak",
+							"progress",
+							"reminder",
+							"empty",
+							"loading",
+							"error",
+							"offline",
+							"undo",
+							"destructive"
+						],
+						"description": "A flow id from src/lib/flows.mjs. The closed vocabulary is the join key across research, ux.json, analytics events and QA."
+					}
+				}
+			}
+		},
+		"monetization": {
+			"type": "object",
+			"required": [
+				"model"
+			],
+			"additionalProperties": false,
+			"properties": {
+				"model": {
+					"enum": [
+						"subscription",
+						"one-time",
+						"freemium",
+						"free",
+						"undecided"
+					]
+				},
+				"priceUsd": {
+					"type": "number",
+					"minimum": 0
+				},
+				"period": {
+					"enum": [
+						"weekly",
+						"monthly",
+						"annual",
+						"lifetime"
+					]
+				},
+				"gate": {
+					"type": "string",
+					"maxLength": 240,
+					"description": "What sits behind the paywall, in the user's terms. `free` and `undecided` leave this empty."
+				},
+				"incumbentPrices": {
+					"type": "array",
+					"description": "What the top-10 charge, read off the storefront. Computed; the drafted number is a fact about the market, not a decision.",
+					"items": {
+						"type": "object",
+						"required": [
+							"name",
+							"priceUsd"
+						],
+						"additionalProperties": false,
+						"properties": {
+							"name": {
+								"type": "string"
+							},
+							"priceUsd": {
+								"type": "number",
+								"minimum": 0
+							}
+						}
+					}
+				}
+			}
+		},
+		"risks": {
+			"type": "array",
+			"minItems": 1,
+			"description": "What would make this fail. The gate-derived ones are computed from the scout brief; an agent may add more but may not delete one.",
+			"items": {
+				"type": "object",
+				"required": [
+					"risk",
+					"severity"
+				],
+				"additionalProperties": false,
+				"properties": {
+					"risk": {
+						"type": "string",
+						"minLength": 8
+					},
+					"severity": {
+						"enum": [
+							"low",
+							"medium",
+							"high"
+						]
+					},
+					"source": {
+						"enum": [
+							"scout",
+							"research",
+							"author"
+						],
+						"description": "`scout` risks are computed from the storefront and survive a re-draft; the others do not."
+					},
+					"mitigation": {
+						"type": "string",
+						"maxLength": 240
+					}
+				}
+			}
+		}
+	}
+}
