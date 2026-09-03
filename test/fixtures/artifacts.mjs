@@ -7,6 +7,26 @@ const token = (value) => ({ value, cite: 'HIG:color/contrast' });
 const SEMANTIC = ['background', 'surface', 'surfaceAlt', 'text', 'textMuted', 'textInverse', 'accent', 'accentText', 'border', 'success', 'warning', 'danger'];
 const theme = (hex) => Object.fromEntries(SEMANTIC.map((k) => [k, token(hex)]));
 
+export const plan = {
+	slug: '2026-09-02',
+	createdAt: NOW,
+	provider: 'appstore',
+	country: 'US',
+	product: { category: 'health-fitness', audience: 'lapsed runners' },
+	flows: ['paywall'],
+	apps: [{ trackId: 341232718, name: 'Reference App', rank: 1, score: 25.02, ratings: 210433, stars: 4.7, why: '4.7★ over 210,433 ratings' }],
+	sorts: ['mostrecent', 'mosthelpful'],
+	budget: { apps: 12, screensPerApp: 10, reviewPages: 10, requests: { lookup: 1, screenshots: 10, reviews: 20, total: 31 } },
+	outputs: {
+		references: '2026-09-02/references',
+		reviews: '2026-09-02/reviews',
+		assets: '2026-09-02/assets',
+		themes: '2026-09-02/themes.json',
+		patterns: '2026-09-02/patterns.json',
+		index: '2026-09-02/index.json',
+	},
+};
+
 export const reference = {
 	id: 'ref_a1b2c3',
 	provider: 'appstore',
@@ -118,6 +138,7 @@ export const qaReport = {
 
 /** Every fixture keyed by the schema it must satisfy. */
 export const ARTIFACTS = {
+	'research-plan': plan,
 	'research-reference': reference,
 	'research-reviews': reviews,
 	'research-themes': themes,

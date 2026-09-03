@@ -1,0 +1,267 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://github.com/mayfield/shipkit/schema/research-plan.schema.json",
+	"title": "research plan",
+	"description": "research/<slug>/plan.json — what a run is allowed to fetch, decided before anything is fetched. `ship research verify` fails a run whose artifacts exceed this budget.",
+	"type": "object",
+	"required": [
+		"slug",
+		"createdAt",
+		"provider",
+		"country",
+		"flows",
+		"apps",
+		"sorts",
+		"budget",
+		"outputs"
+	],
+	"additionalProperties": false,
+	"patternProperties": {
+		"^_": {
+			"description": "Annotation kept beside the data it explains. Ignored by every loader."
+		}
+	},
+	"properties": {
+		"$schema": {
+			"type": "string"
+		},
+		"slug": {
+			"type": "string",
+			"pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}(-[a-z0-9-]+)?$"
+		},
+		"createdAt": {
+			"type": "string",
+			"format": "date-time"
+		},
+		"provider": {
+			"enum": [
+				"appstore",
+				"manual",
+				"appfigures",
+				"mobbin",
+				"appllama"
+			]
+		},
+		"country": {
+			"type": "string",
+			"pattern": "^[A-Z]{2}$"
+		},
+		"product": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"category": {
+					"type": [
+						"string",
+						"null"
+					]
+				},
+				"audience": {
+					"type": [
+						"string",
+						"null"
+					]
+				}
+			}
+		},
+		"flows": {
+			"type": "array",
+			"minItems": 1,
+			"uniqueItems": true,
+			"items": {
+				"type": "string",
+				"enum": [
+					"first-launch",
+					"welcome",
+					"value-prop",
+					"personalization",
+					"permission",
+					"account",
+					"first-value",
+					"home",
+					"navigation",
+					"search",
+					"discovery",
+					"detail",
+					"create",
+					"edit",
+					"settings",
+					"paywall",
+					"trial",
+					"upsell",
+					"feature-gate",
+					"pricing",
+					"restore",
+					"re-engagement",
+					"notification",
+					"streak",
+					"progress",
+					"reminder",
+					"empty",
+					"loading",
+					"error",
+					"offline",
+					"undo",
+					"destructive"
+				],
+				"description": "A flow id from src/lib/flows.mjs. The closed vocabulary is the join key across research, ux spec, analytics and QA."
+			},
+			"description": "Research is requested per flow, never per screen."
+		},
+		"apps": {
+			"type": "array",
+			"minItems": 1,
+			"items": {
+				"type": "object",
+				"required": [
+					"trackId",
+					"name",
+					"rank",
+					"score",
+					"why"
+				],
+				"additionalProperties": false,
+				"properties": {
+					"trackId": {
+						"type": "integer",
+						"minimum": 1
+					},
+					"name": {
+						"type": "string",
+						"minLength": 1
+					},
+					"rank": {
+						"type": "integer",
+						"minimum": 1
+					},
+					"score": {
+						"type": "number",
+						"minimum": 0,
+						"description": "stars x log10(ratings+1). Ratings enter logarithmically so the top of the store cannot own the plan."
+					},
+					"ratings": {
+						"type": "integer",
+						"minimum": 0
+					},
+					"stars": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 5
+					},
+					"why": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The ranking, in words, so a human can disagree with it."
+					}
+				}
+			}
+		},
+		"sorts": {
+			"type": "array",
+			"minItems": 1,
+			"uniqueItems": true,
+			"items": {
+				"enum": [
+					"mostrecent",
+					"mosthelpful"
+				]
+			}
+		},
+		"budget": {
+			"type": "object",
+			"required": [
+				"apps",
+				"screensPerApp",
+				"reviewPages",
+				"requests"
+			],
+			"additionalProperties": false,
+			"properties": {
+				"apps": {
+					"type": "integer",
+					"minimum": 1
+				},
+				"screensPerApp": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 10
+				},
+				"reviewPages": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 10
+				},
+				"requests": {
+					"type": "object",
+					"required": [
+						"lookup",
+						"screenshots",
+						"reviews",
+						"total"
+					],
+					"additionalProperties": false,
+					"description": "The exact request count this run is allowed. Computed, not estimated.",
+					"properties": {
+						"lookup": {
+							"type": "integer",
+							"minimum": 0
+						},
+						"screenshots": {
+							"type": "integer",
+							"minimum": 0
+						},
+						"reviews": {
+							"type": "integer",
+							"minimum": 0
+						},
+						"total": {
+							"type": "integer",
+							"minimum": 0
+						}
+					}
+				}
+			}
+		},
+		"outputs": {
+			"type": "object",
+			"required": [
+				"references",
+				"reviews",
+				"assets",
+				"themes",
+				"patterns",
+				"index"
+			],
+			"additionalProperties": {
+				"type": "string"
+			},
+			"description": "Paths relative to research.dir, so the plan stays portable between checkouts.",
+			"properties": {
+				"references": {
+					"type": "string",
+					"minLength": 1
+				},
+				"reviews": {
+					"type": "string",
+					"minLength": 1
+				},
+				"assets": {
+					"type": "string",
+					"minLength": 1
+				},
+				"themes": {
+					"type": "string",
+					"minLength": 1
+				},
+				"patterns": {
+					"type": "string",
+					"minLength": 1
+				},
+				"index": {
+					"type": "string",
+					"minLength": 1
+				}
+			}
+		}
+	}
+}

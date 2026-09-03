@@ -116,7 +116,9 @@
 			"properties": {
 				"requiredEnv": {
 					"type": "array",
-					"items": { "type": "string" },
+					"items": {
+						"type": "string"
+					},
 					"description": "EXPO_PUBLIC_* keys that must be present in the EAS environment and inlined into the bundle before `ship ota` publishes. Keys whose absence crashes the app belong here."
 				}
 			}
@@ -361,6 +363,147 @@
 						"null"
 					],
 					"description": "EU trader status declared in App Store Connect. Undeclared apps are removed from EU storefronts, so `ship preflight` fails when this is null and any EU locale ships."
+				}
+			}
+		},
+		"product": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"dir": {
+					"type": "string",
+					"default": "product",
+					"description": "Where the product brief and the append-only decision log live."
+				},
+				"category": {
+					"type": [
+						"string",
+						"null"
+					],
+					"description": "App Store category slug the research planner ranks competitors within."
+				},
+				"audience": {
+					"type": [
+						"string",
+						"null"
+					],
+					"description": "Who the app is for, in one phrase. Read by the research planner and the design synthesizer; the full target-user description belongs in product/brief.json."
+				}
+			}
+		},
+		"research": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"dir": {
+					"type": "string",
+					"default": "research",
+					"description": "Research artifacts, one subdirectory per research run."
+				},
+				"providers": {
+					"type": "array",
+					"items": {
+						"enum": [
+							"appstore",
+							"manual",
+							"appfigures",
+							"mobbin",
+							"appllama"
+						]
+					},
+					"default": [
+						"appstore"
+					],
+					"description": "Evidence providers, in preference order. Only appstore and manual are implemented; the rest are adapter slots against the same normalized reference model."
+				},
+				"flows": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Flow ids to research, from src/lib/flows.mjs. Empty uses the default research set. Research is requested per flow, never per screen."
+				},
+				"budget": {
+					"type": "object",
+					"additionalProperties": false,
+					"description": "Hard per-run fetch cap. `ship research verify` fails a run that exceeded it, which is what keeps a public, undocumented endpoint being read at the volume one person browsing generates.",
+					"properties": {
+						"apps": {
+							"type": "integer",
+							"minimum": 1,
+							"default": 12
+						},
+						"screensPerApp": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 10,
+							"default": 10,
+							"description": "The storefront serves at most 10 marketing shots per app."
+						},
+						"reviewPages": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 10,
+							"default": 10,
+							"description": "50 reviews per page, pages 1-10 per sort; page 11 errors."
+						}
+					}
+				}
+			}
+		},
+		"design": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"dir": {
+					"type": "string",
+					"default": "design",
+					"description": "Design system, UX spec and component inventory."
+				},
+				"system": {
+					"type": "string",
+					"default": "design/system.json",
+					"description": "The token file `ship design system|review` writes and validates. Repo-relative, so it can live inside the app tree instead."
+				},
+				"qa": {
+					"type": "object",
+					"additionalProperties": false,
+					"description": "The matrix `ship qa` captures every screen across.",
+					"properties": {
+						"themes": {
+							"type": "array",
+							"items": {
+								"enum": [
+									"light",
+									"dark"
+								]
+							},
+							"default": [
+								"light",
+								"dark"
+							]
+						},
+						"locales": {
+							"type": "array",
+							"items": {
+								"type": "string"
+							},
+							"default": [
+								"en-US"
+							]
+						},
+						"dynamicType": {
+							"type": "array",
+							"items": {
+								"type": "string"
+							},
+							"default": [
+								"default",
+								"xl"
+							],
+							"description": "Dynamic Type steps. XL is where generated layouts overflow."
+						}
+					}
 				}
 			}
 		}

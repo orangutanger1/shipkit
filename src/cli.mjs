@@ -31,6 +31,11 @@ export const COMMANDS = {
 		summary: 'Idea front door before a repo exists: terms · brief · new',
 		load: () => import('./commands/scout.mjs'),
 	},
+	research: {
+		group: 'Discover',
+		summary: 'Competitor evidence from the public storefront: plan',
+		load: () => import('./commands/research.mjs'),
+	},
 	aso: {
 		group: 'Discover',
 		summary: 'Keyword research: harvest · volume · score · suggest · apply · competitors · audit',

@@ -30,13 +30,19 @@ import { checkAdsConfig } from './lib/asa.mjs';
 /** @typedef {{dir: string}} AnalyticsConfig */
 /** @typedef {{dir: string, basePriceUsd: number|null}} PriceConfig */
 /** @typedef {{privacyUrl: string|null, supportUrl: string|null, marketingUrl: string|null, euTrader: string|null}} LegalConfig */
+/** The `product` block: who the app is for. Identity, not content — the brief itself is a file. */
+/** @typedef {{dir: string, category: string|null, audience: string|null}} ProductConfig */
+/** The `research` block: which providers, which flows, and the hard fetch budget. */
+/** @typedef {{dir: string, providers: string[], flows: string[], budget: {apps: number, screensPerApp: number, reviewPages: number}}} ResearchConfig */
+/** The `design` block: the token file, and the matrix `ship qa` captures. */
+/** @typedef {{dir: string, system: string, qa: {themes: string[], locales: string[], dynamicType: string[]}}} DesignConfig */
 /** What ship.config.json itself contains. Every block is optional; the
  * defaults fill whatever is absent (see DEFAULTS). */
-/** @typedef {{name?: string, bundleId?: string, version?: string, appDir?: string, asc?: AscConfig, eas?: EasConfig, ota?: OtaConfig, store?: StoreConfig, shots?: ShotsConfig, revenuecat?: RevenuecatConfig, ads?: AdsConfig, aso?: AsoConfig, loc?: LocConfig, analytics?: AnalyticsConfig, price?: PriceConfig, legal?: LegalConfig}} FileConfig */
+/** @typedef {{name?: string, bundleId?: string, version?: string, appDir?: string, asc?: AscConfig, eas?: EasConfig, ota?: OtaConfig, store?: StoreConfig, shots?: ShotsConfig, revenuecat?: RevenuecatConfig, ads?: AdsConfig, aso?: AsoConfig, loc?: LocConfig, analytics?: AnalyticsConfig, price?: PriceConfig, legal?: LegalConfig, product?: ProductConfig, research?: ResearchConfig, design?: DesignConfig}} FileConfig */
 /** The config after the defaults have filled every absent block. */
-/** @typedef {{name?: string, bundleId?: string, version?: string, appDir: string, asc: AscConfig, eas: EasConfig, ota: OtaConfig, store: StoreConfig, shots: ShotsConfig, revenuecat: RevenuecatConfig, ads: AdsConfig, aso: AsoConfig, loc: LocConfig, analytics: AnalyticsConfig, price: PriceConfig, legal: LegalConfig}} MergedConfig */
+/** @typedef {{name?: string, bundleId?: string, version?: string, appDir: string, asc: AscConfig, eas: EasConfig, ota: OtaConfig, store: StoreConfig, shots: ShotsConfig, revenuecat: RevenuecatConfig, ads: AdsConfig, aso: AsoConfig, loc: LocConfig, analytics: AnalyticsConfig, price: PriceConfig, legal: LegalConfig, product: ProductConfig, research: ResearchConfig, design: DesignConfig}} MergedConfig */
 /** Absolute paths derived from the file's location; never read from the file. */
-/** @typedef {{root: string, app: string, store: string, staged: string, appInfo: string, aso: string, asa: string, reports: string, analytics: string, pricing: string, glossary: string}} ConfigPaths */
+/** @typedef {{root: string, app: string, store: string, staged: string, appInfo: string, aso: string, asa: string, reports: string, analytics: string, pricing: string, glossary: string, product: string, research: string, design: string, designSystem: string, qa: string}} ConfigPaths */
 /**
  * The fully-normalised config every command receives from {@link loadConfig}.
  * @typedef {MergedConfig & {
@@ -102,6 +108,22 @@ const DEFAULTS = {
 	analytics: { dir: '.asc/analytics' },
 	price: { dir: 'store/pricing', basePriceUsd: null },
 	legal: { privacyUrl: null, supportUrl: null, marketingUrl: null, euTrader: null },
+	product: { dir: 'product', category: null, audience: null },
+	// `budget` is a hard cap, not a hint: `research verify` fails a plan that
+	// exceeds it. Apple's lookup and RSS endpoints are undocumented-but-public,
+	// so the volume a run is allowed to generate is a config decision, not a
+	// number buried in the fetcher.
+	research: {
+		dir: 'research',
+		providers: ['appstore'],
+		flows: [],
+		budget: { apps: 12, screensPerApp: 10, reviewPages: 10 },
+	},
+	design: {
+		dir: 'design',
+		system: 'design/system.json',
+		qa: { themes: ['light', 'dark'], locales: ['en-US'], dynamicType: ['default', 'xl'] },
+	},
 };
 
 /**
@@ -213,6 +235,11 @@ export function normalise(raw, file) {
 		analytics: abs(merged.analytics.dir),
 		pricing: abs(merged.price.dir),
 		glossary: abs(merged.loc.glossary),
+		product: abs(merged.product.dir),
+		research: abs(merged.research.dir),
+		design: abs(merged.design.dir),
+		designSystem: abs(merged.design.system),
+		qa: join(root, 'qa'),
 	};
 
 	// Spend settings are validated here rather than in `ship ads`, because a
