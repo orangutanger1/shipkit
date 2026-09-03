@@ -105,7 +105,7 @@ shipkit.
       "props": { "scroll": { "type": "boolean", "default": false } },
       "variants": [],
       "states": [],
-      "requires": { "color": ["background"], "spacing": ["md", "lg"] }
+      "requires": { "color": ["background"], "spacingSteps": 6 }
     },
     "Text": {
       "primitive": "Text",
@@ -126,7 +126,7 @@ shipkit.
       "variants": ["primary", "secondary", "destructive"],
       "states": ["default", "pressed", "disabled", "loading"],
       "requires": { "color": ["accent", "accentText", "border", "danger", "textInverse"],
-                    "radii": ["md"], "type": ["headline"], "spacing": ["sm", "md"] }
+                    "radii": ["md"], "type": ["headline"], "spacingSteps": 5 }
     },
     "StateView": {
       "primitive": "View",
@@ -135,7 +135,7 @@ shipkit.
       "props": { "kind": { "type": "enum", "values": ["empty", "loading", "error", "offline"] } },
       "variants": ["empty", "loading", "error", "offline"],
       "states": [],
-      "requires": { "color": ["background", "textMuted"], "type": ["body"], "spacing": ["lg"] }
+      "requires": { "color": ["background", "textMuted"], "type": ["body"], "spacingSteps": 6 }
     }
   }
 }
@@ -343,12 +343,23 @@ then applied.
 | every `screen.states` entry is supported by `StateView` | names the unsupported state |
 | every `elements[].copy` key exists in `screen.copy` | names the dangling key |
 | every `elements[].event` is declared in `screen.events` | names it |
-| every token in the contract's `requires` exists in `system.json` | lists every missing role, radius, colour and spacing step at once |
+| every token in the contract's `requires` exists in `system.json` | lists every missing role, radius and colour at once, and a `spacing.scale` shorter than the largest `spacingSteps` |
 
 The last row replaces revision 1's hardcoded ramp-role gate. The list of type
-roles, radii, colours and spacing steps the primitives need is computed from the
-contract's `requires` blocks, so adding a primitive that needs a new token
-updates the gate automatically.
+roles, radii and colours the primitives need is computed from the contract's
+`requires` blocks, so adding a primitive that needs a new token updates the gate
+automatically.
+
+Spacing is the one token that is **indexed, not named**: `system.json` carries
+`spacing.scale` as an unnamed numeric series (`[0, 4, 8, 12, 16, 24, 32, 48]`),
+so a primitive declares how many steps it needs as `spacingSteps` and reads
+`spacing[n]` by index. Requiring names there would invent a vocabulary the
+design-system schema does not have.
+
+The default drafted system satisfies every requirement in the shipped contract —
+`draftSystem` emits radii `sm`/`md`/`lg`, the seven-step `PLATFORM_RAMP`, and an
+eight-step spacing scale — so the gate fires only when an author removes
+something a primitive needs, never on a fresh draft.
 
 The same validation runs inside `ship design spec`, which already accepts a
 component set — it is upgraded to take the whole contract. A spec that cannot be
