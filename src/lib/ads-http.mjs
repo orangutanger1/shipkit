@@ -13,7 +13,7 @@ import { ShipError } from '../log.mjs';
 import { ASC, run as exec } from '../exec.mjs';
 import {
 	PATHS, V1_BASE, errorTextV1, filter, isLegacyPayload, normaliseAdGroupV1, normaliseCampaignV1,
-	normaliseKeywordV1, paginationOfV1, queryAll, rowsOfV1,
+	normaliseKeywordV1, paginationOfV1, queryAll, rowsOfV1, suggestionRows, suggestionsBody,
 } from './ads-v1.mjs';
 
 /** @typedef {import('./util.mjs').Json} Json */
@@ -148,4 +148,15 @@ export async function v1Account(ctx) {
 		keywords.push(...(await v1Query(PATHS.keywords, ctx, { filters })).map(normaliseKeywordV1));
 	}
 	return { campaigns, adGroups, keywords };
+}
+
+/**
+ * Apple's popularity for one term, plus its expansion of it. This is the only
+ * per-term demand number shipkit can measure rather than estimate; everything
+ * else in `aso` infers demand from autocomplete rank.
+ * @type {(ctx: V1Ctx, opts: {adamId: string|number, term?: string, countries?: string[], pageSize?: number}) => Promise<{text: string, popularity: number}[]>}
+ */
+export async function v1Suggestions(ctx, opts) {
+	const payload = await v1Request(PATHS.keywordSuggestions, { ...ctx, method: 'POST', body: suggestionsBody(opts) });
+	return suggestionRows(payload);
 }

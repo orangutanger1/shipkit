@@ -26,7 +26,17 @@ export const PATHS = {
 	negativeKeywords: 'negativekeywords/query',
 	creatives: 'creatives/query',
 	productPages: 'product-pages/query',
+	keywordSuggestions: 'suggestions/keywords/query',
 };
+
+/**
+ * The bottom of Apple's popularity axis. It is documented as 0-100 and is in
+ * practice 5-100: across 426 live rows nothing came back below 5, and a term
+ * Apple has no demand data for is echoed back at exactly 5. A real 5 and an
+ * unknown are therefore indistinguishable, which is why callers drop the floor
+ * rather than record it as measured demand.
+ */
+export const POPULARITY_FLOOR = 5;
 
 /** @param {Json|undefined} v @returns {v is JsonObject} */
 const isObj = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -265,4 +275,47 @@ export function normaliseKeywordV1(row) {
 		bidAmount: moneyOfV1(r.bid).amount,
 		modificationTime: v1Time(r.modificationTime),
 	};
+}
+
+/**
+ * A keyword-suggestions request. Three things this endpoint does that no other
+ * `/query` does, all found the hard way against a live account:
+ *   · every filter `value` is an **array**, even under `EQUALS` — a scalar is
+ *     rejected as "Request body is not readable", which names no field;
+ *   · `promotedObjectId` and `promotedObjectType` are required, and the app
+ *     must belong to this ad account or Apple answers "App not found";
+ *   · `terms` accepts an array but honours only the **first** entry, silently.
+ *     One term per call is the contract, not an optimisation choice.
+ * @type {(opts: {adamId: string|number, term?: string, countries?: string[], pageSize?: number, offset?: number}) => JsonObject}
+ */
+export function suggestionsBody({ adamId, term, countries = [], pageSize = 100, offset = 0 }) {
+	return {
+		filters: [
+			filter('promotedObjectId', [String(adamId)]),
+			filter('promotedObjectType', ['APPSTORE_APP']),
+			...(term ? [filter('terms', [term], 'IN')] : []),
+			...(countries.length ? [filter('countriesOrRegions', countries, 'IN')] : []),
+		],
+		pagination: { pageSize, offset },
+	};
+}
+
+/** One suggestion row. Named so c8's fnMap registers it — see the CRAP rule.
+ * @type {(row: Json) => {text: string, popularity: number}|null}
+ */
+function suggestionRow(row) {
+	const r = asObj(row);
+	const text = String(r.text ?? '').trim();
+	const popularity = Number(r.popularity);
+	return text && Number.isFinite(popularity) ? { text, popularity } : null;
+}
+
+/**
+ * The `{text, popularity}` pairs behind a suggestions answer. The seed term is
+ * always among them; the rest are Apple's expansion of it, and they carry real
+ * popularity for terms we never asked about.
+ * @type {(payload: Json|undefined) => {text: string, popularity: number}[]}
+ */
+export function suggestionRows(payload) {
+	return /** @type {{text: string, popularity: number}[]} */ (rowsOfV1(payload).map(suggestionRow).filter(Boolean));
 }

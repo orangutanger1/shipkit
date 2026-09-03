@@ -29,6 +29,9 @@ import {
 	useCache,
 } from '../lib/appstore.mjs';
 import { rowsOf } from '../lib/asc-report.mjs';
+import { requireOrg } from '../lib/ads-auth.mjs';
+import { v1Suggestions } from '../lib/ads-http.mjs';
+import { collectPopularity, volumeTerms } from '../lib/aso-volume.mjs';
 import { readJSONIfExists, writeJSON } from '../lib/jsonio.mjs';
 import { emit } from '../lib/output.mjs';
 import { resolveSubcommand } from '../lib/util.mjs';
@@ -95,6 +98,8 @@ ${c.bold('Flags')}
   ${c.cyan('--all-locales')}   harvest/volume/score/suggest every locale in store.locales
   ${c.cyan('--seeds "a,b"')}   harvest seeds ${c.dim('(default: aso.seedsByLocale[locale], aso.seeds, else the staged listing)')}
   ${c.cyan('--file <f>')}      ${c.cyan('volume')} import: {"term": 62}, {"terms":{"term":{"popularity":62}}}, or an Apple Ads Platform API v1 response
+  ${c.cyan('--fetch')}         ${c.cyan('volume')} measure popularity over the Apple Ads API (needs an ad account)
+  ${c.cyan('--max <n>')}       ${c.cyan('volume --fetch')} call budget, one call per unanswered term (default 200)
   ${c.cyan('--limit <n>')}     score at most n candidates, shortest first ${c.dim('(default 120)')}
   ${c.cyan('--words <n>')}     max words per candidate ${c.dim('(default 4)')}
   ${c.cyan('--ids 123,456')}   competitor App Store ids ${c.dim('(default: top 3 from scored.json)')}
@@ -252,12 +257,15 @@ async function harvest({ flags }) {
 /**
  * @param {Config} cfg
  * @param {string} locale
- * @param {Market} _market
+ * @param {Market} market
  * @param {Flags} flags
+ * @param {typeof v1Suggestions} [ask]
  */
-async function volumeOne(cfg, locale, _market, flags) {
+async function volumeOne(cfg, locale, market, flags, ask = v1Suggestions) {
 	const file = artifactPath(cfg, locale, 'volume');
 	const existing = await readOptional(file);
+
+	if (flags.fetch) return fetchVolume(cfg, locale, market, flags, existing, ask);
 
 	if (flags.file) {
 		const source = String(flags.file);
@@ -280,6 +288,47 @@ async function volumeOne(cfg, locale, _market, flags) {
 
 	if (existing) return { locale, file, artifact: existing, imported: 0, source: null };
 	return { locale, file, artifact: { ...VOLUME_TEMPLATE, locale }, imported: 0, source: null, template: true };
+}
+
+/**
+ * `ship aso volume --fetch` — Apple's own popularity for the harvested
+ * candidates, in place of the autocomplete-rank estimate.
+ *
+ * This is the one demand number in the whole command that is measured rather
+ * than inferred, which is why it is gated on an ad account: `ship scout` is
+ * deliberately credential-free and stays on the rank proxy. Terms Apple has no
+ * data for are dropped, not written — see {@link volumeTerms}.
+ * @param {Config} cfg
+ * @param {string} locale
+ * @param {Market} market
+ * @param {Flags} flags
+ * @param {any} existing
+ * @param {typeof v1Suggestions} ask
+ */
+async function fetchVolume(cfg, locale, market, flags, existing, ask) {
+	const adamId = requireAppId(cfg);
+	const adAccountId = requireOrg(cfg, flags);
+	const candidates = await readArtifact(cfg, locale, 'candidates');
+	const wanted = Object.keys(candidates?.terms ?? {});
+	if (!wanted.length) throw new ShipError(`no candidates to measure for ${locale}`, { hint: `run \`ship aso harvest --locale ${locale}\` first` });
+
+	/** @param {string} term */
+	const one = (term) => ask({ adAccountId }, { adamId, term, countries: [market.country] });
+	const collected = await collectPopularity(wanted, one, { max: Number(flags.max ?? 200), onProgress: reporter(flags) });
+	const { terms, floor } = volumeTerms(collected.found, collected.wanted);
+
+	const artifact = { generatedAt: new Date().toISOString(), locale, source: 'apple-ads-suggestions', terms: { ...existing?.terms, ...terms } };
+	return {
+		locale,
+		file: await writeArtifact(cfg, locale, 'volume', artifact),
+		artifact,
+		imported: Object.keys(terms).length,
+		source: `Apple Ads · ${collected.calls} calls · ${market.country}`,
+		floor,
+		wanted: collected.wanted.length,
+		unanswered: collected.unanswered,
+		overBudget: collected.overBudget,
+	};
 }
 
 /** @type {Stage} */

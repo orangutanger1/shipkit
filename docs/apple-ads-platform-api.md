@@ -37,8 +37,56 @@ answered — this is the fastest way to tell a wrong path from a wrong body:
 - **`ship aso volume --file` accepts raw v1 payloads.** `normaliseVolume` in
   `src/commands/aso.mjs` unwraps `result` / `result.rows` and reads `text` and
   `searchTerm` keys, so a saved response from either popularity endpoint imports
-  with no hand-editing. Covered by `test/aso.test.mjs`. This is the manual half of
-  backlog item 1; the automated half still needs a client.
+  with no hand-editing. Covered by `test/aso.test.mjs`.
+- **`ship aso volume --fetch` measures popularity over the network** (backlog 1,
+  closed). `src/lib/aso-volume.mjs` + `v1Suggestions` in `ads-http.mjs`; one call
+  per harvested candidate, `--max` caps the budget. Verified live against org
+  23259140 on 2026-09-03: 70 candidates, 70 calls, 8 measured, 62 at the floor.
+  See the endpoint's own grammar below — it does not obey the rules the other
+  `/query` endpoints do.
+
+### `POST /v1/suggestions/keywords/query` — verified grammar
+
+```jsonc
+{
+  "filters": [
+    { "field": "promotedObjectId",   "operator": "EQUALS", "value": ["6797103341"] },
+    { "field": "promotedObjectType", "operator": "EQUALS", "value": ["APPSTORE_APP"] },
+    { "field": "terms",              "operator": "IN",     "value": ["car care"] },
+    { "field": "countriesOrRegions", "operator": "IN",     "value": ["US"] }
+  ],
+  "pagination": { "pageSize": 100, "offset": 0 }
+}
+```
+
+Four things it does that no other v1 endpoint does, each of which cost a probe:
+
+| Rule | Evidence |
+| --- | --- |
+| every `value` is an **array**, `EQUALS` included | a scalar returns `VALIDATION_ERROR` / `REQUEST_INVALID` **"Request body is not readable"**, which names no field. This is Jackson failing to bind, not a validator — it looks identical whatever you got wrong. |
+| `promotedObjectId` + `promotedObjectType` are **required**, `EQUALS` only | omitting either → `REQUIRED_VALUE_FIELD filters.promotedObjectId`; `IN` → `Operator 'IN' is not supported for field 'promotedObjectId'` |
+| the app must belong to **this** ad account | another publisher's adamId → `INVALID_INPUT adamId App not found or access denied` |
+| `terms` takes an array and honours only the **first** entry | `["qqxzv wobble","instagram","car maintenance log"]` returned one row, for `qqxzv wobble`. Silently. One term per call is the contract. |
+
+`countriesOrRegions` is optional and validated: `ZZ` → `INVALID_INPUT storefront`.
+Omitting `terms` returns the account's whole suggestion universe (202 rows here),
+which is backlog 5's seed source, not a demand reading.
+
+**Popularity is 5-100, not 0-100, and 5 is also the "no data" sentinel.** Across
+426 live rows nothing came back below 5; 36% came back at exactly 5, including
+invented terms (`qqxzv` → 5). A real 5 and an unknown are indistinguishable, so
+`volumeTerms` drops floor rows rather than recording them — writing them would
+flatten every long-tail candidate onto one value and hand the ranking to
+competition alone, which is the failure `aso.mjs`'s header comment names.
+
+**Popularity is seed-relative.** `car care` reads **26** as its own seed and
+**14** inside `carfax`'s expansion. The expansion rows are therefore not
+interchangeable with a direct reading, and `collectPopularity` reads only the row
+matching the term it asked about — reusing an expansion row to save a call would
+put two scales in one column. This is why the command is N calls, not fewer.
+
+Concurrency is fine: fifteen parallel calls answered in 929ms, against ~620ms
+each serially. `collectPopularity` runs batches of five.
 
 ## Migration — required before 2027-01-26
 
@@ -58,6 +106,10 @@ answered — this is the fastest way to tell a wrong path from a wrong body:
 - pagination is **`{pageSize, offset}`** — `limit`, `size` and `maxResults` are all rejected;
 - the response echoes `pagination` back, so paging is offset arithmetic over `pageSize`;
 - `result` is a **bare array** for every `query` endpoint, not `{rows: […]}`.
+
+Note that `/v1/suggestions/keywords/query` breaks the first rule: there `value` is
+always an array, even under `EQUALS`. Do not generalise either grammar onto the
+other — see [its own section](#post-v1suggestionskeywordsquery--verified-grammar).
 
 ### Structural changes that hit code we already have
 
@@ -99,20 +151,7 @@ is not reachable — treat as unconfirmed until it is:
 
 ## Backlog — new capability, in the order worth taking
 
-### 1. Real popularity into `aso volume`
-
-**Verified reachable** (`400 REQUIRED_VALUE_FIELD filters` on an empty body — the
-endpoint exists and validates).
-
-`POST /v1/suggestions/keywords/query` takes `terms IN [...]` + `countriesOrRegions`
-and returns `{text, popularity}` on the 0-100 axis. That is the per-term lookup the
-demand table has never had: `aso.mjs`'s own comment notes that *a fabricated 50
-outranks real terms*, and `VOLUME_TEMPLATE` ships literal placeholder rows.
-
-Wire it as a network source behind a flag, writing the same
-`aso/<locale>/volume.json` the `--file` path already produces. Gated on an ad
-account, so `ship scout` — deliberately credential-free — stays on the autocomplete
-rank proxy.
+### 1. Real popularity into `aso volume` — **done**, see above.
 
 ### 2. Eligibility preflight before `ads sync`
 

@@ -6,6 +6,7 @@
 // they say. The one lazy read (seeds falling back to the staged listing) takes
 // its reader injected, so the module stays honest and the command stays lazy.
 import { LIMITS } from '../config.mjs';
+import { POPULARITY_FLOOR } from './ads-v1.mjs';
 import { packKeywords, progressLine } from './appstore.mjs';
 import { c, good, heading, info, note, table, warn } from '../log.mjs';
 import { charCount, indexedWords, isCovered, isNoSpaceLang } from './text.mjs';
@@ -363,10 +364,17 @@ export function printVolume(out) {
 		heading(`No volume data for ${out.locale}`);
 		info(`write ${c.dim(out.file)} by hand, or import one with ${c.cyan('--file <f>')}:`);
 		process.stdout.write(`\n${JSON.stringify(out.artifact, null, '\t')}\n\n`);
-		note(c.dim('popularity is 0-100 and overrides the autocomplete-rank estimate for that term'));
+		note(c.dim(`popularity is ${POPULARITY_FLOOR}-100 and overrides the autocomplete-rank estimate for that term`));
+	note(c.dim(`or measure it: ${c.cyan('ship aso volume --fetch')} (needs an Apple Ads ad account)`));
 		return;
 	}
 	if (out.source) good(`imported ${out.imported} terms from ${c.dim(out.source)} → ${c.dim(out.file)}`);
+	// A floor reading is Apple saying "no data", not "no demand" — recording it
+	// would flatten every long-tail term onto one number. Say so rather than
+	// leaving the gap between candidates and imported terms unexplained.
+	if (out.floor?.length) note(c.dim(`${out.floor.length} terms sit at Apple's floor (${POPULARITY_FLOOR}) — left to the autocomplete-rank estimate`));
+	if (out.unanswered?.length) note(c.dim(`${out.unanswered.length} terms Apple would not answer at all`));
+	if (out.overBudget?.length) warn(`${out.overBudget.length} terms never asked about — rerun with --max ${out.wanted}`);
 	table(rows.slice(0, 25), [
 		{ header: 'term', get: (r) => r[0] },
 		{ header: 'popularity', get: (r) => String(r[1].popularity ?? '') },

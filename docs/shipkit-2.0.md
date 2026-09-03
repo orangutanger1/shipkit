@@ -447,9 +447,14 @@ declares which tier can prove it; a Tier-1-only run reports motion/native/a11y a
    `apple-ads-platform-api-node` (published 2026-08-14) or port `lib/ads-client.mjs`
    per the deltas already mapped in `docs/apple-ads-platform-api.md`. `lib/ads-plan.mjs`
    (the pure planner) stays untouched behind the client swap.
-2. **P1 — real keyword popularity.** `POST /v1/suggestions/keywords/query` returns
-   0–100 popularity per term → `aso/<locale>/volume.json`, replacing the fabricated
-   values `ship aso volume` ships today. Highest-value single API call in the plan.
+2. **P1 — real keyword popularity. DONE.** `ship aso volume --fetch` — one
+   `POST /v1/suggestions/keywords/query` per harvested candidate →
+   `aso/<locale>/volume.json`, replacing the template values `ship aso volume`
+   shipped. Two live findings changed the design: the axis is 5–100 and 5 doubles
+   as the no-data sentinel, and popularity is seed-relative, so an expansion row
+   cannot stand in for a direct reading. Both are recorded in
+   `docs/apple-ads-platform-api.md`; floor readings are dropped rather than
+   written, so an unmeasured term keeps its autocomplete-rank estimate.
 3. **P1 — `ship analytics diagnose`.** Extend the existing `bottleneck` from "which
    stage" to a decision table: impressions↑/page-views↓ → *listing*;
    installs↑/activation↓ → *onboarding*; activation↑/retention↓ → *core loop*;
