@@ -389,12 +389,18 @@ implementation as a type.
 
 `src/theme/qa-params.ts` is **generated from `src/lib/qa-params.mjs`**, so the
 sanitizing logic has one source and shipkit's own test suite exercises the real
-thing rather than a lexical approximation of it:
+thing rather than a lexical approximation of it. shipkit types that module in
+JSDoc and the app is TypeScript, where JSDoc types are ignored — so `emitQaParams`
+translates each `@type` annotation onto the declaration rather than dropping it,
+and the app repo's own `tsc --strict` sees a fully typed module:
 
 ```ts
-export const QA_DEFAULTS = { theme: null, state: 'default', locale: null, scale: 1 };
+export const QA_DEFAULTS = { theme: null, state: 'default', locale: null, scale: 1 } as const;
 
-export function sanitizeQa(raw, { enabled, themes, states }) {
+export function sanitizeQa(
+	raw: any,
+	{ enabled, themes, states }: { enabled: boolean, themes: readonly string[], states?: readonly string[] },
+): { theme: string|null, state: string, locale: string|null, scale: number } {
 	if (!enabled) return QA_DEFAULTS;
 	// theme ∈ themes; state ∈ states; locale matches /^[a-z]{2}(-[A-Z]{2})?$/;
 	// scale is finite and clamped to [0.5, 4]. Anything else falls back to the
