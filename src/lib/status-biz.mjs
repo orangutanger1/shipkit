@@ -9,11 +9,29 @@ import { DASH } from './fmt.mjs';
 import { keywordList, readStaged } from './locales.mjs';
 import { otaSafety } from './native.mjs';
 import { kvTable } from './output.mjs';
-import { median } from './util.mjs';
+import { median, objOrEmpty, strOrNull } from './util.mjs';
 import { apiKey, listEntitlements, listOfferings, listPackages, listProducts, resolveProject } from './revenuecat.mjs';
+
+/** @typedef {import('./status-asc.mjs').StatusCtx} StatusCtx */
+/**
+ * "Not wired up" is as real an answer as a number, so each section answers with
+ * a union rather than one bag of optionals — the renderer returns early on the
+ * empty arm and the compiler knows the rest of the fields are there.
+ * @typedef {{skipped: string}} RevenueSkipped
+ * @typedef {{project: {id: string, name: string}, offerings: number, currentOffering: {lookup_key: string, packages: number}|null, entitlement: string|null, entitlementPresent: boolean|null, entitlements: string[], products: number}} RevenueFull
+ * @typedef {RevenueSkipped|RevenueFull} RevenueData
+ */
+/**
+ * @typedef {{configured: false, storage: Json}} AdsUnconfigured
+ * @typedef {{configured: true, org: null}} AdsNoOrg
+ * @typedef {{configured: true, org: string, campaigns: number, spend: number, installs: number, taps: number, impressions: number, cpi: number|null}} AdsFull
+ * @typedef {AdsUnconfigured|AdsNoOrg|AdsFull} AdsData
+ */
+/** @typedef {import('./util.mjs').Json} Json */
 
 /* -------------------------------------------------------------- revenue -- */
 
+/** @param {StatusCtx} ctx @returns {Promise<RevenueData>} */
 export async function collectRevenue(ctx) {
 	if (!(await apiKey({ optional: true }))) return { skipped: 'no RevenueCat API key' };
 	const project = await resolveProject(ctx.cfg);
@@ -29,18 +47,19 @@ export async function collectRevenue(ctx) {
 	const packages = current ? await listPackages(project.id, current.id) : [];
 	const wanted = ctx.cfg.revenuecat?.entitlement ?? null;
 	return {
-		project: { id: project.id, name: project.name },
+		project: { id: project.id, name: strOrNull(project.name) ?? project.id },
 		offerings: offerings.length,
-		currentOffering: current ? { lookup_key: current.lookup_key, packages: packages.length } : null,
+		currentOffering: current ? { lookup_key: strOrNull(current.lookup_key) ?? DASH, packages: packages.length } : null,
 		entitlement: wanted,
 		entitlementPresent: wanted ? entitlements.some((e) => e.lookup_key === wanted) : null,
-		entitlements: entitlements.map((e) => e.lookup_key),
+		entitlements: entitlements.map((e) => strOrNull(e.lookup_key) ?? DASH),
 		products: products.length,
 	};
 }
 
+/** @param {RevenueData} d */
 export function renderRevenue(d) {
-	if (d.skipped) {
+	if ('skipped' in d) {
 		note(c.dim(`skipped — ${d.skipped}`));
 		return;
 	}
@@ -62,12 +81,13 @@ export function renderRevenue(d) {
 
 /* ------------------------------------------------------------------ ads -- */
 
+/** @param {StatusCtx} ctx @returns {Promise<AdsData>} */
 export async function collectAds(ctx) {
-	const auth = await asc(['ads', 'auth', 'status'], { fallback: null });
-	const credentials = auth?.credentials ?? [];
-	if (!credentials.length) return { configured: false, storage: auth?.storage ?? null };
+	const auth = objOrEmpty(await asc(['ads', 'auth', 'status'], { fallback: null }));
+	const credentials = auth.credentials;
+	if (!Array.isArray(credentials) || !credentials.length) return { configured: false, storage: auth.storage ?? null };
 
-	const active = auth?.active ?? {};
+	const active = objOrEmpty(auth.active);
 	const org = ctx.cfg.ads?.orgId ?? process.env.ASC_ADS_ORG_ID ?? active.org ?? active.orgId ?? null;
 	if (!org) return { configured: true, org: null };
 
@@ -85,7 +105,8 @@ export async function collectAds(ctx) {
 	const rows = reportRows(report);
 	const totals = { spend: 0, installs: 0, taps: 0, impressions: 0 };
 	for (const row of rows) {
-		const t = row.total ?? row.granularity?.[0] ?? {};
+		const r = objOrEmpty(row);
+		const t = objOrEmpty(r.total ?? (Array.isArray(r.granularity) ? r.granularity[0] : null));
 		totals.spend += metric(t.localSpend);
 		totals.installs += metric(t.totalInstalls ?? t.installs);
 		totals.taps += metric(t.taps);
@@ -100,6 +121,7 @@ export async function collectAds(ctx) {
 	};
 }
 
+/** @param {AdsData} d */
 export function renderAds(d) {
 	if (!d.configured) {
 		note(c.dim('not configured — `asc ads auth login --name N --client-id X --team-id Y --key-id Z --private-key ./k.pem --org ORG`'));
@@ -120,6 +142,7 @@ export function renderAds(d) {
 
 /* -------------------------------------------------------------- listing -- */
 
+/** @param {StatusCtx} ctx */
 export async function collectListing(ctx) {
 	const staged = await readStaged(ctx.cfg);
 	const locales = staged.map((entry) => {
@@ -140,12 +163,13 @@ export async function collectListing(ctx) {
 	};
 }
 
+/** @param {Awaited<ReturnType<typeof collectListing>>} d */
 export function renderListing(d) {
 	if (!d.locales) {
 		note(c.dim('no staged listings — `ship meta stage`'));
 		return;
 	}
-	const pctOf = (n) => `${n}/${d.limit} ${c.dim(`(${Math.round((n / d.limit) * 100)}%)`)}`;
+	const pctOf = (/** @type {number} */ n) => `${n}/${d.limit} ${c.dim(`(${Math.round((n / d.limit) * 100)}%)`)}`;
 	note(`${d.locales} staged locale${d.locales === 1 ? '' : 's'}`);
 	kvTable([
 		['keywords min', pctOf(d.min)],
@@ -158,6 +182,7 @@ export function renderListing(d) {
 
 /* ------------------------------------------------------------------ ota -- */
 
+/** @param {StatusCtx} ctx */
 export async function collectOta(ctx) {
 	const version = await ctx.version();
 	if (!version) throw new ShipError('cannot determine app version');
@@ -173,13 +198,15 @@ export async function collectOta(ctx) {
 	};
 }
 
+/** @param {Awaited<ReturnType<typeof collectOta>>} d */
 export function renderOta(d) {
 	note(d.safe ? c.green(`OTA safe — ${d.reason}`) : c.yellow(`native build required — ${d.reason}`));
+	/** @type {[string, string[]][]} */
 	const drift = [
 		['added', d.added],
 		['removed', d.removed],
 		['changed', d.changed],
 		['config', d.configChanged],
-	].filter(([, list]) => list.length);
-	for (const [label, list] of drift) note(`${label}: ${list.join(', ')}`);
+	];
+	for (const [label, list] of drift) if (list.length) note(`${label}: ${list.join(', ')}`);
 }

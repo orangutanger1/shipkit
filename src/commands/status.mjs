@@ -12,7 +12,7 @@
 import { loadConfig, readExpoConfig, optionalAppId, resolveVersion } from '../config.mjs';
 import { asc } from '../exec.mjs';
 import { ShipError, c, note, heading } from '../log.mjs';
-import { memo } from '../lib/util.mjs';
+import { memo, strOf } from '../lib/util.mjs';
 import {
 	collectApp,
 	collectBuilds,
@@ -33,6 +33,19 @@ import {
 	renderOta,
 	renderRevenue,
 } from '../lib/status-biz.mjs';
+
+/** @typedef {import('../config.mjs').Config} Config */
+/** @typedef {import('../exec.mjs').AscDash} AscDash */
+/** @typedef {import('../lib/status-asc.mjs').StatusCtx} StatusCtx */
+/** @typedef {import('../lib/util.mjs').Flags} Flags */
+/** @typedef {import('../lib/util.mjs').SubCtx} SubCtx */
+/**
+ * A dashboard section: what to call it, how to gather it, how to print it. The
+ * collector's return is the renderer's argument, which is why each pair is
+ * declared together rather than as two loose functions.
+ * @typedef {{name: string, title: string, collect: (ctx: StatusCtx) => Promise<any>, render: (data: any) => void}} Section
+ */
+/** @typedef {{section: Section, data?: any, error?: string}} SectionResult */
 
 export const help = `
 ${c.bold('ship status')} ${c.dim('— release dashboard: ASC, TestFlight, RevenueCat, ads, listing, OTA')}
@@ -68,35 +81,40 @@ const SECTIONS = [
 ];
 
 /** Memoised, shared reads: sibling sections must not repeat network calls. */
+/** @param {Config} cfg @param {Flags} flags @returns {Promise<StatusCtx>} */
 async function buildContext(cfg, flags) {
-	const ctx = {
-		cfg,
-		appId: optionalAppId(cfg),
-		expo: memo(() => readExpoConfig(cfg).catch(() => null)),
-		version: null,
-	};
-	ctx.dash = memo(async () =>
-		ctx.appId
-			? asc(
-					[
-						'status',
-						'--app', ctx.appId,
-						'--platform', 'IOS',
-						'--include', 'app,builds,testflight,appstore,submission,review,phased-release,links',
-					],
-					{ fallback: null },
+	const appId = optionalAppId(cfg);
+	/** @type {() => Promise<AscDash|null>} */
+	const dash = memo(async () =>
+		appId
+			? /** @type {AscDash|null} */ (
+					await asc(
+						[
+							'status',
+							'--app', appId,
+							'--platform', 'IOS',
+							'--include', 'app,builds,testflight,appstore,submission,review,phased-release,links',
+						],
+						{ fallback: null },
+					)
 				)
 			: null,
 	);
-	ctx.version = memo(async () => {
-		const explicit = await resolveVersion(cfg, flags.version === true ? undefined : flags.version).catch(() => null);
-		if (explicit) return explicit;
-		const dash = await ctx.dash();
-		return dash?.appstore?.version ?? dash?.builds?.latest?.version ?? null;
-	});
-	return ctx;
+	return {
+		cfg,
+		appId,
+		dash,
+		expo: memo(() => readExpoConfig(cfg).catch(() => null)),
+		version: memo(async () => {
+			const explicit = await resolveVersion(cfg, strOf(flags.version)).catch(() => null);
+			if (explicit) return explicit;
+			const d = await dash();
+			return d?.appstore?.version ?? d?.builds?.latest?.version ?? null;
+		}),
+	};
 }
 
+/** @param {Flags} flags @returns {Section[]} */
 function parseSection(flags) {
 	if (flags.section === undefined) return SECTIONS;
 	const want = String(flags.section).toLowerCase();
@@ -108,24 +126,28 @@ function parseSection(flags) {
 	return [section];
 }
 
+/** @param {StatusCtx} ctx @param {Section[]} chosen @returns {Promise<SectionResult[]>} */
 async function collectSections(ctx, chosen) {
 	return Promise.all(
 		chosen.map(async (section) => {
 			try {
 				return { section, data: await section.collect(ctx) };
 			} catch (err) {
-				return { section, error: err.message };
+				return { section, error: err instanceof Error ? err.message : String(err) };
 			}
 		}),
 	);
 }
 
+/** @param {SectionResult[]} results @returns {void} */
 function renderJson(results) {
+	/** @type {Record<string, unknown>} */
 	const out = {};
 	for (const { section, data, error } of results) out[section.name] = error ? { error } : data;
 	process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
 }
 
+/** @param {SectionResult[]} results @returns {void} */
 function renderSections(results) {
 	for (const { section, data, error } of results) {
 		heading(section.title);
@@ -136,11 +158,12 @@ function renderSections(results) {
 		try {
 			section.render(data);
 		} catch (err) {
-			note(c.dim(`could not render — ${err.message}`));
+			note(c.dim(`could not render — ${err instanceof Error ? err.message : String(err)}`));
 		}
 	}
 }
 
+/** @param {SubCtx} ctx @returns {Promise<number>} */
 export async function run({ args, flags }) {
 	if (args.length)
 		throw new ShipError(`status: unexpected argument "${args[0]}"`, {

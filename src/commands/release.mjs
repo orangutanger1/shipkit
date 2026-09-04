@@ -9,7 +9,11 @@
 // CLI load time, and so `ship release --skip-build` never pays to parse EAS code.
 import { loadConfig, resolveVersion } from '../config.mjs';
 import { isDryRun } from '../exec.mjs';
+import { strOf } from '../lib/util.mjs';
 import { ShipError, c, good, heading, info, note, step, table, warn } from '../log.mjs';
+
+/** @typedef {import('../lib/util.mjs').Flags} Flags */
+/** @typedef {import('../lib/util.mjs').SubCtx} SubCtx */
 
 export const help = `
 ${c.bold('ship release')} ${c.dim('— preflight → metadata → build → submit, aborting on the first failure')}
@@ -38,17 +42,24 @@ ${c.bold('Notes')}
 const ORDER = ['preflight', 'meta', 'build', 'submit'];
 
 /** Lazy module load with a diagnosable failure instead of a load-time crash. */
+/** @param {string} name @returns {Promise<{run?: (ctx: SubCtx) => Promise<number>|number}>} */
 async function load(name) {
 	try {
 		return await import(`./${name}.mjs`);
 	} catch (err) {
 		throw new ShipError(`release: cannot load the ${name} step`, {
-			hint: `${err.message} — run \`ship ${name} --help\` to confirm the command exists`,
+			hint: `${err instanceof Error ? err.message : String(err)} — run \`ship ${name} --help\` to confirm the command exists`,
 		});
 	}
 }
 
 /** Run one step's `run()`, normalising exit codes and thrown ShipErrors into a result row. */
+/**
+ * @param {string} name
+ * @param {string[][]} calls
+ * @param {Flags} flags
+ * @returns {Promise<{code: number, label: string}>}
+ */
 async function invoke(name, calls, flags) {
 	const mod = await load(name);
 	if (typeof mod.run !== 'function')
@@ -63,6 +74,7 @@ async function invoke(name, calls, flags) {
 	return { code: 0, label: name };
 }
 
+/** @param {SubCtx} ctx @returns {Promise<number>} */
 export async function run({ args, flags }) {
 	if (args.length)
 		throw new ShipError(`release: unexpected argument "${args[0]}"`, {
@@ -75,7 +87,7 @@ export async function run({ args, flags }) {
 		throw new ShipError(`release: unknown step "${from}"`, { hint: `--from must be one of: ${ORDER.join(', ')}` });
 
 	const cfg = await loadConfig();
-	const version = await resolveVersion(cfg, flags.version);
+	const version = await resolveVersion(cfg, strOf(flags.version));
 	const force = !!flags.force;
 	const dry = isDryRun();
 
@@ -114,8 +126,8 @@ export async function run({ args, flags }) {
 			outcome = await invoke(entry.name, entry.calls, flags);
 		} catch (err) {
 			if (!force) throw err;
-			warn(`${entry.name} threw: ${err.message}`);
-			outcome = { code: err.exitCode ?? 1, label: entry.name };
+			warn(`${entry.name} threw: ${err instanceof Error ? err.message : String(err)}`);
+			outcome = { code: err instanceof ShipError ? err.exitCode : 1, label: entry.name };
 		}
 
 		if (outcome.code) {

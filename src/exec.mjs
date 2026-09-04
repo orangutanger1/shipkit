@@ -10,6 +10,20 @@ import { c, ShipError, note } from './log.mjs';
 /** @typedef {import('./lib/util.mjs').JsonArray} JsonArray */
 /** What asc (--output json) answers with: an object, an array, or nothing. */
 /** @typedef {JsonObject|JsonArray} AscPayload */
+/**
+ * One JSON:API resource as `asc` returns it. Apple's attribute bag differs per
+ * endpoint and carries far more than shipkit reads, so the bag itself stays
+ * open — but the envelope around it does not, and a `data`/`included` typo is
+ * the failure this catches.
+ * @typedef {{id?: string, type?: string, attributes?: Record<string, any>, relationships?: Record<string, any>}} AscResource
+ */
+/** @typedef {{data?: AscResource[], included?: AscResource[]}} AscList */
+/** @typedef {{data?: AscResource}} AscOne */
+/**
+ * What `asc status` aggregates: one bag per area of the release. Naming the
+ * areas is what stops a misspelled one from reading as a silent `undefined`.
+ * @typedef {{app?: Record<string, any>, appstore?: Record<string, any>, builds?: Record<string, any>, testflight?: Record<string, any>, submission?: Record<string, any>, review?: Record<string, any>, phasedRelease?: Record<string, any>, summary?: Record<string, any>, links?: Record<string, string>}} AscDash
+ */
 
 let DRY_RUN = false;
 let VERBOSE = false;

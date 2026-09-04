@@ -7,12 +7,33 @@ import { daysUntil } from './dates.mjs';
 import { DASH } from './fmt.mjs';
 import { kvTable } from './output.mjs';
 
+/** @typedef {import('../config.mjs').Config} Config */
+/** @typedef {import('../exec.mjs').AscDash} AscDash */
+/** @typedef {import('../exec.mjs').AscList} AscList */
+/** @typedef {import('../exec.mjs').AscOne} AscOne */
+/** @typedef {import('./util.mjs').Json} Json */
+/**
+ * What `commands/status.mjs` hands every section: the config, the app id, and
+ * three memoised reads the sections share so siblings never repeat a network
+ * call.
+ * @typedef {{
+ *   cfg: Config,
+ *   appId: string|null,
+ *   dash: () => Promise<AscDash|null>,
+ *   expo: () => Promise<Record<string, any>|null>,
+ *   version: () => Promise<string|null>,
+ * }} StatusCtx
+ */
+
 /** ASC timestamps are ISO with an offset; minutes are the useful resolution. */
+/** @type {(iso: unknown) => string} */
 const when = (iso) => (typeof iso === 'string' && iso.length >= 16 ? iso.slice(0, 16).replace('T', ' ') : DASH);
 
+/** @type {(s: unknown) => string} */
 const dim = (s) => (s ? String(s) : c.dim(DASH));
 
 /** Every section that needs an app id gets the same failure with the same fix. */
+/** @param {StatusCtx} ctx @returns {string} */
 function needAppId(ctx) {
 	if (!ctx.appId)
 		throw new ShipError('no App Store Connect app id', {
@@ -25,6 +46,7 @@ function needAppId(ctx) {
  * Colour the review state the way you would read it: green means done, yellow
  * means Apple owns the ball, red means you do.
  */
+/** @param {unknown} state @returns {string} */
 function stateColour(state) {
 	const s = String(state ?? '');
 	if (!s) return c.dim(DASH);
@@ -36,10 +58,11 @@ function stateColour(state) {
 
 /* ------------------------------------------------------------------ app -- */
 
+/** @param {StatusCtx} ctx */
 export async function collectApp(ctx) {
 	const { cfg } = ctx;
 	const [dash, expo, version] = await Promise.all([ctx.dash(), ctx.expo(), ctx.version()]);
-	const view = ctx.appId ? await asc(['apps', 'view', '--id', ctx.appId], { fallback: null }) : null;
+	const view = ctx.appId ? /** @type {AscOne|null} */ (await asc(['apps', 'view', '--id', ctx.appId], { fallback: null })) : null;
 	const attrs = view?.data?.attributes ?? {};
 	return {
 		name: attrs.name ?? dash?.app?.name ?? cfg.name,
@@ -58,6 +81,7 @@ export async function collectApp(ctx) {
 	};
 }
 
+/** @param {Awaited<ReturnType<typeof collectApp>>} d */
 export function renderApp(d) {
 	kvTable([
 		['name', dim(d.name)],
@@ -80,14 +104,15 @@ export function renderApp(d) {
 
 /* --------------------------------------------------------------- review -- */
 
+/** @param {StatusCtx} ctx */
 export async function collectReview(ctx) {
 	const appId = needAppId(ctx);
 	const dash = await ctx.dash();
 	// asc status carries only the live version; the previous two are the context
 	// that tells you whether this release is stuck or simply young.
-	const list = await asc(['versions', 'list', '--app', appId, '--platform', 'IOS', '--limit', '3'], {
-		fallback: { data: [] },
-	});
+	const list = /** @type {AscList} */ (
+		await asc(['versions', 'list', '--app', appId, '--platform', 'IOS', '--limit', '3'], { fallback: { data: [] } })
+	);
 	const versions = (list?.data ?? [])
 		.map((v) => ({
 			id: v.id,
@@ -96,7 +121,7 @@ export async function collectReview(ctx) {
 			releaseType: v.attributes?.releaseType ?? DASH,
 			createdDate: v.attributes?.createdDate ?? null,
 		}))
-		.sort((a, b) => Date.parse(b.createdDate ?? 0) - Date.parse(a.createdDate ?? 0))
+		.sort((a, b) => Date.parse(b.createdDate ?? '') - Date.parse(a.createdDate ?? ''))
 		.slice(0, 3);
 	return {
 		current: dash?.appstore?.state ?? versions[0]?.appStoreState ?? null,
@@ -110,6 +135,7 @@ export async function collectReview(ctx) {
 	};
 }
 
+/** @param {Awaited<ReturnType<typeof collectReview>>} d */
 export function renderReview(d) {
 	table(d.versions, [
 		{ header: 'version', get: (v) => v.versionString },
@@ -126,14 +152,14 @@ export function renderReview(d) {
 
 /* --------------------------------------------------------------- builds -- */
 
+/** @param {StatusCtx} ctx */
 export async function collectBuilds(ctx) {
 	const appId = needAppId(ctx);
 	// `attributes.version` on a build is the BUILD NUMBER; the marketing version
 	// lives on the included preReleaseVersion. Getting this backwards is the
 	// classic "why does every build say 1.0" bug.
-	const list = await asc(
-		['builds', 'list', '--app', appId, '--limit', '5', '--processing-state', 'all'],
-		{ fallback: { data: [] } },
+	const list = /** @type {AscList} */ (
+		await asc(['builds', 'list', '--app', appId, '--limit', '5', '--processing-state', 'all'], { fallback: { data: [] } })
 	);
 	const pre = new Map(
 		(list?.included ?? [])
@@ -150,9 +176,10 @@ export async function collectBuilds(ctx) {
 			expirationDate: b.attributes?.expirationDate ?? null,
 			expiresInDays: daysUntil(b.attributes?.expirationDate),
 		}))
-		.sort((a, b) => Date.parse(b.uploadedDate ?? 0) - Date.parse(a.uploadedDate ?? 0));
+		.sort((a, b) => Date.parse(b.uploadedDate ?? '') - Date.parse(a.uploadedDate ?? ''));
 }
 
+/** @param {Awaited<ReturnType<typeof collectBuilds>>} rows */
 export function renderBuilds(rows) {
 	table(rows, [
 		{ header: 'version', get: (b) => b.version ?? c.dim(DASH) },
@@ -173,11 +200,12 @@ export function renderBuilds(rows) {
 
 /* ----------------------------------------------------------- testflight -- */
 
+/** @param {StatusCtx} ctx */
 export async function collectTestFlight(ctx) {
 	const appId = needAppId(ctx);
 	const [groupsRes, testersRes, dash] = await Promise.all([
-		asc(['testflight', 'groups', 'list', '--app', appId], { fallback: { data: [] } }),
-		asc(['testflight', 'testers', 'list', '--app', appId], { fallback: { data: [] } }),
+		/** @type {Promise<AscList>} */ (asc(['testflight', 'groups', 'list', '--app', appId], { fallback: { data: [] } })),
+		/** @type {Promise<AscList>} */ (asc(['testflight', 'testers', 'list', '--app', appId], { fallback: { data: [] } })),
 		ctx.dash(),
 	]);
 	const groups = (groupsRes?.data ?? []).map((g) => ({
@@ -186,6 +214,7 @@ export async function collectTestFlight(ctx) {
 		allBuilds: !!g.attributes?.hasAccessToAllBuilds,
 	}));
 	const testers = testersRes?.data ?? [];
+	/** @type {Record<string, number>} */
 	const byState = {};
 	for (const t of testers) {
 		const state = t.attributes?.state ?? 'UNKNOWN';
@@ -200,6 +229,7 @@ export async function collectTestFlight(ctx) {
 	};
 }
 
+/** @param {Awaited<ReturnType<typeof collectTestFlight>>} d */
 export function renderTestFlight(d) {
 	if (!d.groups.length && !d.testers) {
 		note(c.dim('no beta groups or testers — nothing is being tested'));
