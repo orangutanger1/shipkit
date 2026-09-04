@@ -69,6 +69,17 @@ test('the generated screen passes `ship design review` — no literal it did not
 	assert.deepEqual(violations, [], JSON.stringify(violations, null, 2));
 });
 
+test('a nested route reaches src from its own depth', () => {
+	const out = emitScreen({ ...base, id: 'notifications', route: '/settings/notifications' }, { source: SRC });
+	assert.match(out, /from '\.\.\/\.\.\/src\/theme\/primitives'/);
+	assert.doesNotMatch(out, /from '\.\.\/src\//);
+});
+
+test('a shallow route reaches src with a single level up', () => {
+	const out = emitScreen(base, { source: SRC });
+	assert.match(out, /from '\.\.\/src\/theme\/primitives'/);
+});
+
 test('copy is escaped, so an apostrophe cannot break the module', () => {
 	const out = emitScreen({ ...base, copy: { title: "Don't stop", cta: 'Go' } }, { source: SRC });
 	assert.match(out, /Don\\'t stop/);

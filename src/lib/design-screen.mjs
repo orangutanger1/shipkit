@@ -73,6 +73,13 @@ function isViewed(event) {
 	return event?.verb === 'viewed';
 }
 
+/** Depth of the emitted route file below `app/`, so its imports reach `src/` regardless of nesting. */
+/** @type {(route: string) => string} */
+function upToApp(route) {
+	const segments = String(route ?? '').split('/').filter(Boolean);
+	return '../'.repeat(Math.max(1, segments.length));
+}
+
 /**
  * @type {(screen: any, opts: {source: string}) => string}
  */
@@ -84,13 +91,14 @@ export function emitScreen(screen, { source }) {
 	const elements = screen?.elements;
 	const sells = Boolean(screen?.monetization?.offering);
 
+	const up = upToApp(screen?.route);
 	const imports = [
 		viewed ? "import { useEffect } from 'react';" : null,
-		`import { ${usedComponents(screen).join(', ')} } from '../src/theme/primitives';`,
-		"import { useQa } from '../src/theme/provider';",
-		"import { track } from '../src/analytics';",
-		"import { EVENTS } from '../src/analytics/events';",
-		sells ? "import { MONETIZATION } from '../src/purchases/catalog';" : null,
+		`import { ${usedComponents(screen).join(', ')} } from '${up}src/theme/primitives';`,
+		`import { useQa } from '${up}src/theme/provider';`,
+		`import { track } from '${up}src/analytics';`,
+		`import { EVENTS } from '${up}src/analytics/events';`,
+		sells ? `import { MONETIZATION } from '${up}src/purchases/catalog';` : null,
 	].filter(Boolean);
 
 	const bodyLines = elements?.length
