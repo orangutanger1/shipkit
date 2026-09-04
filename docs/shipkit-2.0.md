@@ -103,7 +103,7 @@ scripts/metrics.mjs  acorn-based complexity/CRAP/LOC gate
 
 | # | Finding | Severity |
 | --- | --- | --- |
-| 1 | `templates/app` is one screen. "Build" = scaffold, not build. | P0 |
+| 1 | ~~`templates/app` is one screen. "Build" = scaffold, not build.~~ **Done** — `ship design build`. | P0 |
 | 2 | ~~No product brief beyond `scout brief` (keyword-shaped, not product-shaped).~~ **Done** — `ship product brief`. | P0 |
 | 3 | No design system, UX spec, flow model, or component inventory. | P0 |
 | 4 | No post-implementation visual/behavioural QA. `preflight` gates the *store*, not the *app*. | P0 |
@@ -534,8 +534,13 @@ ads → analytics diagnose → research plan`.
     viability, incumbent prices, gate-derived risks) is recomputed on every
     re-draft; the authored half is carried forward. `research plan` reads
     `user.who` from it in preference to `product.audience` in the config.
-12. `templates/app` grows from the design-system output: token module, themed
-    primitives, real onboarding + paywall routes wired to RevenueCat.
+12. **DONE.** `ship design build` transcribes `design/system.json` and
+    `design/ux.json` — against a component contract at `design/components.json`
+    — into a token module, one route per screen, typed analytics events and a
+    structured monetization catalog, plus the QA sanitizer, with themed
+    primitives shipped static in `templates/app`; RevenueCat SDK wiring itself
+    stayed out of scope — the catalog makes offering and entitlement ids
+    reachable as data, but nothing calls the SDK yet.
 
 **P2 — measurement + experiments**
 13. `ci/qa.yml` macOS Tier 2 lane.

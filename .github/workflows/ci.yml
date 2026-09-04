@@ -65,6 +65,34 @@ jobs:
           npx --yes ajv-cli@5 validate --spec=draft2020 --strict=false \
             -s schema/ship.config.schema.json -d "$RUNNER_TEMP/demo/ship.config.json"
 
+      - name: The design pipeline runs end to end over the scaffold
+        working-directory: ${{ runner.temp }}/demo
+        run: |
+          set -euo pipefail
+          # A fresh scaffold has no design/system.json: `ship new` deliberately never
+          # writes one, because choosing a hue is the one thing an author must do.
+          # This stands in for that human step so the smoke test has something to
+          # check against — shipkit does not ship a palette into app repos.
+          node -e '
+            import("file://'"$GITHUB_WORKSPACE"'/src/lib/design-tokens.mjs").then(m => {
+              require("fs").writeFileSync("design/system.json", JSON.stringify(m.DEFAULT_SYSTEM, null, "\t"));
+            });
+          '
+          node "$GITHUB_WORKSPACE/bin/ship" design system --check
+          # The scaffold does not ship a design/ux.json either; stand in with the
+          # same default spec shipkit uses to render the scaffold's own screen.
+          node -e '
+            import("file://'"$GITHUB_WORKSPACE"'/src/lib/design-support.mjs").then(m => {
+              require("fs").writeFileSync("design/ux.json", JSON.stringify(m.DEFAULT_SPEC, null, "\t"));
+            });
+          '
+          node "$GITHUB_WORKSPACE/bin/ship" design build
+          node "$GITHUB_WORKSPACE/bin/ship" design review
+          # Run build again: a generator that varied its own output would refuse to
+          # overwrite its own files on the second pass. This is the cheapest possible
+          # proof that the hash mechanism holds end to end.
+          node "$GITHUB_WORKSPACE/bin/ship" design build
+
       - name: The listing gate fires, and clears once the listing is real
         working-directory: ${{ runner.temp }}/demo
         run: |

@@ -23,6 +23,7 @@ ship design system --check    # gate only; never write
 ship design system --force    # redraft from scratch, discarding what is there
 ship design spec [--flows a,b]  # draft design/ux.json over the researched flows
 ship design spec --check
+ship design build [--check] [--force] [--json]  # transcribe system + spec into the app
 ship design review [--json]   # the same rules against the implementation
 ```
 
@@ -35,8 +36,11 @@ gate. Every gate refuses a `_todo` document by name before it looks at anything
 else.
 
 `ship design review` needs a finished `system.json` and reads the app's own
-sources. A file named `theme.ts`/`theme.tsx`/`tokens.ts` is exempt — it is where
-tokens legitimately become literals. Everything else is drift.
+sources. Everything under `src/theme/` is exempt — it is where tokens
+legitimately become literals. Everything else is drift, and review also rejects
+`StyleSheet.create` outside `src/theme/`, inline numeric styles, and
+react-native primitives imported directly into `app/`, against a documented
+exception list.
 
 ## Inputs, and the citation rule
 
@@ -218,12 +222,34 @@ without a second release path.
 3. `ship design system` → fill the colour → `ship design system --check`.
 4. `ship design spec` → write the copy and the success conditions →
    `ship design spec --check`.
-5. Implement against those two files and nothing else, then `ship design review`.
-6. `ship qa` — the screens as built, measured. `ship qa baseline` once they look
+5. `ship design build` — transcribes `system.json` and `ux.json` into
+   `src/theme/tokens.ts`, the analytics events, the monetization catalog and
+   one route per screen.
+6. Implement *inside the generated scaffold*, not from scratch: the routes,
+   the token module and the event and catalog files already exist and already
+   carry every literal the spec described, so the work here is filling in
+   behaviour around what `design build` wrote, then running `ship design
+   review` to confirm nothing drifted from it.
+7. `ship qa` — the screens as built, measured. `ship qa baseline` once they look
    right, so the next run reports what changed.
 
-Doing 5 before 3 is how an app ends up with a design system reverse-engineered
+Doing 6 before 3 is how an app ends up with a design system reverse-engineered
 from whatever the first screen happened to use.
+
+Two rules an implementing agent has to know before touching step 6:
+
+- **The generator infers nothing.** A screen carries an explicit `elements`
+  array, and `design build` transcribes it 1:1 — it does not lay out a screen
+  it was not told how to lay out. A screen without `elements` gets the null
+  layout instead: every copy key rendered as body text, under a comment saying
+  no layout was specified. `ship design spec` drafts `elements` into `_todo`,
+  so an unspecified layout is a gate failure at spec time, not a silent
+  improvisation at build time.
+- **Generated files are refused if hand-edited.** Every generated file carries
+  an `@generated` header with a hash of its body. `design build` refuses to
+  overwrite a file whose body no longer matches that hash, and names every
+  such file at once rather than stopping at the first one; `--force` takes
+  the refusal back.
 
 ## What is still judgement
 
