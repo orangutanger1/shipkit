@@ -93,6 +93,32 @@ jobs:
           # proof that the hash mechanism holds end to end.
           node "$GITHUB_WORKSPACE/bin/ship" design build
 
+      - name: The generated TypeScript compiles under strict
+        working-directory: ${{ runner.temp }}/demo
+        run: |
+          set -euo pipefail
+          # Nothing else compiles what the emitters write. shipkit is JSDoc-typed
+          # .mjs and the app is TypeScript, where JSDoc types are ignored, so an
+          # emitter that drops an annotation ships implicit-any into every app.
+          # The scaffold's own tsconfig extends expo/tsconfig.base, and its screens
+          # and hand-written modules import react-native — neither is installed
+          # here. So this names the four generated modules that import nothing and
+          # compiles them under the same `strict` the app sets for itself.
+          node -e '
+            require("fs").writeFileSync("tsconfig.gen.json", JSON.stringify({
+              compilerOptions: {
+                strict: true, noEmit: true, target: "ES2022", lib: ["ES2023"],
+                module: "esnext", moduleResolution: "bundler", skipLibCheck: true,
+              },
+              files: [
+                "src/theme/tokens.ts", "src/theme/qa-params.ts",
+                "src/analytics/events.ts", "src/purchases/catalog.ts",
+              ],
+            }));
+          '
+          node "$GITHUB_WORKSPACE/node_modules/typescript/bin/tsc" -p tsconfig.gen.json
+          rm tsconfig.gen.json
+
       - name: The listing gate fires, and clears once the listing is real
         working-directory: ${{ runner.temp }}/demo
         run: |
