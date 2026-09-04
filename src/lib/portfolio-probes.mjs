@@ -79,7 +79,7 @@ export async function pool(items, limit, worker) {
  * something is missing, the verdict is `unknown` — never a sunset by omission.
  * @param {{revenue?: number|null, ageDays?: number|null, daysSinceRelease?: number|null}} row
  * @param {{floor?: number}} [opts]
- * @returns {{verdict: 'sunset'|'unknown'|'keep', sunset: boolean, floor: number, gates: Array<{name: string, value: number|null, threshold: number, pass: boolean, detail: string}>}}
+ * @returns {{verdict: 'sunset'|'unknown'|'keep', sunset: boolean, floor: number, gates: SunsetGate[]}}
  */
 export function sunsetVerdict({ revenue, ageDays, daysSinceRelease }, { floor = DEFAULT_FLOOR } = {}) {
 	/** @param {number|null|undefined} v */
@@ -122,12 +122,15 @@ export function sunsetVerdict({ revenue, ageDays, daysSinceRelease }, { floor = 
 	return { verdict, sunset: verdict === 'sunset', floor, gates };
 }
 
+/** One sunset gate: what it measures, against what, and whether it fired. */
+/** @typedef {{name: string, value: number|null, threshold: number, pass: boolean, detail: string}} SunsetGate */
+
 /**
  * One line naming only the gates that fired, with their numbers.
- * @param {ReturnType<typeof sunsetVerdict>} v
+ * @param {{gates?: SunsetGate[]}} v
  */
 export const sunsetReason = (v) =>
-	v.gates
+	(v.gates ?? [])
 		.filter((g) => g.pass)
 		.map((g) => g.detail)
 		.join(' · ');
@@ -258,6 +261,7 @@ export function liveContext({ floor = DEFAULT_FLOOR, now = Date.now() } = {}) {
 /**
  * @param {{revenue?: number|null, ageDays?: number|null, daysSinceRelease?: number|null, error?: string|null}} row
  * @param {{floor: number}} ctx
+ * @returns {{sunset: boolean, verdict: 'sunset'|'unknown'|'keep'|'error', gates: SunsetGate[]}}
  */
 function verdictOf(row, ctx) {
 	const sunset = sunsetVerdict(row, { floor: ctx.floor });
@@ -265,10 +269,26 @@ function verdictOf(row, ctx) {
 }
 
 /**
+ * One dashboard row. Every field is nullable because every probe can be absent
+ * for a legitimate reason — no key, no app id, an app that has never shipped —
+ * and the dashboard's job is to show that rather than hide the app.
+ * @typedef {{
+ *   name: string, path: string,
+ *   error: string|null, errors: Record<string, string>, skipped?: Record<string, string>,
+ *   bundleId?: string|null, appId?: string|null,
+ *   state: string|null, version: string|null, build: string|null,
+ *   ageDays: number|null, daysSinceRelease: number|null,
+ *   revenue: number|null, spend: number|null,
+ *   verdict: 'sunset'|'unknown'|'keep'|'error', sunset: boolean,
+ *   gates?: SunsetGate[],
+ * }} PortfolioRow
+ */
+/**
  * One dashboard row. Returns — never throws. A config that will not parse is a
  * row with an error, because the whole point is seeing the app you forgot.
  * @param {PortfolioEntry} entry
  * @param {ReturnType<typeof liveContext>} ctx
+ * @returns {Promise<PortfolioRow>}
  */
 export async function collectRow(entry, ctx) {
 	const base = {

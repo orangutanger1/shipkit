@@ -39,6 +39,11 @@ import {
 	sunsetVerdict,
 } from '../lib/portfolio-probes.mjs';
 
+/** @typedef {import('../lib/portfolio-probes.mjs').PortfolioRow} PortfolioRow */
+/** @typedef {import('../lib/portfolio-registry.mjs').PortfolioApp} PortfolioApp */
+/** @typedef {import('../lib/util.mjs').Flags} Flags */
+/** @typedef {import('../lib/util.mjs').SubCtx} SubCtx */
+
 // Behaviour lives in lib/; these re-exports keep the module's public surface.
 export {
 	addEntry,
@@ -78,9 +83,11 @@ const DEFAULT_DEPTH = 4;
 
 /* ------------------------------------------------------------ subcommands -- */
 
+/** @param {string[]} args @param {Flags} flags @returns {Promise<number>} */
 async function cmdAdd(args, flags) {
 	const file = registryFile();
 	let reg = await readRegistry(file);
+	/** @type {string[]} */
 	const targets = [];
 
 	if (flags.scan !== undefined && flags.scan !== true)
@@ -94,6 +101,7 @@ async function cmdAdd(args, flags) {
 			hint: 'ship portfolio add <path>  |  ship portfolio add --scan ~/code',
 		});
 
+	/** @type {{path: string, name?: string, added: boolean, error?: string}[]} */
 	const results = [];
 	for (const path of targets) {
 		const cfgFile = join(path, CONFIG_NAME);
@@ -124,11 +132,14 @@ async function cmdAdd(args, flags) {
 	return 0;
 }
 
+/** @param {string[]} args @param {Flags} flags @returns {Promise<number>} */
 async function cmdRm(args, flags) {
 	if (!args.length) throw new ShipError('portfolio rm: needs a path or a name');
 	const file = registryFile();
 	let reg = await readRegistry(file);
+	/** @type {PortfolioApp[]} */
 	const removed = [];
+	/** @type {string[]} */
 	const missing = [];
 	for (const key of args) {
 		const next = removeEntry(reg, key);
@@ -144,6 +155,7 @@ async function cmdRm(args, flags) {
 	return missing.length && !removed.length ? 1 : 0;
 }
 
+/** @param {Flags} flags @returns {Promise<number>} */
 async function cmdList(flags) {
 	const file = registryFile();
 	const reg = await readRegistry(file);
@@ -160,6 +172,7 @@ async function cmdList(flags) {
 
 /* ------------------------------------------------------------- dashboard -- */
 
+/** @param {PortfolioRow[]} rows @param {{floor: number, registry: string}} ctx @returns {void} */
 function renderDashboard(rows, { floor, registry }) {
 	heading(`Portfolio (${rows.length})`);
 	table(rows, [
@@ -194,10 +207,11 @@ function renderDashboard(rows, { floor, registry }) {
 	}
 	const skipped = rows.filter((r) => !errored(r) && Object.keys(r.skipped ?? {}).length);
 	for (const r of skipped)
-		note(c.dim(`${r.name}: ${Object.entries(r.skipped).map(([k, v]) => `${k} ${v}`).join(' · ')}`));
+		note(c.dim(`${r.name}: ${Object.entries(r.skipped ?? {}).map(([k, v]) => `${k} ${v}`).join(' · ')}`));
 	note(registry);
 }
 
+/** @param {PortfolioRow} r @returns {string} */
 function reviewCell(r) {
 	if (r.error) return c.red('error');
 	if (r.errors?.asc) return c.red('error');
@@ -209,11 +223,13 @@ function reviewCell(r) {
 	return s;
 }
 
+/** @param {PortfolioRow} r @returns {string} */
 function versionCell(r) {
 	if (!r.version) return c.dim(DASH);
 	return r.build ? `${r.version} ${c.dim(`(${r.build})`)}` : r.version;
 }
 
+/** @param {PortfolioRow} r @returns {string} */
 function verdictCell(r) {
 	if (r.verdict === 'error') return c.red('error');
 	if (r.verdict === 'sunset') return c.red('sunset');
@@ -221,6 +237,7 @@ function verdictCell(r) {
 	return c.green('keep');
 }
 
+/** @param {PortfolioRow[]} rows */
 function totalsOf(rows) {
 	return {
 		apps: rows.length,
@@ -231,6 +248,7 @@ function totalsOf(rows) {
 	};
 }
 
+/** @param {Flags} flags @returns {Promise<number>} */
 async function cmdDashboard(flags) {
 	const file = registryFile();
 	let reg = await readRegistry(file);
@@ -261,7 +279,7 @@ async function cmdDashboard(flags) {
 	const floor = num(flags.floor, DEFAULT_FLOOR);
 	const ctx = liveContext({ floor, now: Date.now() });
 	const rows = await pool(reg.apps, num(flags.concurrency, DEFAULT_CONCURRENCY), (entry) =>
-		collectRow(entry, ctx).catch((err) => ({
+		collectRow(entry, ctx).catch((err) => /** @type {PortfolioRow} */ ({
 			name: entry.name,
 			path: entry.path,
 			error: err?.message ?? String(err),
@@ -288,6 +306,7 @@ async function cmdDashboard(flags) {
 	return flags.strict && totals.errors ? 1 : 0;
 }
 
+/** @param {SubCtx} ctx @returns {Promise<number>} */
 export async function run({ args, flags }) {
 	const [sub, ...rest] = args;
 	switch (sub) {
