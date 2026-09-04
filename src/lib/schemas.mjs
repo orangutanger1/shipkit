@@ -17,6 +17,7 @@ export const SCHEMAS = /** @type {const} */ ([
 	'research-patterns',
 	'design-system',
 	'ux-spec',
+	'components',
 	'qa-report',
 	'ship.config',
 	'screenshot-spec',

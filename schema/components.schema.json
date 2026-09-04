@@ -1,0 +1,58 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://github.com/mayfield/shipkit/schema/components.schema.json",
+	"title": "component contract",
+	"description": "design/components.json — what the static primitives support, and which design tokens each needs to render. Written by `ship design build`; read by `ship design spec` to refuse a spec that cannot be built.",
+	"type": "object",
+	"required": ["contractVersion", "components"],
+	"additionalProperties": false,
+	"patternProperties": { "^_": { "description": "Annotation kept beside the data it explains. Ignored by every loader." } },
+	"properties": {
+		"$schema": { "type": "string" },
+		"contractVersion": { "type": "integer", "minimum": 1 },
+		"components": {
+			"type": "object",
+			"minProperties": 1,
+			"additionalProperties": {
+				"type": "object",
+				"required": ["primitive", "file", "role", "variants", "states", "requires"],
+				"additionalProperties": false,
+				"properties": {
+					"primitive": { "type": "string", "minLength": 1 },
+					"file": { "type": "string", "minLength": 1 },
+					"role": { "enum": ["container", "content", "action", "state"] },
+					"props": {
+						"type": "object",
+						"additionalProperties": {
+							"type": "object",
+							"required": ["type"],
+							"additionalProperties": false,
+							"properties": {
+								"type": { "enum": ["string", "boolean", "number", "enum"] },
+								"values": { "type": "array", "items": { "type": "string" } },
+								"default": {}
+							}
+						}
+					},
+					"variants": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+					"states": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+					"requires": {
+						"type": "object",
+						"additionalProperties": false,
+						"description": "Tokens the primitive cannot render without. The single source of the token gate — nothing hardcodes this list.",
+						"properties": {
+							"type": { "type": "array", "items": { "type": "string" } },
+							"color": { "type": "array", "items": { "type": "string" } },
+							"radii": { "type": "array", "items": { "type": "string" } },
+							"spacingSteps": {
+								"type": "integer",
+								"minimum": 0,
+								"description": "How many steps of spacing.scale the primitive indexes. Spacing is an unnamed numeric series in design-system.schema.json, so it is required by length rather than by name."
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
