@@ -154,6 +154,9 @@ async function uploadBinary({ cfg, profile, summary }) {
 	const up = await eas(['submit', '--platform', 'ios', '--profile', profile, '--latest', '--non-interactive'], {
 		cwd: cfg.paths.app,
 		mutating: true,
+		// allowFail so the refusal below — which names the usual cause — is what
+		// the operator reads, rather than run()'s generic exit line.
+		allowFail: true,
 	});
 	if (up.skipped) note('dry run — nothing uploaded');
 	else if (up.code !== 0)
