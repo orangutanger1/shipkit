@@ -96,6 +96,6 @@ export function draftSpec({ flows, now = new Date().toISOString() }) {
 			entry: 'TODO: how the user arrives',
 			success: `TODO: what completing ${flow} means`,
 		})),
-		_todo: ['screens[].copy', 'screens[].components', 'flows[].entry', 'flows[].success'],
+		_todo: ['screens[].copy', 'screens[].elements', 'screens[].components', 'flows[].entry', 'flows[].success'],
 	};
 }
