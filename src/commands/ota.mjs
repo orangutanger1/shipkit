@@ -251,7 +251,9 @@ async function publishInner({ cfg, flags, version }) {
 			'--json',
 			'--non-interactive',
 		],
-		{ cwd: app, inherit: false, capture: true },
+		// allowFail, because the refusal below names the branch and prints eas's
+		// own last lines; run()'s generic "exited N" would replace it.
+		{ cwd: app, inherit: false, capture: true, allowFail: true },
 	);
 	if (res.code !== 0)
 		throw new ShipError(`eas update failed (exit ${res.code})`, {
@@ -358,6 +360,9 @@ export async function run({ args, flags }) {
 	const res = await eas(['env:exec', environment, `node ${shipEntry} ota ${innerFlags.join(' ')}`, '--non-interactive'], {
 		cwd: cfg.paths.app,
 		mutating: true,
+		// The inner half has already printed why it refused; allowFail keeps that
+		// reason as the last thing on screen instead of run()'s generic exit line.
+		allowFail: true,
 	});
 
 	if (res.skipped) {
