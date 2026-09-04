@@ -70,6 +70,8 @@ async function ads(args, { flags = {}, dir, fetch: handler = noRc } = {}) {
 	return { code: result, out };
 }
 
+const readJson = (dir, rel) => readFile(join(dir, rel), 'utf8').then(JSON.parse);
+
 const scored = { terms: [
 	{ term: 'oil change reminder', demand: 80, competition: 20, opportunity: 60 },
 	{ term: 'car maintenance log', demand: 60, competition: 30, opportunity: 40 },
@@ -586,4 +588,205 @@ test('report prints the monetisation line when RevenueCat can answer', async () 
 	};
 	const { out } = await ads(['report'], { dir, fetch });
 	assert.match(out, /install→paid/);
+});
+
+// ── the shapes the tables have to render ────────────────────────────────────
+
+test('campaigns and keywords render rows that carry almost nothing', async () => {
+	ascOk([
+		['ads campaigns list', { out: { data: [{}] } }],
+		['ads targeting-keywords list', { out: { data: [{}] } }],
+	]);
+	const dir = await planRepo();
+	assert.match((await ads(['campaigns'], { dir })).out, /Campaigns \(1\)/);
+	assert.match((await ads(['keywords'], { flags: { campaign: 1, 'ad-group': 10 }, dir })).out, /Targeting keywords \(1\)/);
+});
+
+test('a campaign with a budget but no currency, and a serving status only, still render', async () => {
+	ascOk([['ads campaigns list', { out: { data: [{ id: 1, name: 'C', servingStatus: 'RUNNING', dailyBudgetAmount: { amount: '5.00' } }] } }]]);
+	const { out } = await ads(['campaigns'], { dir: await planRepo() });
+	assert.match(out, /5.00/);
+	assert.match(out, /RUNNING/);
+});
+
+test('a keyword priced without a currency renders its amount alone', async () => {
+	ascOk([['ads targeting-keywords list', { out: { data: [{ text: 'kw', matchType: 'EXACT', bidAmount: { amount: '0.60' } }] } }]]);
+	const { out } = await ads(['keywords'], { flags: { campaign: 1, 'ad-group': 10 }, dir: await planRepo() });
+	assert.match(out, /0.60/);
+});
+
+test('v1 renders the campaign table, including a campaign Apple is limiting', async () => {
+	ascOk();
+	const fetch = async (url) => {
+		const href = String(url);
+		// v1 wraps every list in `result`, and pages by `pagination`.
+		if (href.endsWith('/me')) return json({ data: { me: { orgId: 555, userId: 7 } } });
+		if (href.includes('campaigns/query'))
+			return json({
+				result: [
+					{ id: 1, name: 'Exact', displayStatus: 'RUNNING', dailyBudget: { amount: '5' }, targeting: { countryOrRegion: { include: ['US'] } }, systemStatusLimitingReasons: ['BUDGET_HALF_DEPLETED'] },
+					{},
+				],
+				pagination: { pageSize: 2, offset: 0, totalResults: 2 },
+			});
+		return json({ result: [] });
+	};
+	const { out } = await ads(['v1'], { dir: await planRepo(), fetch });
+	assert.match(out, /BUDGET_HALF_DEPLETED/);
+	assert.match(out, /US/);
+	assert.match(out, /Exact/);
+});
+
+test('report outside a repo still runs, and says why it has no monetisation evidence', async () => {
+	ascOk();
+	const dir = await repo({ config: null, prefix: 'ship-ads-' });
+	const saved = process.env.ASC_ADS_ORG_ID;
+	process.env.ASC_ADS_ORG_ID = ORG;
+	try {
+		const { out } = await ads(['report'], { dir });
+		assert.match(out, /no ship.config.json/);
+	} finally {
+		if (saved === undefined) delete process.env.ASC_ADS_ORG_ID;
+		else process.env.ASC_ADS_ORG_ID = saved;
+	}
+});
+
+test('plan and sync both demand a repo', async () => {
+	ascOk();
+	const dir = await repo({ config: null, prefix: 'ship-ads-' });
+	await assert.rejects(() => ads(['plan'], { dir }), /no ship.config.json/);
+});
+
+test('a contradictory ads config is warned about on every run that reads it', async () => {
+	ascOk();
+	// A target CPI above what a subscriber pays over the retention window is a
+	// decision to lose money; the config loader flags it and every command that
+	// reads it repeats the warning.
+	const dir = await repo({
+		config: { ...CONFIG, ads: { orgId: ORG, targetCpi: 3.4, subPrice: 4.99, retentionMonths: 1 } },
+		files: { 'aso/en-US/scored.json': scored },
+		prefix: 'ship-ads-',
+	});
+	const { out } = await ads(['plan'], { flags: { 'no-ltv-check': true }, dir });
+	assert.match(out, /ads:/);
+});
+
+test('mine refuses an org with no campaigns to mine', async () => {
+	ascOk([['ads campaigns list', { out: { data: [] } }]]);
+	const dir = await planRepo();
+	await assert.rejects(() => ads(['mine'], { dir }), /has no campaigns to mine/);
+});
+
+test('a plan whose campaigns key is not a list reads as no campaigns', async () => {
+	ascOk();
+	const dir = await planRepo({ 'aso/asa/campaign-plan.json': { campaigns: { exact: {} } } });
+	await assert.rejects(() => ads(['sync'], { flags: { 'no-ltv-check': true }, dir }), /declares no campaigns/);
+});
+
+test('sync says which app id it needs when neither the config nor the plan has one', async () => {
+	ascOk();
+	const dir = await repo({
+		config: { ads: { orgId: ORG }, name: 'Demo', bundleId: 'com.demo.app' },
+		files: { 'aso/asa/campaign-plan.json': { campaigns: [{ name: 'C' }] } },
+		prefix: 'ship-ads-',
+	});
+	await assert.rejects(() => ads(['sync'], { flags: { 'no-ltv-check': true }, dir }), /numeric App Store app id/);
+});
+
+test('a snapshot of an account with no modification times records none', async () => {
+	ascOk([
+		['ads campaigns list', { out: { data: [{ id: 1, name: 'C' }] } }],
+		['ads ad-groups list', { out: { data: [] } }],
+		['ads targeting-keywords list', { out: { data: [] } }],
+	]);
+	const dir = await planRepo();
+	await ads(['snapshot'], { dir });
+	const doc = await readJson(dir, 'aso/asa/snapshot.json');
+	assert.equal(doc.lastModified, null);
+});
+
+test('mine --apply --dry-run walks the promotion without an ad group id to attach to', async () => {
+	ascOk(MINABLE);
+	setDryRun(true);
+	try {
+		const dir = await planRepo({ 'aso/asa/campaign-plan.json': { currency: 'USD', campaigns: [{ role: 'exact', name: 'Demo · Exact' }] } });
+		const { code } = await ads(['mine'], { flags: { campaign: 1, apply: true }, dir });
+		assert.equal(code, 0, '--dry-run confirms on its own');
+	} finally {
+		setDryRun(false);
+	}
+});
+
+test('plan reads its thresholds from the flags when they are given', async () => {
+	ascOk();
+	const dir = await repo({ config: { asc: { appId: 111, primaryLocale: 'en-US' }, ads: { orgId: ORG } }, files: { 'aso/en-US/scored.json': scored, 'aso/en-US/competitors.json': { generatedAt: 'x' } }, prefix: 'ship-ads-' });
+	const { out } = await ads(['plan'], { flags: { json: true, 'no-ltv-check': true, 'sub-price': 9.99, 'target-cpi': 2, 'min-taps': 4 }, dir });
+	const doc = JSON.parse(out);
+	assert.equal(doc.params.subPrice, 9.99);
+	assert.equal(doc.params.killRule.targetCpi, 2);
+	assert.equal(doc.campaigns.length, 3, 'a competitors file with no apps is no competitors');
+});
+
+test('a forced replan reports the bound plan it replaced in --json too', async () => {
+	ascOk();
+	const dir = await planRepo();
+	await ads(['plan'], { flags: { 'no-ltv-check': true }, dir });
+	const planFile = join(dir, 'aso', 'asa', 'campaign-plan.json');
+	const doc = JSON.parse(await readFile(planFile, 'utf8'));
+	doc.campaigns[0].apple = { id: '1' };
+	await writeFile(planFile, JSON.stringify(doc));
+	const { out } = await ads(['plan'], { flags: { 'no-ltv-check': true, force: true, json: true }, dir });
+	assert.ok(JSON.parse(out).replacedBoundPlan.backup);
+});
+
+test('a plan with no currency and no timestamp still syncs, against the defaults', async () => {
+	ascOk([['ads campaigns list', { out: { data: [] } }]]);
+	const dir = await planRepo({ 'aso/asa/campaign-plan.json': { app: { appId: '111' }, campaigns: [{ role: 'exact', name: 'Solo', dailyBudget: 5, countriesOrRegions: ['US'], adGroups: [], negativeKeywords: [] }] } });
+	const { code, out } = await ads(['sync'], { flags: { 'no-ltv-check': true }, dir });
+	assert.equal(code, 0);
+	assert.match(out, /campaign\(s\) created/);
+});
+
+test('an unmanaged campaign with no status is still named', async () => {
+	ascOk([['ads campaigns list', { out: { data: [{ id: 7, name: 'Hand-made' }] } }]]);
+	const dir = await syncRepo(plannedDoc());
+	const { out } = await ads(['sync'], { flags: { 'no-ltv-check': true }, dir });
+	assert.match(out, /unmanaged campaign left alone: Hand-made \(7, —\)/);
+});
+
+test('sync reports the monetisation evidence when RevenueCat can answer', async () => {
+	ascOk(liveAccount());
+	const dir = await repo({ config: { ...CONFIG, revenuecat: { projectId: 'projX' } }, files: { 'aso/en-US/scored.json': scored, 'aso/asa/campaign-plan.json': plannedDoc() }, prefix: 'ship-ads-' });
+	const fetch = async (url) => {
+		const href = String(url);
+		if (href.includes('/metrics/overview')) return json({ metrics: [{ id: 'revenue', value: 0 }, { id: 'active_subscriptions', value: 0 }, { id: 'installs', value: 500 }] });
+		return json({ items: [{ id: 'projX', name: 'Demo' }] });
+	};
+	const { out } = await ads(['sync'], { dir, fetch });
+	assert.match(out, /NOTHING HAS MONETISED|monetisation/);
+});
+
+test('mine judges the gap against a listing stored without a data wrapper', async () => {
+	ascOk(MINABLE);
+	const dir = await planRepo({ 'store/staged/en-US.json': { locale: 'en-US', name: 'Car service log', subtitle: 'car service log' } });
+	const { out } = await ads(['mine'], { flags: { campaign: 1 }, dir });
+	assert.match(out, /absent from the en-US listing|converting term/);
+});
+
+test('mine --apply takes its org from the flag when the config has none', async () => {
+	ascOk(MINABLE);
+	const dir = await repo({ config: { asc: { appId: 111, primaryLocale: 'en-US' }, ads: { targetCpi: 2 } }, files: { 'aso/en-US/scored.json': scored }, prefix: 'ship-ads-' });
+	const { code } = await ads(['mine'], { flags: { campaign: 1, org: ORG, apply: true, confirm: true }, dir });
+	assert.equal(code, 0);
+});
+
+test('v1 --json carries the whole account', async () => {
+	ascOk();
+	const fetch = async (url) => {
+		const href = String(url);
+		if (href.endsWith('/me')) return json({ data: { me: { orgId: 555, userId: 7 } } });
+		return json({ result: [] });
+	};
+	const { out } = await ads(['v1'], { flags: { json: true }, dir: await planRepo(), fetch });
+	assert.equal(JSON.parse(out).ok, true);
 });

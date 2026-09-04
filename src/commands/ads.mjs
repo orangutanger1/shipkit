@@ -94,15 +94,6 @@ ${c.dim('`ship ads plan` will not overwrite a plan carrying Apple object ids: --
 const status = adsStatus; // credential UX lives with the auth module that serves it
 const login = adsLogin;
 
-/**
- * `loadConfig()` only resolves null with `optional`; these subcommands demand one.
- * @param {Config|null} cfg
- * @returns {asserts cfg is Config}
- */
-function requireConfig(cfg) {
-	if (!cfg) throw new ShipError('no ship.config.json found', { hint: 'run `ship init` in the app directory first' });
-}
-
 /** @param {AdsCtx} ctx @returns {Promise<number>} */
 async function campaigns({ flags }) {
 	const cfg = await loadConfig(undefined, { optional: true });
@@ -202,8 +193,8 @@ async function planInputs(cfg, flags, locale) {
 	if (!terms.length) throw new ShipError(`${scoredFile} contains no scored keywords`);
 	const rivalFile = join(cfg.paths.aso, locale, 'competitors.json');
 	const competitors = existsSync(rivalFile) ? (JSON.parse(await readFile(rivalFile, 'utf8')).apps ?? []) : [];
-	const subPrice = flags['sub-price'] ?? flags.subPrice ?? cfg.ads?.subPrice ?? null;
-	const org = cfg.ads?.orgId ?? null;
+	const subPrice = flags['sub-price'] ?? flags.subPrice ?? cfg.ads.subPrice ?? null;
+	const org = cfg.ads.orgId ?? null;
 	const measured = flags.bid ? { cpt: null, reason: '--bid overrides it' } : await realisedCpt(cfg, org);
 	/** @type {MonetisationSignal} */
 	const money$ = flags['no-ltv-check'] ? { available: false, reason: '--no-ltv-check' } : await monetisationSignal(cfg, { subPrice });
@@ -214,16 +205,16 @@ async function planInputs(cfg, flags, locale) {
 /** @param {Config} cfg @param {Flags} flags @param {PlanInputs & {locale: string}} inputs @returns {{app: {name: string, bundleId: string, appId: string|null}, locale: string, market: string, terms: TermScore[], competitors: AppRef[], budget: number, split: Record<string, number>, top: number, subPrice: number|null, targetCpi: Num, retentionMonths: number, baselineInstallRate: number, minTaps: Num, bid: Num, minBid: Num, maxBid: Num, observedCpt: number|null, seedBid: number|null, monetisation: MonetisationSignal, minVolume: number, org: string|null, source: string}} */
 function planOptions(cfg, flags, { locale, terms, competitors, subPrice, org, measured, money$, scoredFile }) {
 	return {
-		app: { name: cfg.name, bundleId: cfg.bundleId, appId: cfg.asc?.appId ?? null },
+		app: { name: cfg.name, bundleId: cfg.bundleId, appId: cfg.asc.appId ?? null },
 		locale, market: (marketFor(locale)?.country ?? 'US').toUpperCase(), terms, competitors,
 		budget: Math.max(1, num(flags.budget, 10)), split: parseSplit(flags.split), top: Math.max(1, num(flags.top, 15)),
 		subPrice: subPrice === null ? null : Math.max(0.01, num(subPrice)),
-		targetCpi: flags['target-cpi'] ?? flags.targetCpi ?? cfg.ads?.targetCpi ?? null,
-		retentionMonths: cfg.ads?.retentionMonths, baselineInstallRate: cfg.ads?.baselineInstallRate,
-		minTaps: flags['min-taps'] ?? cfg.ads?.minTaps ?? null,
+		targetCpi: flags['target-cpi'] ?? flags.targetCpi ?? cfg.ads.targetCpi ?? null,
+		retentionMonths: cfg.ads.retentionMonths, baselineInstallRate: cfg.ads.baselineInstallRate,
+		minTaps: flags['min-taps'] ?? cfg.ads.minTaps ?? null,
 		bid: flags.bid ?? null, minBid: flags['min-bid'] ?? null, maxBid: flags['max-bid'] ?? null,
-		observedCpt: measured.cpt, seedBid: cfg.ads?.seedBid ?? null, monetisation: money$,
-		minVolume: num(cfg.aso?.minVolume), org, source: scoredFile,
+		observedCpt: measured.cpt, seedBid: cfg.ads.seedBid ?? null, monetisation: money$,
+		minVolume: num(cfg.aso.minVolume), org, source: scoredFile,
 	};
 }
 
@@ -239,15 +230,14 @@ async function backupBoundPlan(cfg, onDisk, bound) {
 /** @param {AdsCtx} ctx @returns {Promise<number>} */
 async function plan({ flags }) {
 	const cfg = await loadConfig();
-	requireConfig(cfg);
-	for (const w of cfg.warnings ?? []) warn(w);
+	for (const w of cfg.warnings) warn(w);
 	const planFile = join(cfg.paths.asa, 'campaign-plan.json');
 	const mdFile = join(cfg.paths.asa, 'campaign-plan.md');
 	const onDisk = await readJSONFile(planFile);
 	if (flags.render) return renderOnly({ cfg, flags, planFile, mdFile, onDisk });
 	const bound = assertUnbound(onDisk, flags, planFile);
 
-	const locale = String(flags.locale ?? cfg.asc?.primaryLocale ?? 'en-US');
+	const locale = String(flags.locale ?? cfg.asc.primaryLocale);
 	const inputs = await planInputs(cfg, flags, locale);
 	const out = await buildPlan({
 		...planOptions(cfg, flags, { ...inputs, locale }),
@@ -265,7 +255,6 @@ async function plan({ flags }) {
 /** @param {AdsCtx} ctx @returns {Promise<number>} */
 async function snapshot({ flags }) {
 	const cfg = await loadConfig();
-	requireConfig(cfg);
 	await gate(cfg);
 	const org = requireOrg(cfg, flags);
 	const { from, to } = reportWindow(flags, 30);
@@ -304,10 +293,10 @@ async function loadSyncPlan(cfg) {
 /** @param {Config} cfg @param {PlanDoc} p @param {Flags} flags @returns {{org: string, adamId: number, force: boolean, adopt: boolean, currency: string}} */
 function syncTargets(cfg, p, flags) {
 	const org = requireOrg(cfg, { org: flags.org ?? p.org });
-	const adamId = num(cfg.asc?.appId ?? p.app?.appId, 0);
+	const adamId = num(cfg.asc.appId ?? p.app?.appId, 0);
 	if (!adamId)
 		throw new ShipError('sync needs the numeric App Store app id (adamId)', {
-			hint: 'set asc.appId in ship.config.json — `asc apps list --bundle-id ' + (cfg.bundleId ?? '<bundle>') + ' --output json` has it',
+			hint: `set asc.appId in ship.config.json — \`asc apps list --bundle-id ${cfg.bundleId} --output json\` has it`,
 		});
 	const force = Boolean(flags.force), adopt = Boolean(flags.adopt);
 	if (force && adopt) throw new ShipError('--force and --adopt contradict each other', { hint: '--force: the plan wins. --adopt: the account wins.' });
@@ -330,8 +319,7 @@ function assertFresh({ p, liveAt, force, adopt }) {
 /** @param {AdsCtx} ctx @returns {Promise<number>} */
 async function sync({ flags }) {
 	const cfg = await loadConfig();
-	requireConfig(cfg);
-	for (const w of cfg.warnings ?? []) warn(w);
+	for (const w of cfg.warnings) warn(w);
 	const { planFile, p, planned } = await loadSyncPlan(cfg);
 	await gate(cfg);
 	const { org, adamId, force, adopt, currency } = syncTargets(cfg, p, flags);
@@ -344,7 +332,7 @@ async function sync({ flags }) {
 	for (const u of plan$.unmanaged) note(`unmanaged campaign left alone: ${u.name} (${u.id}, ${u.status ?? '—'})`);
 	for (const a of plan$.preserved) info(`keeping the manual value on ${a.path}: ${describeAction(a)}`);
 	/** @type {MonetisationSignal} */
-	const money$ = flags['no-ltv-check'] ? { available: false, reason: '--no-ltv-check' } : await monetisationSignal(cfg, { subPrice: cfg.ads?.subPrice });
+	const money$ = flags['no-ltv-check'] ? { available: false, reason: '--no-ltv-check' } : await monetisationSignal(cfg, { subPrice: cfg.ads.subPrice });
 	process.stdout.write('\n');
 	reportMonetisation(money$, { budget: p.budget?.daily ?? null });
 
@@ -497,11 +485,11 @@ async function collectTermRows({ cfg, flags, from, to }) {
 /** @param {Config} cfg @param {Flags} flags @returns {{[k: string]: Json|undefined, retentionMonths?: number}} */
 function killOptions(cfg, flags) {
 	return {
-		targetCpi: flags['target-cpi'] ?? flags.targetCpi ?? cfg.ads?.targetCpi ?? null,
-		subPrice: cfg.ads?.subPrice ?? null,
-		retentionMonths: cfg.ads?.retentionMonths,
-		baselineInstallRate: cfg.ads?.baselineInstallRate,
-		minTaps: flags['min-taps'] ?? cfg.ads?.minTaps ?? null,
+		targetCpi: flags['target-cpi'] ?? flags.targetCpi ?? cfg.ads.targetCpi ?? null,
+		subPrice: cfg.ads.subPrice ?? null,
+		retentionMonths: cfg.ads.retentionMonths,
+		baselineInstallRate: cfg.ads.baselineInstallRate,
+		minTaps: flags['min-taps'] ?? cfg.ads.minTaps ?? null,
 		source: flags['target-cpi'] ?? flags.targetCpi ? '--target-cpi' : `ads.targetCpi (${cfg.file})`,
 	};
 }
@@ -509,9 +497,8 @@ function killOptions(cfg, flags) {
 /** @param {AdsCtx} ctx @returns {Promise<number>} */
 async function mine({ flags }) {
 	const cfg = await loadConfig();
-	requireConfig(cfg);
-	for (const w of cfg.warnings ?? []) warn(w);
-	const locale = String(flags.locale ?? cfg.asc?.primaryLocale ?? 'en-US');
+	for (const w of cfg.warnings) warn(w);
+	const locale = String(flags.locale ?? cfg.asc.primaryLocale);
 	const { from, to } = reportWindow(flags, 30);
 	const { rows: raw, org, source } = await collectTermRows({ cfg, flags, org: orgOf(cfg, flags), from, to });
 
@@ -574,8 +561,8 @@ async function v1({ flags, account = v1Account }) {
 		{ header: 'campaign', get: (r) => r.name ?? '' },
 		{ header: 'status', get: (r) => r.displayStatus ?? r.status ?? '' },
 		{ header: 'daily', get: (r) => money(r.dailyBudget) },
-		{ header: 'geo', get: (r) => (r.countriesOrRegions ?? []).join(',') },
-		{ header: 'limited by', get: (r) => (r.limitingReasons ?? []).join(',') },
+		{ header: 'geo', get: (r) => r.countriesOrRegions.join(',') },
+		{ header: 'limited by', get: (r) => r.limitingReasons.join(',') },
 	]);
 	step(`${campaignRows.length} campaigns · ${groups.length} ad groups · ${keywordRows.length} keywords`);
 	note('every other `ship ads` subcommand still runs on v5, which sunsets 2027-01-26');
