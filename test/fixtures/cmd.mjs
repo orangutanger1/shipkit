@@ -9,6 +9,21 @@ import { join, dirname } from 'node:path';
 
 const FAKE = new URL('./fake-bin.mjs', import.meta.url).pathname;
 
+// Two safety nets, armed for every test file that imports this harness.
+//
+// The first: a developer's shell exports real credentials (REVENUECAT_API_KEY
+// is the one that bit — a test inherited it and audited the real account). No
+// test may ever see one, so they are removed here rather than per file.
+for (const name of ['REVENUECAT_API_KEY', 'REVENUECAT_V2_KEY', 'FIGMA_API_KEY', 'FIGMA_TOKEN', 'ASC_APP_ID', 'ASC_ADS_ORG_ID', 'SHIP_ASC_BIN'])
+	delete process.env[name];
+
+// The second: an un-stubbed fetch would go to the real network. Refusing it
+// loudly turns "the suite is slow and flaky on a plane" into a failing
+// assertion that names the call. `withFetch` overrides it per test.
+globalThis.fetch = async (url) => {
+	throw new Error(`this test reached the network: ${String(url)} — stub it with withFetch()`);
+};
+
 /**
  * Put stand-ins for `names` at the front of PATH for the rest of this test
  * file. `node --test` gives each file its own process, so mutating PATH once
