@@ -28,7 +28,9 @@ const campaignRow = (id, name, extra = {}) => ({
 /** The reporting envelope Apple wraps every preset report in. */
 const reportBody = (rows) => ({ data: { reportingDataResponse: { row: rows } } });
 const reportRow = (metadata, { spend = 10, taps = 20, installs = 5, impressions = 1000 } = {}) => ({
-	metadata, total: { localSpend: { amount: spend, currency: 'USD' }, taps, totalInstalls: installs, impressions },
+	// `installs` and `totalInstalls` are both set: the report views read the
+	// former, the client's metric flattening the latter.
+	metadata, total: { localSpend: { amount: spend, currency: 'USD' }, taps, installs, totalInstalls: installs, impressions },
 });
 
 /** The healthy account: one campaign per plan role, each with an ad group. */
@@ -403,4 +405,185 @@ test('mine --apply --confirm pushes the negatives it decided on', async () => {
 	assert.match(out, /negatives/);
 	const doc = JSON.parse(out.includes('{') ? '{}' : '{}');
 	assert.ok(doc);
+});
+
+// ── sync against an account that already has the plan in it ──────────────────
+// These use a hand-written plan rather than one `ship ads plan` produced, so
+// the live account can be made to agree with it, drift from it, or carry an
+// object it does not know about — the three cases the reconciler exists for.
+
+const NAME = 'Demo · Exact · US';
+const syncedAt = '2026-06-01T00:00:00.000Z';
+
+/** @param {{bid?: number, budget?: number, page?: object}} [opts] */
+const plannedDoc = ({ bid = 0.69, budget = 5.88, page } = {}) => ({
+	generatedAt: syncedAt, locale: 'en-US', market: 'US', currency: 'USD',
+	app: { name: 'Demo', bundleId: 'com.demo.app', appId: '111' },
+	budget: { daily: 10 },
+	campaigns: [{
+		role: 'exact', name: NAME, dailyBudget: budget, countriesOrRegions: ['US'],
+		supplySources: ['APPSTORE_SEARCH_RESULTS'], billingEvent: 'TAPS', adChannelType: 'SEARCH',
+		apple: { id: '1', syncedAt, name: NAME, dailyBudget: 5.88, status: 'ENABLED' },
+		adGroups: [{
+			name: 'EX · oil change reminder', defaultBidAmount: bid, automatedKeywordsOptIn: false,
+			...(page ? { productPage: page } : {}),
+			apple: { id: '10', syncedAt, name: 'EX · oil change reminder', defaultBidAmount: 0.69, automatedKeywordsOptIn: false, status: 'ENABLED' },
+			keywords: [{ text: 'oil change reminder', matchType: 'EXACT', bid, apple: { id: '100', syncedAt, text: 'oil change reminder', matchType: 'EXACT', bidAmount: 0.69, status: 'ACTIVE' } }],
+		}],
+		negativeKeywords: [],
+	}],
+});
+
+/** The live account the plan above describes. @param {{bid?: number, groups?: object[], modified?: string}} [opts] */
+const liveAccount = ({ bid = 0.69, groups, modified = '2026-01-01T00:00:00.000Z' } = {}) => [
+	['ads ad-groups list', { out: { data: groups ?? [{ id: 10, name: 'EX · oil change reminder', defaultBidAmount: { amount: bid.toFixed(2), currency: 'USD' }, automatedKeywordsOptIn: false, status: 'ENABLED', modificationTime: modified }] } }],
+	['ads targeting-keywords list', { out: { data: [{ id: 100, text: 'oil change reminder', matchType: 'EXACT', status: 'ACTIVE', bidAmount: { amount: bid.toFixed(2), currency: 'USD' }, modificationTime: modified }] } }],
+	['ads campaigns list', { out: { data: [campaignRow(1, NAME, { modificationTime: modified })] } }],
+];
+
+const syncRepo = (doc) => planRepo({ 'aso/asa/campaign-plan.json': doc });
+
+test('an account that already matches the plan is left alone', async () => {
+	ascOk(liveAccount());
+	const dir = await syncRepo(plannedDoc());
+	const { code, out } = await ads(['sync'], { flags: { 'no-ltv-check': true }, dir });
+	assert.equal(code, 0);
+	assert.match(out, /0 mutations/);
+});
+
+test('a re-bid in the plan updates the live keyword and ad group', async () => {
+	ascOk(liveAccount());
+	const dir = await syncRepo(plannedDoc({ bid: 1.2 }));
+	const { code, out } = await ads(['sync'], { flags: { 'no-ltv-check': true, verbose: true }, dir });
+	assert.equal(code, 0);
+	assert.match(out, /update ad group/);
+	const updates = (await calls()).filter((call) => call.args.includes('update-bulk') || call.args.includes('update'));
+	assert.ok(updates.length, 'the changed objects are pushed');
+});
+
+test('a value changed by hand is kept when the plan has not moved', async () => {
+	ascOk(liveAccount({ bid: 3.5 }));
+	const dir = await syncRepo(plannedDoc());
+	const { code, out } = await ads(['sync'], { flags: { 'no-ltv-check': true }, dir });
+	assert.equal(code, 0, 'ship changed nothing, so the human wins by default');
+	assert.match(out, /keeping the manual value/);
+});
+
+test('a value the plan and a human both moved is a conflict until --force or --adopt', async () => {
+	ascOk(liveAccount({ bid: 3.5 }));
+	const dir = await syncRepo(plannedDoc({ bid: 1.2 }));
+	await assert.rejects(() => ads(['sync'], { flags: { 'no-ltv-check': true }, dir }), /changed outside ship/);
+
+	const { code } = await ads(['sync'], { flags: { 'no-ltv-check': true, force: true }, dir });
+	assert.equal(code, 0, '--force lets the plan win');
+
+	await writeFiles(dir, { 'aso/asa/campaign-plan.json': plannedDoc({ bid: 1.2 }) });
+	const { out } = await ads(['sync'], { flags: { 'no-ltv-check': true, adopt: true }, dir });
+	assert.match(out, /adopt/);
+	const doc = JSON.parse(await readFile(join(dir, 'aso', 'asa', 'campaign-plan.json'), 'utf8'));
+	assert.equal(doc.campaigns[0].adGroups[0].keywords[0].bid, 3.5, '--adopt records the live value into the plan');
+});
+
+test('an ad group the plan does not contain is reported, and only --prune pauses it', async () => {
+	const extra = { id: 11, name: 'EX · hand-made', defaultBidAmount: { amount: '0.80', currency: 'USD' }, status: 'ENABLED', modificationTime: '2026-01-01T00:00:00.000Z' };
+	const groups = [{ id: 10, name: 'EX · oil change reminder', defaultBidAmount: { amount: '0.69', currency: 'USD' }, automatedKeywordsOptIn: false, status: 'ENABLED', modificationTime: '2026-01-01T00:00:00.000Z' }, extra];
+	ascOk(liveAccount({ groups }));
+	const dir = await syncRepo(plannedDoc());
+	await assert.rejects(() => ads(['sync'], { flags: { 'no-ltv-check': true }, dir }), /not in the plan/);
+
+	const { code, out } = await ads(['sync'], { flags: { 'no-ltv-check': true, prune: true }, dir });
+	assert.equal(code, 0);
+	assert.match(out, /pausing ad group "EX · hand-made"/);
+});
+
+test('an account modified after the plan was written stops the sync', async () => {
+	ascOk(liveAccount({ modified: '2026-07-01T00:00:00.000Z' }));
+	const dir = await syncRepo(plannedDoc());
+	await assert.rejects(() => ads(['sync'], { flags: { 'no-ltv-check': true }, dir }), /modified after this plan was written/);
+});
+
+test('sync needs the numeric app id before it will create anything', async () => {
+	ascOk(liveAccount());
+	const doc = plannedDoc();
+	doc.app.appId = null;
+	const dir = await repo({ config: { ...CONFIG, asc: { primaryLocale: 'en-US' } }, files: { 'aso/en-US/scored.json': scored, 'aso/asa/campaign-plan.json': doc }, prefix: 'ship-ads-' });
+	await assert.rejects(() => ads(['sync'], { flags: { 'no-ltv-check': true }, dir }), /numeric App Store app id/);
+});
+
+test('an ad group naming a custom product page binds it, and says so when Apple has no such page', async () => {
+	const page = { name: 'Runners', slug: 'runners' };
+	ascOk(liveAccount());
+	const dir = await syncRepo(plannedDoc({ bid: 1.1, page }));
+	const { out } = await ads(['sync'], { flags: { 'no-ltv-check': true }, dir });
+	assert.match(out, /product page "Runners" is not in Apple Ads yet/);
+
+	ascOk([
+		...liveAccount(),
+		['ads product-pages list', { out: { data: [{ id: 5, productPageId: 'pp-5', name: 'Runners' }] } }],
+		['ads ads list', { out: { data: [] } }],
+	]);
+	const dir2 = await syncRepo(plannedDoc({ bid: 1.2, page }));
+	const { out: out2 } = await ads(['sync'], { flags: { 'no-ltv-check': true }, dir: dir2 });
+	assert.match(out2, /product page\(s\) bound/);
+});
+
+// ── the paid → organic loop, and the apply half of mining ────────────────────
+
+/** A search-term report with one wasteful term and one that converts under target. */
+const MINABLE = [['ads reports search-terms', { out: reportBody([
+	reportRow({ searchTermText: 'free oil change', campaignId: 1, adGroupId: 10, adGroupName: 'EX · core' }, { spend: 20, taps: 40, installs: 0 }),
+	reportRow({ searchTermText: 'car service log', campaignId: 1, adGroupId: 10, adGroupName: 'EX · core' }, { spend: 2, taps: 10, installs: 2 }),
+]) }]];
+
+test('a converting term missing from the staged listing is named as the ASO finding it is', async () => {
+	ascOk(MINABLE);
+	const dir = await planRepo({ 'store/staged/en-US.json': { locale: 'en-US', name: 'Demo', subtitle: 'Track your car', keywords: 'oil,change' } });
+	const { out } = await ads(['mine'], { flags: { campaign: 1 }, dir });
+	assert.match(out, /absent from the en-US listing: car service log/);
+	assert.match(out, /ship aso suggest --locale en-US/);
+});
+
+test('with no staged listing at all, mine says so rather than claiming a gap', async () => {
+	// Nothing converted, so there is no gap to report — only the absence of a
+	// listing to measure one against.
+	ascOk([['ads reports search-terms', { out: reportBody([reportRow({ searchTermText: 'free oil change', campaignId: 1 }, { spend: 20, taps: 40, installs: 0 })]) }]]);
+	const dir = await planRepo();
+	const { out } = await ads(['mine'], { flags: { campaign: 1 }, dir });
+	assert.match(out, /no staged listing for en-US/);
+});
+
+test('mine --apply --confirm promotes a converting term into its own Exact ad group', async () => {
+	ascOk(MINABLE);
+	const dir = await planRepo({ 'aso/asa/campaign-plan.json': { currency: 'USD', campaigns: [{ role: 'exact', name: 'Demo · Exact' }, { role: 'discovery', name: 'Demo · Discovery' }] } });
+	const { code, out } = await ads(['mine'], { flags: { campaign: 1, apply: true, confirm: true }, dir });
+	assert.equal(code, 0);
+	assert.match(out, /promote "car service log" → EX · car service log/);
+	const made = await calls();
+	assert.ok(made.some((call) => call.args.includes('ad-groups') && call.args.includes('create')), 'the promotion gets its own ad group');
+	assert.ok(made.some((call) => call.args.includes('campaign-negative-keywords') && call.args.includes('create-bulk')), 'the wasteful term is negated');
+});
+
+test('mine --apply says which promotions it could not place when the org has no Exact campaign', async () => {
+	// The rows carry no campaign id, so there is nothing to negate against
+	// either — which is the pair of warnings this checks.
+	ascOk([['ads reports search-terms', { out: reportBody([
+		reportRow({ searchTermText: 'free oil change' }, { spend: 20, taps: 40, installs: 0 }),
+		reportRow({ searchTermText: 'car service log' }, { spend: 2, taps: 10, installs: 2 }),
+	]) }], ['ads campaigns list', { out: { data: [] } }]]);
+	const dir = await planRepo();
+	const { out } = await ads(['mine'], { flags: { campaign: 1, apply: true, confirm: true }, dir });
+	assert.match(out, /no campaign to negate/);
+	assert.match(out, /promotion\(s\) not pushed: car service log/);
+});
+
+test('report prints the monetisation line when RevenueCat can answer', async () => {
+	ascOk();
+	const dir = await repo({ config: { ...CONFIG, revenuecat: { projectId: 'projX' } }, files: { 'aso/en-US/scored.json': scored }, prefix: 'ship-ads-' });
+	const fetch = async (url) => {
+		const href = String(url);
+		if (href.includes('/metrics/overview')) return json({ metrics: [{ id: 'revenue', value: 500 }, { id: 'active_subscriptions', value: 40 }, { id: 'new_customers', value: 40 }, { id: 'installs', value: 400 }] });
+		return json({ items: [{ id: 'projX', name: 'Demo' }] });
+	};
+	const { out } = await ads(['report'], { dir, fetch });
+	assert.match(out, /install→paid/);
 });
