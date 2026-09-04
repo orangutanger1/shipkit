@@ -372,10 +372,15 @@ export async function run({ args, flags }) {
 	// human-set config values / npm scripts" in init — two different decisions.
 	// A fresh scaffold has neither, so init never inherits the flag.
 	step('Wiring ship.config.json');
-	const init = await import('./init.mjs');
-	const { force: _newForce, ...initFlags } = flags;
-	const code = await init.run({ args: [], flags: { ...initFlags, dir: targetDir, app: targetDir } });
-	if (code) return code;
+	// A dry run never created the directory, and `ship init` reads a repo rather
+	// than imagining one — so there is nothing here for it to look at.
+	if (dry) note(`${c.yellow('would run')} ship init ${targetDir}`);
+	else {
+		const init = await import('./init.mjs');
+		const { force: _newForce, ...initFlags } = flags;
+		const code = await init.run({ args: [], flags: { ...initFlags, dir: targetDir, app: targetDir } });
+		if (code) return code;
+	}
 
 	if (brief && !dry) await seedAso(targetDir, brief);
 	printNextSteps({ ...identity, targetDir, flags });
