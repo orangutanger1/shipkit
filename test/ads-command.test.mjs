@@ -436,11 +436,11 @@ const plannedDoc = ({ bid = 0.69, budget = 5.88, page } = {}) => ({
 	}],
 });
 
-/** The live account the plan above describes. @param {{bid?: number, groups?: object[], modified?: string}} [opts] */
-const liveAccount = ({ bid = 0.69, groups, modified = '2026-01-01T00:00:00.000Z' } = {}) => [
+/** The live account the plan above describes. @param {{bid?: number, groups?: object[], modified?: string, budget?: number}} [opts] */
+const liveAccount = ({ bid = 0.69, groups, modified = '2026-01-01T00:00:00.000Z', budget = 5.88 } = {}) => [
 	['ads ad-groups list', { out: { data: groups ?? [{ id: 10, name: 'EX · oil change reminder', defaultBidAmount: { amount: bid.toFixed(2), currency: 'USD' }, automatedKeywordsOptIn: false, status: 'ENABLED', modificationTime: modified }] } }],
 	['ads targeting-keywords list', { out: { data: [{ id: 100, text: 'oil change reminder', matchType: 'EXACT', status: 'ACTIVE', bidAmount: { amount: bid.toFixed(2), currency: 'USD' }, modificationTime: modified }] } }],
-	['ads campaigns list', { out: { data: [campaignRow(1, NAME, { modificationTime: modified })] } }],
+	['ads campaigns list', { out: { data: [campaignRow(1, NAME, { modificationTime: modified, dailyBudgetAmount: { amount: budget.toFixed(2), currency: 'USD' } })] } }],
 ];
 
 const syncRepo = (doc) => planRepo({ 'aso/asa/campaign-plan.json': doc });
@@ -789,4 +789,138 @@ test('v1 --json carries the whole account', async () => {
 	};
 	const { out } = await ads(['v1'], { flags: { json: true }, dir: await planRepo(), fetch });
 	assert.equal(JSON.parse(out).ok, true);
+});
+
+test('an account that already matches has nothing to do, and says exactly that', async () => {
+	ascOk(liveAccount());
+	const dir = await syncRepo(plannedDoc());
+	const { out } = await ads(['sync'], { flags: { 'no-ltv-check': true }, dir });
+	assert.match(out, /nothing to do — the account already matches the plan/);
+});
+
+test('a campaign whose budget moved is updated, and --adopt takes the live one instead', async () => {
+	ascOk(liveAccount());
+	const dir = await syncRepo(plannedDoc({ budget: 9.5 }));
+	const { out } = await ads(['sync'], { flags: { 'no-ltv-check': true }, dir });
+	assert.match(out, /update campaign "Demo · Exact · US"/);
+
+	ascOk(liveAccount({ budget: 7 }));
+	const adopted = await syncRepo(plannedDoc({ budget: 9.5 }));
+	await ads(['sync'], { flags: { 'no-ltv-check': true, adopt: true }, dir: adopted });
+	const doc = JSON.parse(await readFile(join(adopted, 'aso', 'asa', 'campaign-plan.json'), 'utf8'));
+	assert.equal(doc.campaigns[0].dailyBudget, 7, 'the account won');
+});
+
+test('a campaign create that answers with no id stops the sync rather than stamping nothing', async () => {
+	// Rules are first-match, so the overrides go ahead of the healthy account.
+	ascOk([['ads campaigns list', { out: { data: [] } }], ['ads campaigns create', { out: { data: {} } }], ...liveAccount()]);
+	const dir = await syncRepo(plannedDoc());
+	await assert.rejects(() => ads(['sync'], { flags: { 'no-ltv-check': true }, dir }), /campaign create returned no id/);
+});
+
+test('--prune pauses the keywords the plan dropped, one warning per ad group', async () => {
+	const groups = [{ id: 10, name: 'EX · oil change reminder', defaultBidAmount: { amount: '0.69', currency: 'USD' }, automatedKeywordsOptIn: false, status: 'ENABLED', modificationTime: '2026-01-01T00:00:00.000Z' }];
+	ascOk([
+		['ads targeting-keywords list', { out: { data: [
+			{ id: 100, text: 'oil change reminder', matchType: 'EXACT', status: 'ACTIVE', bidAmount: { amount: '0.69', currency: 'USD' }, modificationTime: '2026-01-01T00:00:00.000Z' },
+			{ id: 101, text: 'hand added', matchType: 'EXACT', status: 'ACTIVE', bidAmount: { amount: '1.00', currency: 'USD' }, modificationTime: '2026-01-01T00:00:00.000Z' },
+		] } }],
+		...liveAccount({ groups }),
+	]);
+	const dir = await syncRepo(plannedDoc());
+	const { out } = await ads(['sync'], { flags: { 'no-ltv-check': true, prune: true }, dir });
+	assert.match(out, /pausing 1 keyword\(s\)/);
+});
+
+test('a keyword Apple already had is adopted into the plan on the first sync', async () => {
+	const doc = plannedDoc();
+	// No Apple ids anywhere: this plan has never been pushed.
+	doc.campaigns[0].apple = undefined;
+	doc.campaigns[0].adGroups[0].apple = undefined;
+	doc.campaigns[0].adGroups[0].keywords[0].apple = undefined;
+	ascOk(liveAccount());
+	const dir = await syncRepo(doc);
+	const { code } = await ads(['sync'], { flags: { 'no-ltv-check': true, adopt: true }, dir });
+	assert.equal(code, 0);
+	const saved = JSON.parse(await readFile(join(dir, 'aso', 'asa', 'campaign-plan.json'), 'utf8'));
+	assert.equal(saved.campaigns[0].apple.id, '1', 'the live object ids are recorded');
+});
+
+test('an unreadable RevenueCat answer leaves the plan without monetisation evidence, not without a plan', async () => {
+	ascOk();
+	const dir = await repo({ config: { ...CONFIG, revenuecat: { projectId: 'projX' } }, files: { 'aso/en-US/scored.json': scored }, prefix: 'ship-ads-' });
+	const { code, out } = await ads(['plan'], { dir, fetch: async () => { throw new Error('revenuecat is down'); } });
+	assert.equal(code, 0);
+	assert.match(out, /no monetisation evidence read/);
+});
+
+test('a proven monetisation signal is reported as a fact, not a warning', async () => {
+	ascOk();
+	const dir = await repo({ config: { ...CONFIG, revenuecat: { projectId: 'projX' }, ads: { orgId: ORG, subPrice: 9.99, targetCpi: 2, retentionMonths: 6 } }, files: { 'aso/en-US/scored.json': scored }, prefix: 'ship-ads-' });
+	const fetch = async (url) => {
+		const href = String(url);
+		if (href.includes('/metrics/overview'))
+			return json({ metrics: [{ id: 'revenue', value: 5000 }, { id: 'active_subscriptions', value: 300 }, { id: 'new_customers', value: 300 }, { id: 'installs', value: 1000 }] });
+		return json({ items: [{ id: 'projX', name: 'Demo' }] });
+	};
+	const { out } = await ads(['plan'], { dir, fetch });
+	assert.match(out, /monetisation: /);
+});
+
+test('a report pull that fails leaves the realised cost per tap unknown', async () => {
+	ascOk([['ads reports preset', { out: '', err: 'boom', code: 1 }]]);
+	const dir = await planRepo();
+	const { out } = await ads(['plan'], { flags: { 'no-ltv-check': true }, dir });
+	assert.match(out, /seed|bid/);
+});
+
+test('a plan campaign with no ad groups or negatives syncs as just the campaign', async () => {
+	ascOk([['ads campaigns list', { out: { data: [] } }], ...liveAccount()]);
+	const dir = await syncRepo({
+		generatedAt: syncedAt, currency: 'USD', app: { appId: '111' }, budget: { daily: 10 },
+		campaigns: [{ role: 'exact', name: 'Bare', dailyBudget: 5, countriesOrRegions: ['US'] }],
+	});
+	const { code, out } = await ads(['sync'], { flags: { 'no-ltv-check': true }, dir });
+	assert.equal(code, 0);
+	assert.match(out, /1 campaign\(s\) created/);
+});
+
+test('an ad group create that answers with no id stops the sync', async () => {
+	ascOk([
+		['ads campaigns list', { out: { data: [] } }],
+		['ads ad-groups create', { out: { data: {} } }],
+		['ads campaigns create', { out: { data: { id: 1 } } }],
+		...liveAccount(),
+	]);
+	const dir = await syncRepo(plannedDoc());
+	await assert.rejects(() => ads(['sync'], { flags: { 'no-ltv-check': true }, dir }), /ad group create returned no id/);
+});
+
+// ── the two signals `plan` and `sync` read before they authorise spend ───────
+
+const apply = await import('../src/lib/ads-apply.mjs');
+const { loadConfig } = await import('../src/config.mjs');
+const configIn = (dir) => inDir(dir, () => loadConfig());
+
+test('monetisation is unavailable, and says why, for each way it can be', async () => {
+	const none = await configIn(await repo({ config: CONFIG, prefix: 'ship-ads-' }));
+	assert.match((await apply.monetisationSignal(none)).reason, /no revenuecat.projectId/);
+
+	const named = await configIn(await repo({ config: { ...CONFIG, revenuecat: { projectId: 'projX' } }, prefix: 'ship-ads-' }));
+	const noMatch = await withFetch(async () => json({ items: [] }), () => apply.monetisationSignal(named));
+	assert.match(noMatch.reason, /no RevenueCat project matches|no RevenueCat key can see/);
+});
+
+test('the realised cost per tap is unknown without an org, without credentials, and without taps', async () => {
+	const cfg = await configIn(await repo({ config: CONFIG, prefix: 'ship-ads-' }));
+	assert.deepEqual(await apply.realisedCpt(cfg, null), { cpt: null, reason: 'no ads.orgId' });
+
+	setBin('asc', [['ads auth status', { out: 'No Apple Ads credentials\n' }]]);
+	assert.match((await apply.realisedCpt(cfg, ORG)).reason, /no Apple Ads credentials/);
+
+	ascOk([['ads reports preset', { out: reportBody([reportRow({ campaignName: 'C' }, { spend: 0, taps: 0, installs: 0 })]) }]]);
+	assert.match((await apply.realisedCpt(cfg, ORG)).reason, /no taps in the last 30 days/);
+
+	ascOk([['ads reports preset', { out: '', err: 'boom', code: 1 }]]);
+	assert.ok((await apply.realisedCpt(cfg, ORG)).reason);
 });
