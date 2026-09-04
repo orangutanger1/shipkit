@@ -10,7 +10,7 @@
 // is the only thing that can turn one of those into a PASS — which requires an
 // actual Tier 2 artifact. There is no code path from a Tier 1 run to a Tier 2
 // PASS, which is the whole point of the two tiers being written down.
-import { cellId } from './qa-matrix.mjs';
+import { cellId, isDrivable } from './qa-matrix.mjs';
 
 /** @typedef {import('./qa-matrix.mjs').Cell} Cell */
 /** @typedef {import('./qa-checks.mjs').Check} Check */
@@ -133,6 +133,30 @@ export function tier2Rows(spec) {
 				flow: screen.flow,
 				message: 'Tier 2 did not run — no macOS simulator artifact for this version.',
 			});
+	return out;
+}
+
+/**
+ * One SKIPPED row per screen Tier 1 cannot reach, so the report states what was
+ * not measured instead of omitting the screen entirely. SKIPPED, never PASS:
+ * a screen nobody captured has proven nothing.
+ * @type {(spec: any) => Check[]}
+ */
+export function undrivableRows(spec) {
+	/** @type {Check[]} */
+	const out = [];
+	for (const screen of spec?.screens ?? []) {
+		if (isDrivable(screen?.route)) continue;
+		out.push({
+			id: `route-${screen.id}`.toLowerCase().replace(/[^a-z0-9-]+/g, '-'),
+			category: 'route',
+			requiresTier: 1,
+			status: 'SKIPPED',
+			screen: screen.id,
+			flow: screen.flow,
+			message: `route ${screen.route} has a dynamic segment — Tier 1 has no id to drive it with`,
+		});
+	}
 	return out;
 }
 

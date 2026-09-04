@@ -15,7 +15,7 @@ import { assertArtifact } from '../lib/schemas.mjs';
 import { cellId, cellUrl, planMatrix, textScale } from '../lib/qa-matrix.mjs';
 import { probe } from '../lib/qa-probe.mjs';
 import { checkObservation } from '../lib/qa-checks.mjs';
-import { buildReport, checkDarkMode, checkRegression, checkStates, mergeTier2, tier2Rows } from '../lib/qa-run.mjs';
+import { buildReport, checkDarkMode, checkRegression, checkStates, mergeTier2, tier2Rows, undrivableRows } from '../lib/qa-run.mjs';
 import { resolveSubcommand, strOf } from '../lib/util.mjs';
 
 /** @typedef {import('../config.mjs').Config} Config */
@@ -160,6 +160,7 @@ async function runQa({ flags, capture = captureCells }) {
 		...checkDarkMode(caps),
 		...checkRegression(caps, /** @type {any} */ (baseline)),
 		...tier2Rows(spec),
+		...undrivableRows(spec),
 	];
 	const tier2 = strOf(flags.tier2) ? await readJSONStrict(String(flags.tier2)) : null;
 	const merged = tier2 ? mergeTier2(checks, tier2) : checks;

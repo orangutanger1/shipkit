@@ -91,6 +91,7 @@
 							"dynamic-type",
 							"dark-mode",
 							"regression",
+							"route",
 							"motion",
 							"native",
 							"accessibility"

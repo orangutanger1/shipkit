@@ -3,7 +3,7 @@
 // "empty" state that renders the populated screen — and proves the gate bites.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { cellId, cellUrl, planMatrix, textScale, TYPE_STEPS } from '../src/lib/qa-matrix.mjs';
+import { cellId, cellUrl, isDrivable, planMatrix, textScale, TYPE_STEPS } from '../src/lib/qa-matrix.mjs';
 import { probe } from '../src/lib/qa-probe.mjs';
 import {
 	CONTRAST_BODY,
@@ -27,6 +27,7 @@ import {
 	mergeTier2,
 	summarize,
 	tier2Rows,
+	undrivableRows,
 } from '../src/lib/qa-run.mjs';
 import { checkArtifact } from '../src/lib/schemas.mjs';
 
@@ -75,6 +76,22 @@ test('the matrix varies appearance over the default state and states over one ap
 test('an empty spec plans no captures rather than throwing', () => {
 	assert.deepEqual(planMatrix(null), []);
 	assert.deepEqual(planMatrix({ screens: [] }, {}), []);
+});
+
+test('a dynamic segment is not drivable — there is no id to drive it with', () => {
+	assert.equal(isDrivable('/paywall'), true);
+	assert.equal(isDrivable('/'), true);
+	assert.equal(isDrivable('/item/[id]'), false);
+	assert.equal(isDrivable('/blog/[...slug]'), false);
+});
+
+test('planMatrix builds no cell for an undrivable screen', () => {
+	const spec = { screens: [
+		{ id: 'home', route: '/', flow: 'home', states: ['default'] },
+		{ id: 'item', route: '/item/[id]', flow: 'detail', states: ['default'] },
+	] };
+	const cells = planMatrix(spec, { themes: ['light'] });
+	assert.deepEqual([...new Set(cells.map((c) => c.screen))], ['home']);
 });
 
 // ── probe ───────────────────────────────────────────────────────────────────
@@ -342,6 +359,18 @@ test('only a real Tier 2 artifact can turn a Tier 2 row green', () => {
 	const forged = mergeTier2(rows, { checks: [{ id: 'native-paywall', requiresTier: 1, status: 'PASS' }] });
 	assert.equal(forged.find((r) => r.category === 'native').status, 'SKIPPED', 'a Tier 1 row may not answer a Tier 2 question');
 	assert.deepEqual(mergeTier2(rows, null).map((r) => r.status), rows.map((r) => r.status));
+});
+
+test('an undrivable screen is SKIPPED with the reason, never FAIL', () => {
+	const spec = { screens: [
+		{ id: 'home', route: '/', flow: 'home' },
+		{ id: 'item', route: '/item/[id]', flow: 'detail' },
+	] };
+	const rows = undrivableRows(spec);
+	assert.equal(rows.length, 1);
+	assert.equal(rows[0].status, 'SKIPPED');
+	assert.equal(rows[0].screen, 'item');
+	assert.match(rows[0].message, /dynamic segment/);
 });
 
 test('the report counts every status and satisfies the schema', async () => {

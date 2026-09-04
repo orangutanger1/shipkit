@@ -60,6 +60,17 @@ export function cellUrl(base, cell) {
 }
 
 /**
+ * Whether Tier 1 can drive this route. A dynamic segment needs an id the spec
+ * does not carry, so the capture would 404 and every rule on that screen would
+ * fail for a tooling reason rather than a quality one. A future `qaParams`
+ * field on the screen supplying a fixture id is the escape hatch.
+ * @type {(route: string) => boolean}
+ */
+export function isDrivable(route) {
+	return !String(route ?? '').includes('[');
+}
+
+/**
  * Screens × conditions, without the combinatorial explosion.
  *
  * The full cross product of screens, states, themes, locales and type steps is
@@ -77,6 +88,7 @@ export function planMatrix(spec, { themes = ['light'], locales = ['en-US'], dyna
 	const [theme0] = themes;
 	const [locale0] = locales;
 	for (const screen of spec?.screens ?? []) {
+		if (!isDrivable(screen?.route)) continue;
 		const at = { screen: screen?.id, route: screen?.route, flow: screen?.flow };
 		for (const theme of themes)
 			for (const locale of locales)
