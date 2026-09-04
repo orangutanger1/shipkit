@@ -223,12 +223,14 @@ export async function withPayload(name, body, fn) {
 }
 
 /**
+ * Every Apple Ads mutation is a payload file — the CLI takes no inline body —
+ * so this always has one to pass.
  * @param {string[]} args
- * @param {{file?: string}} [opts]
+ * @param {{file: string}} opts
  * @returns {Promise<AscPayload|null>}
  */
-async function ascMutate(args, { file } = {}) {
-	const full = file ? [...args, '--file', file, '--output', 'json'] : [...args, '--output', 'json'];
+async function ascMutate(args, { file }) {
+	const full = [...args, '--file', file, '--output', 'json'];
 	const res = await exec(ASC, full, { mutating: true, allowFail: true });
 	if (res.skipped) return null;
 	if (res.code !== 0)

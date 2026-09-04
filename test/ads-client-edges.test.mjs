@@ -229,3 +229,89 @@ test('readAccount attaches performance to the objects it can match', async () =>
 	assert.ok(account.campaigns[0].adGroups[0].performance);
 	assert.ok(account.campaigns[0].adGroups[0].keywords[0].performance);
 });
+
+test('an ad group and a search term both fall back to (unnamed)', async () => {
+	answers([['campaigns list', { out: { data: [{ id: 1 }] } }], ['reports preset', { out: report([{ metadata: { name: 'From name' }, total: {} }]) }]]);
+	assert.equal((await client.pullReport(ORG, 'ad-group', { campaign: 1 }))[0].name, 'From name');
+
+	answers([['campaigns list', { out: { data: [{ id: 1 }] } }], ['reports preset', { out: report([{ metadata: {}, total: {} }]) }]]);
+	assert.equal((await client.pullReport(ORG, 'ad-group', { campaign: 1 }))[0].name, '(unnamed)');
+	assert.equal((await client.pullReport(ORG, 'search-term', { campaign: 1 }))[0].name, '(unnamed)');
+});
+
+test('a row with nothing in it at all still flattens', async () => {
+	answers([['reports preset', { out: report([{}]) }]]);
+	const [row] = await client.pullReport(ORG, 'campaign', {});
+	assert.deepEqual({ spend: row.spend, taps: row.taps, installs: row.installs }, { spend: 0, taps: 0, installs: 0 });
+});
+
+test('a granularity bucket with no spend contributes only its counts', async () => {
+	answers([['reports preset', { out: report([{ metadata: {}, granularity: [{ taps: 5 }] }]) }]]);
+	const [row] = await client.pullReport(ORG, 'campaign', {});
+	assert.equal(row.spend, 0);
+	assert.equal(row.taps, 5);
+});
+
+test('a mutation is skipped under --dry-run, and a quiet success answers null', async () => {
+	const { setDryRun } = await import('../src/exec.mjs');
+	answers([['campaigns create', { out: '' }]]);
+	assert.deepEqual(await client.createCampaign(ORG, { name: 'C', countriesOrRegions: [], dailyBudget: 1 }, '111', 'USD'), {});
+
+	setDryRun(true);
+	try {
+		// A skipped mutation answers with no id, which is what every caller checks.
+		assert.deepEqual(await client.createCampaign(ORG, { name: 'C', countriesOrRegions: [], dailyBudget: 1 }, '111', 'USD'), {});
+	} finally {
+		setDryRun(false);
+	}
+});
+
+test('a refusal with nothing on stderr falls back to what it printed', async () => {
+	answers([['campaigns create', { out: 'the reason', code: 1 }]]);
+	await assert.rejects(
+		() => client.createCampaign(ORG, { name: 'C', countriesOrRegions: [], dailyBudget: 1 }, '111', 'USD'),
+		(err) => /the reason/.test(err.hint),
+	);
+});
+
+test('an end time rides along on a campaign and on an ad group when the plan sets one', async () => {
+	answers([['campaigns create', { out: { data: { id: 1 } } }], ['ad-groups create', { out: { data: { id: 10 } } }]]);
+	await client.createCampaign(ORG, { name: 'C', countriesOrRegions: [], dailyBudget: 1, startTime: '2026-01-01', endTime: '2026-02-01' }, '111', 'USD');
+	await client.createAdGroup(ORG, '1', { name: 'AG', defaultBidAmount: 1, endTime: '2026-02-01', status: 'PAUSED' }, 'USD');
+});
+
+test('a keyword priced with bidAmount rather than bid is still priced', async () => {
+	answers([['targeting-keywords create-bulk', { out: { data: [] } }], ['targeting-keywords update-bulk', { out: { data: [] } }]]);
+	await client.createKeywords(ORG, '1', '10', [{ text: 'k', matchType: 'EXACT', bidAmount: 1.5 }], 'USD');
+	await client.updateKeywords(ORG, '1', '10', [{ id: 1, bidAmount: 2 }], 'USD');
+	await client.updateKeywords(ORG, '1', '10', [{ id: 1 }], 'USD');
+});
+
+test('a product page identified only by id is bound by it', async () => {
+	answers([
+		['product-pages list', { out: { data: [{ id: 5, name: 'Runners' }] } }],
+		['ads ads list', { out: { data: [] } }],
+		['ads ads create', { out: { data: { id: 9 } } }],
+	]);
+	assert.equal(await client.bindProductPage(ORG, '111', '1', '10', { name: 'Runners', slug: 'runners' }, {}), true);
+});
+
+test('readAccount asks for performance over an open window when none is given', async () => {
+	answers([
+		['campaigns list', { out: { data: [{ id: 1, name: 'C' }] } }],
+		['ad-groups list', { out: { data: [] } }],
+		['campaign-negative-keywords list', { out: { data: [] } }],
+		['reports preset', { out: report([{ metadata: { campaignName: 'C' }, total: {} }]) }],
+	]);
+	const account = await client.readAccount(ORG);
+	assert.equal(account.campaigns.length, 1);
+	assert.equal(account.campaigns[0].performance, undefined, 'a row with no campaign id matches nothing');
+});
+
+test('a product page with no identifier at all still binds an ad, against nothing', async () => {
+	answers([
+		['product-pages list', { out: { data: [{ name: 'Runners' }] } }],
+		['ads ads list', { out: { data: [{ id: 9, name: 'Runners · CPP' }] } }],
+	]);
+	assert.equal(await client.bindProductPage(ORG, '111', '1', '10', { name: 'Runners', slug: 'runners' }, {}), true);
+});
