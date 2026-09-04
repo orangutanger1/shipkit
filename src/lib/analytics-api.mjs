@@ -269,7 +269,8 @@ export async function collectSegments(appId, { from, to }, say) {
 	const usable = requests.filter((r) => !r.stoppedDueToInactivity);
 	if (!usable.length) return { requestId: null, segments: [] };
 
-	const requestId = String((usable.find((r) => r.accessType === 'ONGOING') ?? usable[0]).id ?? '');
+	// nodesOf only emits rows with an id, so the pick always has one.
+	const requestId = String((usable.find((r) => r.accessType === 'ONGOING') ?? usable[0]).id);
 	const days = daysBetween(from, to);
 	/** @type {SegmentRow[]} */
 	const segments = [];
