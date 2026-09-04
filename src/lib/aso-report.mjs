@@ -220,7 +220,7 @@ export function normaliseVolume(raw, locale) {
  * The shared suggest/apply computation, given the staged listing's data: pack
  * the best terms into the 100-char field and diff against what is authored now.
  * @param {ScoredTerm[]} scored
- * @param {ListingData} data
+ * @param {Partial<ListingData>} data
  * @param {string} locale
  * @param {number} minVolume
  */
@@ -233,6 +233,7 @@ export function packedProposal(scored, data, locale, minVolume) {
 	const nextLower = new Set(next.map((k) => k.toLocaleLowerCase()));
 
 	return {
+		locale,
 		name: data.name ?? '',
 		subtitle: data.subtitle ?? '',
 		current: data.keywords ?? '',
@@ -310,7 +311,7 @@ const LEVELS = { error: 'fail', fail: 'fail', failed: 'fail', critical: 'fail', 
 export const tagNames = (rows) => rows.map((t) => t.name ?? t.displayName ?? t.attributes?.name ?? t.id).filter(Boolean);
 
 /** One report entry per keyword-audit row, with level/name/detail already resolved. */
-/** @param {any[]} rows @returns {{level: string, name: string, detail: string}[]} */
+/** @param {any[]} rows @returns {{level: 'ok'|'warn'|'fail', name: string, detail: string}[]} */
 export function auditFindings(rows) {
 	return rows.map((/** @type {any} */ row) => ({
 		level: LEVELS[String(row.level ?? row.severity ?? row.status ?? '').toLocaleLowerCase()] ?? 'warn',
@@ -320,9 +321,9 @@ export function auditFindings(rows) {
 }
 
 /** The offline keywords lint as report entries: an ok per clean listing, one per problem. */
-/** @param {StagedListing[]} staged @returns {{level: string, name: string, detail: string}[]} */
+/** @param {StagedListing[]} staged @returns {{level: 'ok'|'warn'|'fail', name: string, detail: string}[]} */
 export function keywordLintFindings(staged) {
-	/** @type {{level: string, name: string, detail: string}[]} */
+	/** @type {{level: 'ok'|'warn'|'fail', name: string, detail: string}[]} */
 	const findings = [];
 	for (const listing of staged) {
 		const problems = lintListing(listing).filter((p) => p.field === 'keywords');
@@ -377,8 +378,9 @@ export function printHarvest(out) {
 /**
  * @typedef {{popularity?: number, difficulty?: number}} VolumeTerm
  * @typedef {{
- *   locale: string, file: string, artifact: {terms?: Record<string, VolumeTerm>},
- *   template?: boolean, source?: string, imported?: number,
+ *   locale: string, file: string,
+ *   artifact: {locale?: string, generatedAt?: string, source?: string, terms?: Record<string, VolumeTerm>},
+ *   template?: boolean, source?: string|null, imported?: number,
  *   floor?: string[], unanswered?: string[], overBudget?: string[], wanted?: number,
  * }} VolumeReport
  */
@@ -445,7 +447,7 @@ export function printProposal(p) {
 
 /**
  * @param {{locale: string, market: Market, ids: (string|number)[], apps: {name?: string, seller?: string, ratings: number, price?: number, genre?: string}[], vocabulary: {apps: number, word: string}[], file: string}} ctx
- * @returns {number|undefined}
+ * @returns {number} 1 when the lookup came back empty, so the command exits non-zero
  */
 export function printCompetitors({ locale, market, ids, apps, vocabulary, file }) {
 	heading(`Competitors ${locale} ${c.dim(`(${market.country})`)}`);

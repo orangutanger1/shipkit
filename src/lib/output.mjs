@@ -5,7 +5,11 @@ import { table } from '../log.mjs';
 
 /**
  * `--json` output: the payload and nothing else. Returns 0 for `return emit(…)`.
- * @param {Json} data
+ *
+ * Takes `object` as well as `Json` because a command's artifact is a declared
+ * shape with optional fields, and an optional field is `T|undefined`, which
+ * `Json` cannot hold — `JSON.stringify` drops those keys anyway.
+ * @param {Json|object} data
  * @returns {number}
  */
 export function emit(data) {

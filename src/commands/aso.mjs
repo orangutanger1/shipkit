@@ -34,7 +34,7 @@ import { v1Suggestions } from '../lib/ads-http.mjs';
 import { collectPopularity, volumeTerms } from '../lib/aso-volume.mjs';
 import { readJSONIfExists, writeJSON } from '../lib/jsonio.mjs';
 import { emit } from '../lib/output.mjs';
-import { resolveSubcommand } from '../lib/util.mjs';
+import { resolveSubcommand, strOf } from '../lib/util.mjs';
 import { charCount } from '../lib/text.mjs';
 import { readStaged } from '../lib/locales.mjs';
 import {
@@ -68,6 +68,7 @@ export { normaliseVolume } from '../lib/aso-report.mjs';
 /** @typedef {import('../lib/util.mjs').Flags} Flags */
 /** @typedef {import('../lib/util.mjs').SubCtx} SubCtx */
 /** @typedef {import('../lib/locales.mjs').StagedListing} StagedListing */
+/** @typedef {import('../lib/aso-report.mjs').VolumeReport} VolumeReport */
 /** @typedef {{country: string, lang: string}} Market */
 /**
  * One pipeline stage, run once or swept over every locale.
@@ -218,7 +219,7 @@ async function harvestOne(cfg, locale, market, flags) {
 			hint: `pass --seeds "car maintenance,service log", or set aso.seedsByLocale.${locale} in ${cfg.file}`,
 		});
 
-	announceSeeds(cfg, { locale, market, seeds, origin, mismatch, json: flags.json });
+	announceSeeds(cfg, { locale, market, seeds, origin, mismatch, json: !!flags.json });
 
 	/** @param {Record<string, any>} terms */
 	const save = async (terms) => {
@@ -245,6 +246,7 @@ const HARVEST = {
 	summary: (out) => ({ candidates: out.count, seeds: out.seeds.length, file: out.file }),
 };
 
+/** @param {SubCtx} ctx @returns {Promise<number>} */
 async function harvest({ flags }) {
 	if (flags['all-locales']) return sweep(flags, HARVEST);
 	const { cfg, locale, market } = await context(flags);
@@ -260,6 +262,7 @@ async function harvest({ flags }) {
  * @param {Market} market
  * @param {Flags} flags
  * @param {typeof v1Suggestions} [ask]
+ * @returns {Promise<VolumeReport>}
  */
 async function volumeOne(cfg, locale, market, flags, ask = v1Suggestions) {
 	const file = artifactPath(cfg, locale, 'volume');
@@ -304,6 +307,7 @@ async function volumeOne(cfg, locale, market, flags, ask = v1Suggestions) {
  * @param {Flags} flags
  * @param {any} existing
  * @param {typeof v1Suggestions} ask
+ * @returns {Promise<VolumeReport>}
  */
 async function fetchVolume(cfg, locale, market, flags, existing, ask) {
 	const adamId = requireAppId(cfg);
@@ -339,6 +343,7 @@ const VOLUME = {
 	summary: (out) => ({ terms: Object.keys(out.artifact.terms ?? {}).length, file: out.file, imported: out.imported }),
 };
 
+/** @param {SubCtx} ctx @returns {Promise<number>} */
 async function volume({ flags }) {
 	if (flags['all-locales']) return sweep(flags, VOLUME);
 	const { cfg, locale, market } = await context(flags);
@@ -414,6 +419,7 @@ const SCORE = {
 	summary: (out) => ({ scored: out.count, top: out.scored[0]?.keyword ?? null, file: out.file }),
 };
 
+/** @param {SubCtx} ctx @returns {Promise<number>} */
 async function score({ flags }) {
 	if (flags['all-locales']) return sweep(flags, SCORE);
 	const { cfg, locale, market } = await context(flags);
@@ -424,24 +430,19 @@ async function score({ flags }) {
 }
 
 /**
- * The shared suggest/apply computation.
- * `strict` is for apply: suggesting against a missing listing is still useful
- * research, but writing one requires a file to write into.
+ * The shared suggest/apply computation. Suggesting against a missing listing is
+ * still useful research; `apply` is the caller that needs a file to write into,
+ * and it says so itself.
  * @param {Config} cfg
  * @param {string} locale
- * @param {{strict?: boolean}} [opts]
  */
-async function proposal(cfg, locale, { strict = false } = {}) {
+async function proposal(cfg, locale) {
 	const artifact = await readArtifact(cfg, locale, 'scored');
 	const minVolume = Number(cfg.aso.minVolume ?? 0);
 	// Packing is the last place demand can still be ignored, and the slots are
 	// only 100 characters: a term under minVolume never earns one.
 	const scored = scoredTerms(artifact).filter((e) => (e.demand ?? 100) >= minVolume);
 	const listing = await listingFor(cfg, locale);
-	if (!listing && strict)
-		throw new ShipError(`no staged listing for ${locale}`, {
-			hint: `create ${join(cfg.paths.staged, `${locale}.json`)} — \`ship meta\` scaffolds it`,
-		});
 	return { listing, ...packedProposal(scored, listing?.data ?? {}, locale, minVolume) };
 }
 
@@ -453,6 +454,7 @@ const SUGGEST = {
 	summary: (p) => ({ keywords: p.keywords, used: p.used, limit: p.limit }),
 };
 
+/** @param {SubCtx} ctx @returns {Promise<number>} */
 async function suggest({ flags }) {
 	if (flags['all-locales']) return sweep(flags, SUGGEST);
 	const { cfg, locale } = await context(flags);
@@ -510,9 +512,15 @@ async function sweep(flags, stage) {
 	return failed && failed === results.length ? 1 : 0;
 }
 
+/** @param {SubCtx} ctx @returns {Promise<number>} */
 async function apply({ flags }) {
 	const { cfg, locale } = await context(flags);
-	const p = await proposal(cfg, locale, { strict: true });
+	const p = await proposal(cfg, locale);
+	const listing = p.listing;
+	if (!listing)
+		throw new ShipError(`no staged listing for ${locale}`, {
+			hint: `create ${join(cfg.paths.staged, `${locale}.json`)} — \`ship meta\` scaffolds it`,
+		});
 
 	const length = charCount(p.keywords);
 	if (length > LIMITS.keywords)
@@ -520,14 +528,14 @@ async function apply({ flags }) {
 			hint: 'refusing to write a field App Store Connect will reject',
 		});
 
-	if (flags.json) return emit({ ...p, listing: p.listing.file, written: !isDryRun() });
+	if (flags.json) return emit({ ...p, listing: listing.file, written: !isDryRun() });
 	printProposal(p);
 
 	if (p.current === p.keywords) {
-		good(`${p.listing.file} already has this field`);
+		good(`${listing.file} already has this field`);
 		return 0;
 	}
-	step(`${p.listing.file}`);
+	step(`${listing.file}`);
 	note(`${c.red('before')} ${p.current || c.dim('(empty)')}`);
 	note(`${c.green('after ')} ${p.keywords}`);
 	if (isDryRun()) {
@@ -536,13 +544,14 @@ async function apply({ flags }) {
 	}
 	// Re-read and mutate the raw object: the file carries authored keys
 	// (notes, per-locale URL overrides) that no model of ours round-trips.
-	const raw = JSON.parse(await readFile(p.listing.file, 'utf8'));
+	const raw = JSON.parse(await readFile(listing.file, 'utf8'));
 	raw.keywords = p.keywords;
-	await writeFile(p.listing.file, `${JSON.stringify(raw, null, '\t')}\n`);
+	await writeFile(listing.file, `${JSON.stringify(raw, null, '\t')}\n`);
 	good(`wrote keywords for ${locale}`);
 	return 0;
 }
 
+/** @param {SubCtx} ctx @returns {Promise<number>} */
 async function competitors({ flags }) {
 	const { cfg, locale, market } = await context(flags);
 
@@ -570,10 +579,11 @@ async function competitors({ flags }) {
 	return printCompetitors({ locale, market, ids, apps: artifact.apps, vocabulary, file });
 }
 
+/** @param {SubCtx} ctx @returns {Promise<number>} */
 async function audit({ flags }) {
 	const { cfg, locale } = await context(flags);
 	const appId = requireAppId(cfg);
-	const version = await resolveVersion(cfg, flags.version);
+	const version = await resolveVersion(cfg, strOf(flags.version));
 	const report = new Report(`ASO audit — ${cfg.name} ${version}`);
 
 	// Apple derives discoverability tags from the binary and the listing; they
@@ -598,14 +608,16 @@ async function audit({ flags }) {
 	if (!staged.length) report.warn('staged listings', `none under ${cfg.paths.staged}`);
 	for (const f of keywordLintFindings(staged)) report[f.level](f.name, f.detail);
 
-	report.print({ json: flags.json });
+	report.print({ json: !!flags.json });
 	if (!flags.json && !existsSync(artifactPath(cfg, locale, 'scored')))
 		note(c.dim(`no research yet: ship aso harvest --locale ${locale}`));
 	return report.code;
 }
 
+/** @type {Record<string, (ctx: SubCtx) => Promise<number>>} */
 const SUB = { harvest, volume, score, suggest, apply, competitors, audit };
 
+/** @param {SubCtx} ctx @returns {Promise<number>} */
 export async function run({ args, flags }) {
 	const { fn, args: rest } = resolveSubcommand({ command: 'aso', args, subs: SUB, fallback: 'harvest' });
 	return fn({ args: rest, flags });
