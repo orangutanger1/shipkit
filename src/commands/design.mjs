@@ -176,9 +176,9 @@ async function review({ flags }) {
 	refuseDraft('review', 'system.json', doc);
 	await assertArtifact('design-system', doc, 'system.json');
 	const files = await sourcesUnder(cfg.paths.app);
-	// The theme module is where the tokens legitimately become literals, so it
-	// is the one file allowed to contain them.
-	const tokens = new Set(files.map((f) => f.path).filter((p) => /(^|\/)(theme|tokens)\.(ts|tsx|js|jsx)$/.test(p)));
+	// src/theme is where the tokens legitimately become literals, so the whole
+	// directory is exempt — this must agree with `EXCEPTIONS.dirs` in design-review.
+	const tokens = new Set(files.map((f) => f.path).filter((p) => p.startsWith('src/theme/')));
 	const violations = reviewSources(files, doc, { tokens });
 
 	heading('design review');
