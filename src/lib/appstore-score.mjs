@@ -8,9 +8,14 @@ import { charCount, indexedWords, isNoSpaceLang, stopwordsFor, words } from './t
 import { topResults } from './appstore-client.mjs';
 
 /** A live storefront search/lookup result, viewed loosely — the fields this module reads. */
-/** @typedef {{trackName?: string, sellerName?: string, userRatingCount?: number, releaseDate?: string, trackId?: number, averageUserRating?: number, trackViewUrl?: string, price?: number}} AppRow */
+/**
+ * The same storefront row `scout-scoring.mjs` calls a ScoutApp: iTunes omits
+ * fields it has no value for and sends null for others, so every field here is
+ * both optional and nullable.
+ * @typedef {{trackName?: string|null, sellerName?: string|null, userRatingCount?: number|null, releaseDate?: string|null, currentVersionReleaseDate?: string|null, trackId?: number|null, averageUserRating?: number|null, trackViewUrl?: string|null, price?: number|null, description?: string|null}} AppRow
+ */
 /** One harvested term's artifact entry, or the legacy `string[]` seed-list shape. */
-/** @typedef {{seeds?: string[], rank?: number}} TermEntry */
+/** @typedef {{seeds?: string[], rank?: number|null}} TermEntry */
 /** `.asc/aso/*-volume.json`: hand or MCP-sourced popularity per term. */
 /** @typedef {{terms?: Record<string, number|{popularity?: number, difficulty?: number}>}} VolumeFile */
 /** `.asc/analytics/<locale>-terms.json`: measured impressions per term. */
@@ -422,7 +427,7 @@ export async function scoreAll(terms, market, { onProgress, demands } = {}) {
 	for (const term of terms) {
 		const results = await topResults(term, market);
 		const known = demandOf(term);
-		const s = score(term, results, typeof known === 'number' ? { demand: known } : {});
+		const s = results && score(term, results, typeof known === 'number' ? { demand: known } : {});
 		if (s) out.push(s);
 		onProgress?.(++i, terms.length, term, s?.viability);
 	}

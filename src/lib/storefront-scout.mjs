@@ -42,12 +42,12 @@ import { slugifyAscii } from './scout-scoring.mjs';
 
 /** What a prior `ship scout terms` sweep already knows about one term. */
 /** @typedef {{file: string, seeds: string[], rank: number|null, demand: number|null,
- *             cohort: string[], apps: {name: string|null, seller: string|null}[]}} PriorSweep */
+ *             cohort: string[], apps: {name?: string|null, seller?: string|null}[]}} PriorSweep */
 
 /** Storefront code (`us`, `de`) → the { country, lang } pair search and hints need. */
 /** @type {Map<string, Market>} */
 const MARKETS = new Map();
-for (const m of Object.values(LOCALE_MARKETS)) if (!MARKETS.has(m.country)) MARKETS.set(m.country, m);
+for (const m of Object.values(LOCALE_MARKETS)) if (m && !MARKETS.has(m.country)) MARKETS.set(m.country, m);
 
 /**
  * @param {string|boolean|undefined} code

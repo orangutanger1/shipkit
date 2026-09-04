@@ -86,6 +86,26 @@ export function strOf(...candidates) {
 }
 
 /**
+ * The message of anything thrown. `catch` binds `unknown` because a non-Error
+ * can be thrown, and `String(err)` on one of those is still a better line in a
+ * report than nothing.
+ * @param {unknown} err
+ * @returns {string}
+ */
+export function errMessage(err) {
+	return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * The exit code a thrown ShipError carries; anything else exits 1.
+ * @param {unknown} err
+ * @returns {number}
+ */
+export function errExitCode(err) {
+	return err instanceof ShipError ? err.exitCode : 1;
+}
+
+/**
  * A JSON value narrowed to a string, or `null`. Narrowing rather than casting:
  * an object where a string was promised stays untrusted instead of being told
  * it is one.

@@ -9,7 +9,7 @@
 // CLI load time, and so `ship release --skip-build` never pays to parse EAS code.
 import { loadConfig, resolveVersion } from '../config.mjs';
 import { isDryRun } from '../exec.mjs';
-import { strOf } from '../lib/util.mjs';
+import { errExitCode, errMessage, strOf } from '../lib/util.mjs';
 import { ShipError, c, good, heading, info, note, step, table, warn } from '../log.mjs';
 
 /** @typedef {import('../lib/util.mjs').Flags} Flags */
@@ -48,7 +48,7 @@ async function load(name) {
 		return await import(`./${name}.mjs`);
 	} catch (err) {
 		throw new ShipError(`release: cannot load the ${name} step`, {
-			hint: `${err instanceof Error ? err.message : String(err)} — run \`ship ${name} --help\` to confirm the command exists`,
+			hint: `${errMessage(err)} — run \`ship ${name} --help\` to confirm the command exists`,
 		});
 	}
 }
@@ -126,8 +126,8 @@ export async function run({ args, flags }) {
 			outcome = await invoke(entry.name, entry.calls, flags);
 		} catch (err) {
 			if (!force) throw err;
-			warn(`${entry.name} threw: ${err instanceof Error ? err.message : String(err)}`);
-			outcome = { code: err instanceof ShipError ? err.exitCode : 1, label: entry.name };
+			warn(`${entry.name} threw: ${errMessage(err)}`);
+			outcome = { code: errExitCode(err), label: entry.name };
 		}
 
 		if (outcome.code) {

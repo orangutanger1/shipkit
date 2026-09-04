@@ -11,6 +11,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { warn } from '../log.mjs';
+import { errMessage } from './util.mjs';
 
 const HINTS = 'https://search.itunes.apple.com/WebObjects/MZSearchHints.woa/wa/hints';
 const SEARCH = 'https://itunes.apple.com/search';
@@ -184,7 +185,7 @@ export async function throttledFetch(url, { headers = {}, country = 'US', endpoi
 			if (err instanceof StorefrontWall) throw err;
 			gate.last = Date.now();
 			if (attempt === tries - 1) {
-				warn(`request failed: ${err instanceof Error ? err.message : String(err)}`);
+				warn(`request failed: ${errMessage(err)}`);
 				return null;
 			}
 			await sleep(3000);
@@ -302,9 +303,13 @@ export async function topResults(term, { country = 'US', lang = 'en_us', limit =
 }
 
 /** Look up apps by App Store id — used to mine competitor listings. */
-/** @param {string|string[]} ids @param {{country?: string}} [opts] @returns {Promise<any[]>} */
+/**
+ * @param {string|number|(string|number|null|undefined)[]} ids
+ * @param {{country?: string}} [opts]
+ * @returns {Promise<any[]>}
+ */
 export async function lookup(ids, { country = 'US' } = {}) {
-	const id = [ids].flat().join(',');
+	const id = [ids].flat().filter(Boolean).join(',');
 	const url = `${LOOKUP}?${new URLSearchParams({ id, country, entity: 'software' })}`;
 	const body = await throttledFetch(url, { country, endpoint: 'lookup', term: id });
 	if (!body) return [];

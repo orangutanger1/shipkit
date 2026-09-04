@@ -17,7 +17,7 @@ import { keywordList, lintListing } from './locales.mjs';
 /** @typedef {import('./locales.mjs').ListingData} ListingData */
 /** @typedef {import('./util.mjs').Flags} Flags */
 /** @typedef {import('./appstore-client.mjs').Market} Market */
-/** @typedef {{id?: string|number|null, name?: string}} CompetitorRef */
+/** @typedef {{id?: string|number|null, name?: string|null}} CompetitorRef */
 /** A scored candidate, tolerating the bare-string legacy shape. */
 /** @typedef {{keyword: string, opportunity?: number, demand?: number, demandSource?: string, competition?: number, medianRatings?: number, weakAppsTop10?: number, difficulty?: number, top3?: CompetitorRef[]}} ScoredTerm */
 /** @typedef {{name?: string, trackName?: string, sellerName?: string, userRatingCount?: number, averageUserRating?: number, price?: number, primaryGenreName?: string, subtitle?: string, trackId?: string|number}} StoreApp */

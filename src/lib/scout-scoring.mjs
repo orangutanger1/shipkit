@@ -86,7 +86,7 @@ import { median } from './util.mjs';
  *   opportunity: number, viability: number, saturation: number, clones: number,
  *   medianRatings: number, exactTitleMatches: number, newEntrants: number,
  *   weakAppsTop10: number, paidTop10: number,
- *   top3?: {name: string|null, id: number|null, ratings: number, stars: number|null, seller: string|null}[],
+ *   top3?: {name?: string|null, id?: number|null, ratings: number, stars?: number|null, seller?: string|null}[],
  * }} ScoredTerm
  */
 

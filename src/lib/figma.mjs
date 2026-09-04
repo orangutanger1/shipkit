@@ -35,12 +35,14 @@ export async function figmaToken() {
 
 /** A 429 is not an error here — it is the expected steady state. Flag it. */
 class FigmaQuotaError extends Error {
+	/** @param {string} endpoint */
 	constructor(endpoint) {
 		super(`Figma rate-limited ${endpoint}`);
 		this.quota = true;
 	}
 }
 
+/** @param {string} path @param {string} token @returns {Promise<any>} */
 async function api(path, token) {
 	const res = await fetch(`${API}${path}`, { headers: { 'X-Figma-Token': token } });
 	if (res.status === 429) throw new FigmaQuotaError(path);
@@ -56,6 +58,11 @@ async function api(path, token) {
  * endpoint: drift has to be detectable on a quota-exhausted day, otherwise the
  * committed exports rot silently — the one real weakness of caching them.
  */
+/**
+ * @param {string} fileKey
+ * @param {string} token
+ * @returns {Promise<{version: string, lastModified: string, name: string}>}
+ */
 export async function fileMeta(fileKey, token) {
 	const body = await api(`/files/${fileKey}?depth=1`, token);
 	return { version: body.version, lastModified: body.lastModified, name: body.name };
@@ -64,6 +71,13 @@ export async function fileMeta(fileKey, token) {
 /**
  * Export node images. This is the quota. Callers must be prepared for
  * `FigmaQuotaError` and must have something on disk to fall back to.
+ */
+/**
+ * @param {string} fileKey
+ * @param {string[]} ids
+ * @param {string} token
+ * @param {{format?: string, scale?: number}} [opts]
+ * @returns {Promise<Record<string, string|null>>}
  */
 export async function renderNodes(fileKey, ids, token, { format = 'png', scale = 1 } = {}) {
 	const body = await api(
@@ -75,8 +89,10 @@ export async function renderNodes(fileKey, ids, token, { format = 'png', scale =
 }
 
 /** Download exported URLs into `dir` as `<name>.png`. */
+/** @param {Record<string, string|null>} images @param {string} dir @returns {Promise<string[]>} */
 export async function downloadImages(images, dir) {
 	await mkdir(dir, { recursive: true });
+	/** @type {string[]} */
 	const written = [];
 	for (const [name, url] of Object.entries(images)) {
 		if (!url) {
@@ -99,6 +115,11 @@ export async function downloadImages(images, dir) {
  * Has the design moved since the committed exports were taken?
  * `null` when the spec has never recorded a version — an old spec is not drift,
  * it is an unknown, and reporting it as drift would train operators to ignore it.
+ */
+/**
+ * @param {{source?: {version?: string|number|null}}|null|undefined} spec
+ * @param {{version: string}} meta
+ * @returns {{known: string|number|null, live: string, drifted: boolean|null}}
  */
 export function driftOf(spec, meta) {
 	const known = spec?.source?.version ?? null;
