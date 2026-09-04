@@ -116,6 +116,20 @@ export async function withFetch(handler, fn) {
 export const json = (body, status = 200) =>
 	new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
+/**
+ * Put the stand-in native modules (sharp, fontkit, puppeteer) where shipkit
+ * looks for them: the app repo's own node_modules. appDep resolves from there
+ * first, which is the whole reason the render pipeline can be tested at all.
+ * @param {string} dir the app repo
+ * @param {string[]} [names]
+ * @returns {Promise<void>}
+ */
+export async function linkNativeDeps(dir, names = ['sharp', 'fontkit', 'puppeteer']) {
+	const from = new URL('./native/', import.meta.url).pathname;
+	await mkdir(join(dir, 'node_modules'), { recursive: true });
+	for (const name of names) await symlink(join(from, name), join(dir, 'node_modules', name)).catch(() => {});
+}
+
 /** Point homedir() at a temp dir, so a test never reads the real ~. @returns {Promise<string>} */
 export async function fakeHome() {
 	const dir = await mkdtemp(join(tmpdir(), 'ship-home-'));
