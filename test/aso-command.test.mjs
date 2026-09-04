@@ -11,6 +11,9 @@ import { STOREFRONT } from './fixtures/storefront.mjs';
 
 await fakeHome();
 await fakeBins(['asc']);
+// The 403 wall is worth driving; its real 20s backoff is not. Set before the
+// client is imported, which is where the constant is read.
+process.env.SHIP_STOREFRONT_BACKOFF_MS = '5';
 
 const { run } = await import('../src/commands/aso.mjs');
 const { setDryRun } = await import('../src/exec.mjs');
@@ -270,4 +273,246 @@ test('audit reports what the asc keyword audit found, and a clean field as clean
 	assert.match(out, /keyword repeated in the name/);
 	assert.match(out, /Apple has generated none yet/);
 	assert.match(out, /keywords en-US/);
+});
+
+// ── the sweep, stage by stage ───────────────────────────────────────────────
+//
+// Every stage carries its own `run`, `ok` and `summary` for --all-locales, and
+// only harvest's were ever driven. These run the other three over two locales,
+// which is the shape that matters: the second locale's row has to be produced
+// from the first locale's artifacts, not from a global.
+
+const TWO = { store: { locales: ['en-US', 'de-DE'] } };
+const CANDIDATES = (locale) => ({ locale, terms: { 'period tracker calendar': { rank: 1 }, 'cycle log tracker': { rank: 2 } } });
+const SCORED = (locale) => ({
+	locale,
+	terms: [
+		{ keyword: 'period tracker calendar', demand: 50, opportunity: 40, competition: 10 },
+		{ keyword: 'cycle log tracker', demand: 40, opportunity: 30, competition: 10 },
+	],
+});
+
+test('volume --all-locales reports the term count it wrote for each locale', async () => {
+	const dir = await asoRepo({ 'aso/en-US/candidates.json': CANDIDATES('en-US'), 'aso/de-DE/candidates.json': CANDIDATES('de-DE') }, TWO);
+	const { code, out } = await aso(['volume'], { dir, flags: { 'all-locales': true, json: true } });
+	assert.equal(code, 0);
+	const rows = JSON.parse(out).locales;
+	assert.deepEqual(rows.map((r) => [r.locale, r.ok]), [['en-US', true], ['de-DE', true]]);
+	assert.ok(rows.every((r) => r.terms === 2 && r.file.endsWith('volume.json')));
+});
+
+test('score --all-locales scores each locale, and names the top term it found', async () => {
+	const dir = await asoRepo({ 'aso/en-US/candidates.json': CANDIDATES('en-US'), 'aso/de-DE/candidates.json': CANDIDATES('de-DE') }, TWO);
+	const { code, out } = await aso(['score'], { dir, flags: { 'all-locales': true, json: true } });
+	assert.equal(code, 0);
+	const rows = JSON.parse(out).locales;
+	assert.ok(rows.every((r) => r.ok && r.scored > 0 && typeof r.top === 'string'));
+	assert.ok((await readJson(dir, 'aso/de-DE/scored.json')).terms.length, 'the second locale really ran');
+});
+
+test('suggest --all-locales packs a field per locale, within the limit', async () => {
+	const dir = await asoRepo({ 'aso/en-US/scored.json': SCORED('en-US'), 'aso/de-DE/scored.json': SCORED('de-DE') }, TWO);
+	const { code, out } = await aso(['suggest'], { dir, flags: { 'all-locales': true, json: true } });
+	assert.equal(code, 0);
+	for (const row of JSON.parse(out).locales) {
+		assert.ok(row.ok && row.keywords.length);
+		assert.ok(row.used <= row.limit);
+	}
+});
+
+test('a sweep prints each stage table, and the hint of the locale that failed', async () => {
+	// de-DE has nothing to score, which is a ShipError with a hint — the sweep
+	// keeps the locale that worked and passes the hint through for the one that
+	// did not, rather than dying on the first.
+	const dir = await asoRepo({ 'aso/en-US/candidates.json': CANDIDATES('en-US') }, TWO);
+	const { code, out } = await aso(['score'], { dir, flags: { 'all-locales': true } });
+	assert.equal(code, 0, 'one locale is enough for the sweep to have done its job');
+	assert.match(out, /Score en-US/, 'the stage prints its own table as it goes');
+	assert.match(out, /de-DE: .* — keeping the last score/);
+	assert.match(out, /ship aso harvest --locale de-DE/, 'the failure carries its hint');
+	assert.match(out, /1\/2 locales/);
+});
+
+test('a harvest walled halfway keeps what it already paid for', async () => {
+	const dir = await asoRepo();
+	let seen = 0;
+	// The storefront answers the first stem and then walls, which is what a 403
+	// mid-sweep looks like: the candidates from before the wall are written, and
+	// the operator is told where they went.
+	const wall = async (url) => {
+		if (!String(url).includes('MZSearchHints')) return json({ results: APPS });
+		if (seen++ === 0) return new Response(hintsBody(SUGGESTIONS));
+		return new Response('nope', { status: 403 });
+	};
+	// The wall propagates, so the run is caught here to read what it printed on
+	// the way out.
+	const { out } = await capture(() => inDir(dir, () => withFetch(wall, () => run({ args: ['harvest'], flags: { seeds: 'period tracker' } }).catch((err) => err))));
+	assert.match(out, /kept \d+ candidates harvested before the wall/);
+	const kept = await readJson(dir, 'aso/en-US/candidates.json');
+	assert.ok(Object.keys(kept.terms).length, 'the partial harvest is on disk, not lost with the error');
+});
+
+// ── the branches around the edges of each stage ─────────────────────────────
+
+test('a corrupt volume.json is ignored with a warning, not fatal to the score', async () => {
+	const dir = await asoRepo({ 'aso/en-US/candidates.json': CANDIDATES('en-US'), 'aso/en-US/volume.json': '{ this is not json' });
+	const { code, out } = await aso(['score'], { dir });
+	assert.equal(code, 0);
+	assert.match(out, /ignoring .*volume\.json/);
+});
+
+test('--no-cache and --refresh both reach the storefront, and say so', async () => {
+	for (const flag of ['no-cache', 'refresh']) {
+		const dir = await asoRepo();
+		const { code } = await aso(['harvest'], { dir, flags: { [flag]: true, seeds: 'period tracker' } });
+		assert.equal(code, 0, `--${flag}`);
+	}
+});
+
+test('a harvest that finds nothing exits non-zero rather than writing an empty artifact', async () => {
+	const dir = await asoRepo();
+	const { code } = await aso(['harvest'], { dir, flags: { seeds: 'period tracker' }, fetch: storefront({ suggestions: [] }) });
+	assert.equal(code, 1);
+	// The same emptiness inside a sweep is a locale that did not work, not a crash.
+	const swept = await asoRepo();
+	const { code: sweepCode, out } = await aso(['harvest'], { dir: swept, flags: { 'all-locales': true, seeds: 'period tracker' }, fetch: storefront({ suggestions: [] }) });
+	assert.equal(sweepCode, 1);
+	assert.match(out, /0\/1 locales/);
+	assert.match(out, /no result/, 'a locale that failed without an error still gets a reason');
+});
+
+test('an imported volume dump merges into the terms already measured', async () => {
+	const dir = await asoRepo({ 'aso/en-US/volume.json': { locale: 'en-US', terms: { 'already here': { popularity: 10 } } } });
+	await writeFiles(dir, { 'dump.json': { 'period tracker calendar': 62 } });
+	const { code } = await aso(['volume'], { dir, flags: { file: join(dir, 'dump.json') } });
+	assert.equal(code, 0);
+	const doc = await readJson(dir, 'aso/en-US/volume.json');
+	assert.deepEqual(Object.keys(doc.terms).sort(), ['already here', 'period tracker calendar']);
+});
+
+test('volume with a measured file already on disk reports it rather than the template', async () => {
+	const dir = await asoRepo({ 'aso/en-US/volume.json': { locale: 'en-US', terms: { 'period tracker': { popularity: 40 } } } });
+	const { code, out } = await aso(['volume'], { dir });
+	assert.equal(code, 0);
+	assert.doesNotMatch(out, /fill/i, 'the template line is for a locale with nothing measured');
+	const { out: asJson } = await aso(['volume'], { dir, flags: { json: true } });
+	assert.deepEqual(Object.keys(JSON.parse(asJson).terms), ['period tracker']);
+});
+
+test('volume --fetch merges Apple\'s numbers into what was already there', async () => {
+	setBin('asc', [['ads auth token', { out: { access_token: 'tok' } }]]);
+	const dir = await asoRepo({
+		'aso/en-US/candidates.json': CANDIDATES('en-US'),
+		'aso/en-US/volume.json': { locale: 'en-US', terms: { 'hand measured': { popularity: 9 } } },
+	});
+	const { code } = await aso(['volume'], { dir, flags: { fetch: true } });
+	assert.equal(code, 0);
+	assert.ok(Object.keys((await readJson(dir, 'aso/en-US/volume.json')).terms).includes('hand measured'));
+});
+
+test('score --json emits the artifact, and names how many minVolume dropped', async () => {
+	// One candidate Apple measured at 5, which is under the floor; the other has
+	// no measurement and keeps its rank estimate.
+	const files = { 'aso/en-US/candidates.json': CANDIDATES('en-US'), 'aso/en-US/volume.json': { locale: 'en-US', terms: { 'cycle log tracker': { popularity: 5 } } } };
+	const dir = await asoRepo(files, { aso: { minVolume: 20 } });
+	const { code, out } = await aso(['score'], { dir });
+	assert.equal(code, 0);
+	assert.match(out, /1 under minVolume 20/);
+
+	const asJson = await asoRepo(files, { aso: { minVolume: 20 } });
+	const { out: body } = await aso(['score'], { dir: asJson, flags: { json: true } });
+	assert.equal(JSON.parse(body).locale, 'en-US');
+});
+
+test('suggest --json against no listing reports the absence rather than a path', async () => {
+	const dir = await asoRepo({ 'aso/en-US/scored.json': SCORED('en-US') });
+	const { code, out } = await aso(['suggest'], { dir, flags: { json: true } });
+	assert.equal(code, 0);
+	assert.equal(JSON.parse(out).listing, null);
+});
+
+test('a repo with no store.locales sweeps the source locale alone', async () => {
+	const dir = await asoRepo({ 'aso/en-US/scored.json': SCORED('en-US') }, { store: { locales: [] } });
+	const { code, out } = await aso(['suggest'], { dir, flags: { 'all-locales': true, json: true } });
+	assert.equal(code, 0);
+	assert.deepEqual(JSON.parse(out).locales.map((r) => r.locale), ['en-US']);
+});
+
+test('packing stops at the limit however many terms it is given', async () => {
+	const long = Array.from({ length: 12 }, (_, i) => ({ keyword: `long candidate term number ${i}`, demand: 90 - i, opportunity: 40, competition: 10 }));
+	const dir = await asoRepo({ 'aso/en-US/scored.json': { locale: 'en-US', terms: long }, 'store/staged/en-US.json': LISTING });
+	const { code, out } = await aso(['suggest'], { dir, flags: { json: true } });
+	assert.equal(code, 0);
+	const p = JSON.parse(out);
+	assert.ok(p.used <= p.limit && p.keywords.length <= p.limit, 'the field cannot come back over the limit');
+	assert.ok(p.listing.endsWith('en-US.json'), 'the listing it packed against is named');
+});
+
+test('apply prints (empty) for a listing that has no keywords yet', async () => {
+	const dir = await asoRepo({
+		'aso/en-US/scored.json': SCORED('en-US'),
+		'store/staged/en-US.json': { locale: 'en-US', name: 'Demo', subtitle: 'Track your cycle', keywords: '' },
+	});
+	const { code, out } = await aso(['apply'], { dir });
+	assert.equal(code, 0);
+	assert.match(out, /\(empty\)/);
+});
+
+test('competitors with no ids and no scores says where ids come from', async () => {
+	const dir = await asoRepo({ 'aso/en-US/scored.json': { locale: 'en-US', terms: [{ keyword: 'period tracker calendar' }] } });
+	await assert.rejects(() => aso(['competitors'], { dir, flags: { ids: ' , ' } }), (err) => {
+		assert.match(err.message, /no competitor ids/);
+		assert.match(err.hint, /pass --ids 123,456/);
+		return true;
+	});
+});
+
+test('competitors --json emits the artifact it wrote', async () => {
+	const dir = await asoRepo();
+	const { code, out } = await aso(['competitors'], { dir, flags: { ids: '1038369065', json: true } });
+	assert.equal(code, 0);
+	assert.deepEqual(JSON.parse(out).ids, ['1038369065']);
+});
+
+test('audit warns when there is no staged listing to lint at all', async () => {
+	setBin('asc', [['', { out: { data: [] } }]]);
+	const dir = await asoRepo();
+	const { out } = await aso(['audit'], { dir });
+	assert.match(out, /none under/);
+	assert.match(out, /no research yet: ship aso harvest/);
+});
+
+test('an artifact missing its terms map is empty, not undefined', async () => {
+	// Every stage reads `terms` off an artifact a previous stage wrote. A file
+	// that predates the key — or was hand-edited down to nothing — has to read as
+	// "no terms", which is a refusal naming the stage, never a TypeError.
+	const dir = await asoRepo({ 'aso/en-US/candidates.json': { locale: 'en-US' } });
+	await assert.rejects(() => aso(['volume'], { dir, flags: { fetch: true } }), /no candidates to measure/);
+	await assert.rejects(() => aso(['score'], { dir }), /no scorable candidates/);
+
+	const swept = await asoRepo({ 'aso/en-US/volume.json': { locale: 'en-US' } });
+	const { out } = await aso(['volume'], { dir: swept, flags: { 'all-locales': true, json: true } });
+	assert.equal(JSON.parse(out).locales[0].terms, 0);
+});
+
+test('a hand-edited candidate whose case does not match its demand row scores as unmeasured', async () => {
+	// Picking lowercases every term; the demand table is keyed by the term as
+	// written. A file typed by hand — rather than written by harvest — can carry
+	// "Period Tracker Calendar", and the two sides then do not meet. Demand of an
+	// unmatched term is 0, which is under any floor above zero.
+	const dir = await asoRepo({ 'aso/en-US/candidates.json': { locale: 'en-US', terms: { 'Period Tracker Calendar': { rank: 1 } } } }, { aso: { minVolume: 1 } });
+	await assert.rejects(() => aso(['score'], { dir }), (err) => {
+		assert.match(err.message, /no scorable candidates/);
+		assert.match(err.hint, /all under aso.minVolume 1/);
+		return true;
+	});
+});
+
+test('a scored term that carries no demand is packed rather than dropped', async () => {
+	const dir = await asoRepo({
+		'aso/en-US/scored.json': { locale: 'en-US', terms: [{ keyword: 'period tracker calendar', opportunity: 40, competition: 10 }] },
+		'store/staged/en-US.json': LISTING,
+	}, { aso: { minVolume: 50 } });
+	const { out } = await aso(['suggest'], { dir, flags: { json: true } });
+	assert.ok(JSON.parse(out).keywords.length, 'an unmeasured term is assumed average, not assumed dead');
 });

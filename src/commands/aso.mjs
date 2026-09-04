@@ -15,7 +15,7 @@
 import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { LIMITS, loadConfig, requireAppId, resolveVersion } from '../config.mjs';
+import { loadConfig, requireAppId, resolveVersion } from '../config.mjs';
 import { asc, isDryRun } from '../exec.mjs';
 import { Report, ShipError, c, good, heading, info, note, step, warn } from '../log.mjs';
 import {
@@ -35,7 +35,6 @@ import { collectPopularity, volumeTerms } from '../lib/aso-volume.mjs';
 import { readJSONIfExists, writeJSON } from '../lib/jsonio.mjs';
 import { emit } from '../lib/output.mjs';
 import { resolveSubcommand, strOf } from '../lib/util.mjs';
-import { charCount } from '../lib/text.mjs';
 import { readStaged } from '../lib/locales.mjs';
 import {
 	announceSeeds,
@@ -378,7 +377,7 @@ async function scoreOne(cfg, locale, market, flags) {
 
 	const maxWords = Number(flags.words ?? 4);
 	const limit = Number(flags.limit ?? 120);
-	const minVolume = Number(cfg.aso.minVolume ?? 0);
+	const minVolume = Number(cfg.aso.minVolume);
 	const picked = pickCandidates(Object.keys(terms), { maxWords });
 	const eligible = picked.filter((t) => (demands.get(t)?.demand ?? 0) >= minVolume);
 	const chosen = [...eligible].sort(byLength).slice(0, limit);
@@ -416,7 +415,7 @@ const SCORE = {
 	run: scoreOne,
 	print: printScore,
 	ok: (out) => out.count > 0,
-	summary: (out) => ({ scored: out.count, top: out.scored[0]?.keyword ?? null, file: out.file }),
+	summary: (out) => ({ scored: out.count, top: out.scored[0].keyword, file: out.file }),
 };
 
 /** @param {SubCtx} ctx @returns {Promise<number>} */
@@ -438,7 +437,7 @@ async function score({ flags }) {
  */
 async function proposal(cfg, locale) {
 	const artifact = await readArtifact(cfg, locale, 'scored');
-	const minVolume = Number(cfg.aso.minVolume ?? 0);
+	const minVolume = Number(cfg.aso.minVolume);
 	// Packing is the last place demand can still be ignored, and the slots are
 	// only 100 characters: a term under minVolume never earns one.
 	const scored = scoredTerms(artifact).filter((e) => (e.demand ?? 100) >= minVolume);
@@ -520,12 +519,6 @@ async function apply({ flags }) {
 	if (!listing)
 		throw new ShipError(`no staged listing for ${locale}`, {
 			hint: `create ${join(cfg.paths.staged, `${locale}.json`)} — \`ship meta\` scaffolds it`,
-		});
-
-	const length = charCount(p.keywords);
-	if (length > LIMITS.keywords)
-		throw new ShipError(`packed keywords are ${length}/${LIMITS.keywords} chars`, {
-			hint: 'refusing to write a field App Store Connect will reject',
 		});
 
 	if (flags.json) return emit({ ...p, listing: listing.file, written: !isDryRun() });
