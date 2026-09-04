@@ -184,7 +184,7 @@ function jsonRecords(text, file) {
 	try {
 		data = JSON.parse(text);
 	} catch (err) {
-		throw new ShipError(`${file} is not valid JSON`, { hint: err instanceof Error ? err.message : String(err) });
+		throw new ShipError(`${file} is not valid JSON`, { hint: /** @type {Error} */ (err).message });
 	}
 	const rows = Array.isArray(data) ? data : (data.rows ?? data.data ?? data.records ?? []);
 	if (!Array.isArray(rows)) throw new ShipError(`${file}: expected an array of rows`, { hint: 'or {"rows": [...]}' });
@@ -240,7 +240,7 @@ async function pull({ flags }) {
 		const report = foldReports(byReport, { names: REPORTS, territory });
 		if (!report.reports.includes(REPORTS.engagement) && !report.reports.includes(REPORTS.downloads))
 			throw new ShipError('Apple produced none of the reports the funnel is built from', {
-				hint: `wanted ${REPORTS.engagement} or ${REPORTS.downloads}; got ${report.reports.join(', ') || '(nothing)'}\nApple renames reports without notice — open an issue with that list.`,
+				hint: `wanted ${REPORTS.engagement} or ${REPORTS.downloads}; got ${report.reports.join(', ')}\nApple renames reports without notice — open an issue with that list.`,
 			});
 		// Terms come from the search-term web export, not the API: none of these
 		// reports carries a search-term column.

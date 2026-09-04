@@ -239,3 +239,220 @@ test('diagnose is quiet when every stage is healthy, and refuses with nothing pu
 	assert.equal(code, 0);
 	assert.match(out, /no stage is under its benchmark|unmeasured/);
 });
+
+// ── the shapes an export can arrive in ──────────────────────────────────────
+
+test('a JSON export is read as an array, or as whatever key wraps one', async () => {
+	const rows = [{ 'Search Term': 'period tracker', Impressions: 1000, 'Product Page Views': 200, Installs: 50 }];
+	for (const [name, body] of [['bare.json', rows], ['rows.json', { rows }], ['data.json', { data: rows }], ['records.json', { records: rows }]]) {
+		const dir = await analyticsRepo({ [name]: body });
+		const { code } = await analytics(['pull'], { dir, flags: { file: join(dir, name) } });
+		assert.equal(code, 0, name);
+		assert.equal((await readJson(dir, '.asc/analytics/en-US-terms.json')).rows.length, 1);
+	}
+});
+
+test('a JSON export that is neither is refused, and so is one that will not parse', async () => {
+	const dir = await analyticsRepo({ 'object.json': { rows: 5 }, 'broken.json': '{ nope' });
+	await assert.rejects(() => analytics(['pull'], { dir, flags: { file: join(dir, 'object.json') } }), (err) => {
+		assert.match(err.message, /expected an array of rows/);
+		assert.match(err.hint, /\{"rows": \[\.\.\.\]\}/);
+		return true;
+	});
+	await assert.rejects(() => analytics(['pull'], { dir, flags: { file: join(dir, 'broken.json') } }), /broken\.json is not valid JSON/);
+});
+
+test('an export with no rows at all names the columns it wanted', async () => {
+	const dir = await analyticsRepo({ 'empty.json': [] });
+	await assert.rejects(() => analytics(['pull'], { dir, flags: { file: join(dir, 'empty.json') } }), (err) => {
+		assert.match(err.hint, /found: \(no rows\)/);
+		assert.match(err.hint, /expected impressions/);
+		return true;
+	});
+});
+
+test('a ~ in the export path is the home directory, as the shell would have expanded it', async () => {
+	const dir = await analyticsRepo();
+	// HOME is the fake one this file installed, so the file really is under ~.
+	const { writeFile } = await import('node:fs/promises');
+	await writeFile(join(process.env.HOME, 'export.csv'), TERMS_CSV);
+	const { code } = await analytics(['pull'], { dir, flags: { file: '~/export.csv' } });
+	assert.equal(code, 0);
+});
+
+test('the health reports Apple produced ride in the funnel file, and absent stays absent', async () => {
+	const health = liveReports(
+		reportView([[REPORTS.engagement, 'seg-eng'], [REPORTS.downloads, 'seg-dl'], [REPORTS.installDelete, 'seg-id'], [REPORTS.sessions, 'seg-ses'], [REPORTS.crashes, 'seg-crash']]),
+		[
+			['analytics download .*--segment-id seg-eng', { out: '', files: { 'report.csv': ENGAGEMENT_CSV } }],
+			['analytics download .*--segment-id seg-dl', { out: '', files: { 'report.csv': DOWNLOADS_CSV } }],
+			['analytics download .*--segment-id seg-id', { out: '', files: { 'report.csv': 'Date,Counts,Event\n2026-08-01,10,Delete\n' } }],
+			['analytics download .*--segment-id seg-ses', { out: '', files: { 'report.csv': 'Date,Sessions,Unique Devices\n2026-08-01,200,80\n' } }],
+			['analytics download .*--segment-id seg-crash', { out: '', files: { 'report.csv': 'Date,Crashes,Unique Devices\n2026-08-01,3,80\n' } }],
+		],
+	);
+	setBin('asc', health);
+	const dir = await analyticsRepo();
+	const { code } = await analytics(['pull'], { dir, flags: { from: '2026-08-01', to: '2026-08-01' } });
+	assert.equal(code, 0);
+	const funnel = await readJson(dir, '.asc/analytics/en-US-funnel.json');
+	assert.ok(funnel.retention && funnel.sessions && funnel.crashes, 'each health block Apple produced is carried');
+
+	setBin('asc', FUNNEL_REPORTS);
+	const bare = await analyticsRepo();
+	await analytics(['pull'], { dir: bare, flags: { from: '2026-08-01', to: '2026-08-01' } });
+	const plain = await readJson(bare, '.asc/analytics/en-US-funnel.json');
+	assert.ok(!('retention' in plain) && !('sessions' in plain) && !('crashes' in plain), 'a report Apple did not produce is absent, not zero');
+});
+
+test('pull --json emits what it wrote, and what a dry run would have written', async () => {
+	const dir = await analyticsRepo({ 'export.csv': TERMS_CSV });
+	const { out } = await analytics(['pull'], { dir, flags: { file: join(dir, 'export.csv'), json: true } });
+	assert.equal(JSON.parse(out).written.length, 2);
+
+	const dry = await analyticsRepo({ 'export.csv': TERMS_CSV });
+	const { out: planned } = await analytics(['pull'], { dir: dry, flags: { file: join(dry, 'export.csv'), json: true, 'dry-run': true } });
+	assert.deepEqual(JSON.parse(planned).written, []);
+});
+
+// ── how terms are presented ─────────────────────────────────────────────────
+
+test('a terms file with no rows says so rather than printing an empty table', async () => {
+	const dir = await analyticsRepo({ '.asc/analytics/en-US-terms.json': { locale: 'en-US', rows: [] } });
+	const { code, out } = await analytics(['terms'], { dir });
+	assert.equal(code, 0);
+	assert.match(out, /the pulled report carried no search-term dimension/);
+});
+
+test('a term the keyword field already carries is marked, and one that never converts is not chased', async () => {
+	const dir = await analyticsRepo({
+		'.asc/analytics/en-US-terms.json': { locale: 'en-US', rows: [
+			{ term: 'period tracker', impressions: 1000, pageViews: 200, installs: 50 },
+			{ term: 'browsed once', impressions: 40, pageViews: 1, installs: 0 },
+		] },
+		'store/staged/en-US.json': { locale: 'en-US', name: 'Demo', keywords: 'period,tracker,browsed,once' },
+	});
+	const { code, out } = await analytics(['terms'], { dir });
+	assert.equal(code, 0);
+	assert.match(out, /every converting term is already in the keyword field/);
+});
+
+// ── onboarding ──────────────────────────────────────────────────────────────
+
+test('a saved onboarding file that is a bare array of steps still reads', async () => {
+	const dir = await analyticsRepo({ '.asc/analytics/en-US-onboarding.json': [{ name: 'welcome', users: 100 }, { name: 'paywall', users: 60 }] });
+	const { out } = await analytics(['onboarding'], { dir });
+	assert.match(out, /Onboarding: en-US/);
+	assert.match(out, /no install count/, 'a bare array carries no installs or paid');
+});
+
+test('--installs beats the export and the App Store funnel', async () => {
+	const dir = await analyticsRepo({
+		'.asc/analytics/en-US-onboarding.json': { locale: 'en-US', steps: [{ name: 'welcome', users: 900 }, { name: 'paywall', users: 800 }], installs: 10 },
+		'.asc/analytics/en-US-funnel.json': { locale: 'en-US', impressions: 5000, pageViews: 2000, installs: 20 },
+	});
+	const { out } = await analytics(['onboarding'], { dir, flags: { installs: '1,000', paid: 60 } });
+	assert.match(out, /--installs/);
+	// 60 of 1,000 is a healthy paid rate, and 800 of 900 reaching the paywall is
+	// well above the bar — the two green cases the gate table never showed.
+	assert.match(out, /install→paid/);
+});
+
+test('an onboarding funnel for another locale is read from that locale\'s file', async () => {
+	const dir = await analyticsRepo(
+		{ '.asc/analytics/de-DE-onboarding.json': { locale: 'de-DE', steps: [{ name: 'welcome', users: 100 }, { name: 'paywall', users: 90 }], installs: 100, paid: 8 } },
+		{ store: { locales: ['de-DE'] } },
+	);
+	const { out } = await analytics(['onboarding'], { dir, flags: { locale: 'de-DE' } });
+	assert.match(out, /Onboarding: de-DE/);
+});
+
+// ── diagnose ────────────────────────────────────────────────────────────────
+
+test('diagnose lists the screens that implement the stage it blames', async () => {
+	const dir = await analyticsRepo({
+		'.asc/analytics/en-US-funnel.json': { locale: 'en-US', impressions: 1000, pageViews: 600, installs: 400 },
+		'.asc/analytics/en-US-onboarding.json': { locale: 'en-US', steps: [{ name: 'welcome', users: 100 }, { name: 'paywall', users: 90 }], installs: 100, paid: 0 },
+		'design/ux.json': { screens: [
+			{ id: 'paywall', route: '/paywall', flow: 'paywall' },
+			{ id: 'pricing', route: '/pricing', flow: 'pricing' },
+			{ id: 'home', route: '/', flow: 'home' },
+		] },
+	});
+	const { code, out } = await analytics(['diagnose'], { dir });
+	assert.equal(code, 1);
+	assert.match(out, /re-research:/);
+	assert.match(out, /\/paywall/, 'the screen carrying the blamed flow is named by route');
+	assert.doesNotMatch(out, /no design\/ux\.json/);
+});
+
+test('a JSON object that wraps no row list at all is read as no rows', async () => {
+	const dir = await analyticsRepo({ 'totals.json': { total: 5 } });
+	await assert.rejects(() => analytics(['pull'], { dir, flags: { file: join(dir, 'totals.json') } }), /has no columns this can read/);
+});
+
+test('an export path is left alone when there is no home directory to expand to', async () => {
+	const dir = await analyticsRepo();
+	const home = process.env.HOME;
+	delete process.env.HOME;
+	try {
+		await assert.rejects(() => analytics(['pull'], { dir, flags: { file: '~/export.csv' } }), /no such file/);
+	} finally {
+		process.env.HOME = home;
+	}
+});
+
+test('a dry run without --json writes nothing and prints what it would have written', async () => {
+	const dir = await analyticsRepo({ 'export.csv': TERMS_CSV });
+	const { code, out } = await analytics(['pull'], { dir, flags: { file: join(dir, 'export.csv'), 'dry-run': true } });
+	assert.equal(code, 0);
+	assert.match(out, /--dry-run: would write .*en-US-terms\.json \(2 terms\)/);
+	assert.match(out, /would write .*en-US-funnel\.json/);
+});
+
+test('a funnel file that is a bare array carries no counts', async () => {
+	const dir = await analyticsRepo({ '.asc/analytics/en-US-funnel.json': [{ impressions: 10 }] });
+	const { code, out } = await analytics(['funnel'], { dir });
+	assert.equal(code, 0);
+	assert.match(out, /unmeasured|—/, 'an array is not a counts object, and is not read as one');
+});
+
+test('a saved onboarding file with no steps key is no steps, not a crash', async () => {
+	const dir = await analyticsRepo({ '.asc/analytics/en-US-onboarding.json': { locale: 'en-US', installs: 100 } });
+	const { out } = await analytics(['onboarding'], { dir });
+	assert.match(out, /Onboarding: en-US/);
+	assert.match(out, /install→paid/, 'the install count it does carry is still gated');
+});
+
+test('a repo that names no locale anywhere falls back to en-US', async () => {
+	const dir = await repo({ config: { name: 'Demo', bundleId: 'com.demo.app' }, prefix: 'ship-analytics-' });
+	await assert.rejects(() => analytics(['onboarding'], { dir }), /no onboarding funnel for en-US/);
+	await assert.rejects(() => analytics(['diagnose'], { dir }), /nothing to diagnose for en-US/);
+});
+
+test('a paid rate over the floor but under healthy is a warning, and the worst step is named', async () => {
+	const dir = await analyticsRepo({
+		'.asc/analytics/en-US-onboarding.json': { locale: 'en-US', steps: [{ name: 'welcome', users: 1000 }, { name: 'quiz', users: 400 }, { name: 'paywall', users: 380 }], installs: 1000, paid: 40 },
+	});
+	const { out } = await analytics(['onboarding'], { dir });
+	assert.match(out, /install→paid/);
+	assert.match(out, /worst step: quiz/, '60% of entrants lost at one step is the step to name');
+});
+
+test('a report whose file carries no rows is still named as what Apple produced', async () => {
+	// asc exited 0 and left a file, but not a delimited one. The report still
+	// happened, and the message names it — the operator's next move is to look at
+	// that instance, not to wonder whether the download ran.
+	setBin('asc', liveReports(reportView([[REPORTS.crashes, 'seg-crash']]), [['analytics download', { out: '', files: { 'notes.md': 'no data for this instance' } }]]));
+	const dir = await analyticsRepo();
+	await assert.rejects(() => analytics(['pull'], { dir, flags: { from: '2026-08-01', to: '2026-08-01' } }), (err) => {
+		assert.match(err.hint, /got App Crashes/);
+		return true;
+	});
+});
+
+test('a config that nulls out its primary locale still has a locale to work in', async () => {
+	const dir = await repo({ config: { name: 'Demo', bundleId: 'com.demo.app', asc: { primaryLocale: null } }, prefix: 'ship-analytics-' });
+	await assert.rejects(() => analytics(['onboarding'], { dir }), /no onboarding funnel for en-US/);
+	await assert.rejects(() => analytics(['diagnose'], { dir }), /nothing to diagnose for en-US/);
+});
