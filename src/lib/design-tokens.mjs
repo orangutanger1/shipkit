@@ -15,8 +15,8 @@ const t = (value, cite = 'HIG:color') => ({ value, cite });
 /** The scaffold's palette — the greys and blue templates/app has always rendered. */
 const LIGHT = {
 	background: t('#ffffff'), surface: t('#f6f7f8'), surfaceAlt: t('#eceef0'),
-	text: t('#0f1113'), textMuted: t('#6b7480'), textInverse: t('#ffffff'),
-	accent: t('#3d7bff'), accentText: t('#ffffff'), border: t('#d8dce0'),
+	text: t('#0f1113'), textMuted: t('#5b6472'), textInverse: t('#ffffff'),
+	accent: t('#2a5fd6'), accentText: t('#ffffff'), border: t('#d8dce0'),
 	success: t('#1f8a4c'), warning: t('#9a6700'), danger: t('#c8102e'),
 };
 const DARK = {

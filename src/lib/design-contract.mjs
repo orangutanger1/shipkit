@@ -9,8 +9,6 @@
 // `requires` is the only place that says what a primitive needs from
 // design/system.json. The token gate is computed from it, so adding a primitive
 // that needs a new token updates the gate rather than drifting from it.
-import { QA_STATES } from './qa-params.mjs';
-
 /** Bumped when a change would make an older scaffold mis-transcribe. */
 export const CONTRACT_VERSION = 1;
 
@@ -21,7 +19,7 @@ const TEXT_ROLES = ['largeTitle', 'title', 'headline', 'body', 'footnote'];
 const STATE_KINDS = ['empty', 'loading', 'error', 'offline'];
 
 /** @type {Record<string, Component>} */
-export const COMPONENTS = {
+const COMPONENTS = {
 	Screen: {
 		primitive: 'SafeAreaView', file: PRIMITIVES, role: 'container',
 		props: { scroll: { type: 'boolean', default: false } },
@@ -171,4 +169,3 @@ export function validateAgainstContract(spec, contract, system) {
 	return issues;
 }
 
-export { QA_STATES };

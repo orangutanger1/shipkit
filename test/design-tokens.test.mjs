@@ -47,3 +47,8 @@ test('key order follows the ramp, not the parsed object', () => {
 	const order = DEFAULT_SYSTEM.type.ramp.map((s) => out.indexOf(`\t\t${s.name}:`));
 	assert.deepEqual(order, [...order].sort((a, b) => a - b));
 });
+
+test('DEFAULT_SYSTEM passes the same contrast gate `ship design system --check` runs', async () => {
+	const { checkSystem } = await import('../src/lib/design-system.mjs');
+	assert.deepEqual(checkSystem(DEFAULT_SYSTEM, { known: new Set() }), []);
+});
