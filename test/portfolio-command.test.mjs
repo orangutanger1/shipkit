@@ -179,6 +179,40 @@ test('an app with no asc.appId, key or org is skipped per probe rather than fail
 	await portfolio(['rm', dir]);
 });
 
+test('the dashboard --scan registers what it finds before probing it', async () => {
+	ascLive();
+	const dir = await appRepo();
+	const { code, out } = await portfolio([], { flags: { scan: dir, json: true } });
+	assert.equal(code, 0);
+	assert.equal(JSON.parse(out).apps.length, 1, 'the app you forgot is the one nobody added by hand');
+	await portfolio(['rm', dir]);
+});
+
+test('a row whose probes failed renders as an error, not as a blank', async () => {
+	setBin('asc', []);
+	const dir = await appRepo();
+	await portfolio(['add', dir]);
+	const { out } = await portfolio([], { fetch: async () => { throw new Error('rc down'); } });
+	assert.match(out, /Demo/);
+	assert.match(out, /error|—/);
+	await portfolio(['rm', dir]);
+});
+
+test('the rendered dashboard names each sunset candidate and each review state', async () => {
+	ascLive({ state: 'REJECTED', created: '2025-02-01T00:00:00.000Z', first: '2024-01-01T00:00:00.000Z' });
+	const dir = await appRepo();
+	await portfolio(['add', dir]);
+	const { out } = await portfolio([], { fetch: rcFetch(0) });
+	assert.match(out, /sunset candidate: Demo/);
+	assert.match(out, /REJECTED/);
+
+	ascLive({ state: 'WAITING_FOR_REVIEW' });
+	const { out: waiting } = await portfolio([]);
+	assert.match(waiting, /WAITING_FOR_REVIEW/);
+	assert.match(waiting, /no sunset candidates/);
+	await portfolio(['rm', dir]);
+});
+
 test('an unknown subcommand names the ones that exist', async () => {
 	await assert.rejects(() => portfolio(['sunset']), /unknown subcommand "sunset"/);
 });
