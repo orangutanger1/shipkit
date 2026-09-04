@@ -116,7 +116,11 @@ jobs:
               ],
             }));
           '
-          node "$GITHUB_WORKSPACE/node_modules/typescript/bin/tsc" -p tsconfig.gen.json
+          # This job installs nothing, so tsc comes from the registry the same way
+          # ajv-cli does above. --package is required: the package is `typescript`
+          # and the binary is `tsc`, and npx reads a bare trailing `tsc` as a source
+          # file rather than the command.
+          npx --yes --package=typescript@7 -- tsc -p tsconfig.gen.json
           rm tsconfig.gen.json
 
       - name: The listing gate fires, and clears once the listing is real
