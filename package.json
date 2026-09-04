@@ -24,6 +24,8 @@
 		"lint": "npx --yes oxlint@latest src bin",
 		"typecheck": "tsc --noEmit",
 		"metrics": "node scripts/metrics.mjs",
+		"coverage:json": "c8 --reporter=json --include 'src/**' --include 'bin/**' node --test test/*.test.mjs",
+		"coverage:gap": "node scripts/coverage-gap.mjs",
 		"dup": "jscpd src bin",
 		"deadcode": "knip",
 		"mutation": "stryker run",
