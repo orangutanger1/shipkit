@@ -442,3 +442,60 @@ test('--export with nothing to export says so', async () => {
 	const dir = await renderRepo({ ...DEVICE_SPEC, source: { figmaFile: 'FILEKEY' } });
 	await assert.rejects(() => shots(['figma'], { dir, flags: { export: true }, fetch: figmaApi() }), /nothing to export/);
 });
+
+test('capture in caption-band mode downloads the composites the store is serving', async () => {
+	ascOk();
+	const dir = await renderRepo(BAND_SPEC);
+	const store = async (url) => {
+		const href = String(url);
+		if (href.includes('/lookup')) return json({ results: [{ screenshotUrls: ['https://is1.example/img/source/400x800bb.png'] }] });
+		return new Response(await sharp({ create: { width: 200, height: 400, channels: 3, background: { r: 250, g: 250, b: 250 } } }).png().toBuffer());
+	};
+	const { code, out } = await shots(['capture'], { dir, fetch: store });
+	assert.equal(code, 0);
+	assert.ok(existsSync(join(dir, 'store', 'base', 'one.png')));
+	assert.match(out, /1 base image/);
+
+	const { out: again } = await shots(['capture'], { dir, fetch: store });
+	assert.match(again, /one.png already present/);
+});
+
+test('caption-band capture refuses an app the store serves nothing for', async () => {
+	ascOk();
+	const dir = await renderRepo(BAND_SPEC);
+	await assert.rejects(
+		() => shots(['capture'], { dir, fetch: async () => json({ results: [{ screenshotUrls: [] }] }) }),
+		/the App Store is serving no screenshots for this app/,
+	);
+	await assert.rejects(
+		() => shots(['capture'], { dir, fetch: async () => new Response('', { status: 404 }) }),
+		/App Store lookup failed: 404/,
+	);
+});
+
+test('verify a device-frame render reports its calibration rows', async () => {
+	ascOk();
+	// `ref` is the design tool's own export of the source-locale frames: the
+	// thing the renderer is calibrated against, and without which there is
+	// nothing to calibrate.
+	const dir = await renderRepo({ ...DEVICE_SPEC, ref: 'figma-export/ref' });
+	await deviceParts(dir);
+	await png(dir, 'store/figma-export/ref/one.png', 200, 400);
+	await png(dir, 'store/screenshots-raw/en-US/IPHONE_65/01.png', 100, 200);
+	await shots(['render', 'en-US'], { dir });
+	const { code, out } = await shots(['verify', 'en-US'], { dir });
+	assert.ok(code === 0 || code === 1);
+	assert.match(out, /one/);
+	const { out: raw } = await shots(['verify', 'en-US'], { dir, flags: { json: true } });
+	assert.equal(JSON.parse(raw.slice(raw.indexOf('{'))).mode, 'device-frame');
+});
+
+test('upload --render renders first, and says why a re-render is not a skip', async () => {
+	ascOk();
+	const dir = await renderRepo(DEVICE_SPEC, {}, { store: { locales: ['en-US'] } });
+	await deviceParts(dir);
+	await png(dir, 'store/screenshots-raw/en-US/IPHONE_65/01.png', 1242, 2688);
+	const { code, out } = await shots(['upload'], { dir, flags: { render: true, force: true } });
+	assert.equal(code, 0);
+	assert.match(out, /re-rendered images differ byte-wise/);
+});
