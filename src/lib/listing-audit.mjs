@@ -72,7 +72,7 @@ export async function readGlossary(cfg, source) {
  * Sorted keys everywhere. This file is read in a pull-request diff, and a map
  * that reorders itself on every write hides the one line that changed.
  * @param {Glossary} g
- * @returns {Glossary}
+ * @returns {Glossary & {neverTranslate: string[], terms: {[srcTerm: string]: {[locale: string]: string}}}} both maps always present, so callers need no fallback
  */
 export function stableGlossary(g) {
 	/** @type {{[srcTerm: string]: {[locale: string]: string}}} */

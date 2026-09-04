@@ -114,16 +114,12 @@ const stagedFile = (cfg, locale) => join(cfg.paths.staged, `${locale}.json`);
 const shotsDir = (cfg, locale) => join(cfg.paths.store, 'screenshots', locale);
 
 /**
- * The non-optional loadConfig throws before it can return null; this narrows
- * the type so callers do not repeat the check.
+ * The non-optional loadConfig throws rather than returning null; the cast is
+ * what says so, so callers do not each repeat a check that cannot fire.
  *
  * @returns {Promise<Config>}
  */
-async function requireConfig() {
-	const cfg = await loadConfig();
-	if (!cfg) throw new ShipError('no ship.config.json found', { hint: 'run `ship init` inside the app repo to create one' });
-	return cfg;
-}
+const requireConfig = async () => /** @type {Config} */ (await loadConfig());
 
 /**
  * @param {SubCtx} ctx
@@ -371,7 +367,7 @@ async function draftLocale({ cfg, src, glossary, brand, source, locale, force, d
 		created,
 		generated: Object.keys(why),
 		notes: why,
-		keywords: String(out.keywords ?? ''),
+		keywords: String(out.keywords),
 		provenance,
 		todo: COPY_FIELDS.filter((f) => hasTodo(data[f])),
 	};
@@ -450,7 +446,9 @@ async function review({ flags }) {
 			report.ok(locale, locale === source ? 'source listing' : 'translated, harvested locally, within limits');
 		else for (const r of rows) report[r.level](r.name, r.detail);
 	}
-	if (!report.rows.length) report.skip(only ?? '(all)', 'no staged listing matched');
+	// Reachable only under --locale: without a filter every staged listing
+	// produces a row, and an empty staged directory threw above.
+	if (!report.rows.length) report.skip(/** @type {string} */ (only), 'no staged listing matched');
 	return report.print({ json: !!flags.json });
 }
 
@@ -483,8 +481,10 @@ async function lock({ flags }) {
 	if (flags.json) return emit({ file: cfg.paths.glossary, changed: before !== after, dryRun: dry, glossary });
 
 	heading(`Glossary ${c.dim(cfg.paths.glossary)}`);
-	info(`neverTranslate: ${c.cyan((glossary.neverTranslate ?? []).join(', ') || '(none)')}`);
-	const rows = Object.entries(glossary.terms ?? {}).map(([term, row]) => ({
+	// The app name is always in it: config refuses to load without a name, and
+	// brandNouns adds it. So the list is never empty.
+	info(`neverTranslate: ${c.cyan(glossary.neverTranslate.join(', '))}`);
+	const rows = Object.entries(glossary.terms).map(([term, row]) => ({
 		term,
 		done: targets.filter((l) => row[l]).length,
 		missing: targets.filter((l) => !row[l]).join(', '),
@@ -513,9 +513,7 @@ async function shotCount(cfg, locale) {
 	if (!existsSync(root)) return 0;
 	let n = 0;
 	const stack = [root];
-	while (stack.length) {
-		const dir = stack.pop();
-		if (dir === undefined) continue;
+	for (let dir = stack.pop(); dir !== undefined; dir = stack.pop()) {
 		for (const entry of await readdir(dir, { withFileTypes: true })) {
 			if (entry.isDirectory()) stack.push(join(dir, entry.name));
 			else if (IMAGE.test(entry.name)) n++;

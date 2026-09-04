@@ -167,3 +167,228 @@ test('lock --dry-run and --json report without writing', async () => {
 	assert.equal(JSON.parse(out).dryRun, true);
 	await assert.rejects(() => readJson(dir, 'store/glossary.json'), /ENOENT/);
 });
+
+// ── seed ────────────────────────────────────────────────────────────────────
+
+test('seed folds named competitors\' own localized titles in beside the probed ones', async () => {
+	const dir = await locRepo({ 'aso/en-US/scored.json': { terms: [{ keyword: 'car maintenance log' }] } });
+	const { code, out } = await loc(['seed'], { dir, flags: { ids: '1,2', locale: 'de-DE' } });
+	assert.equal(code, 0);
+	const cfg = await readJson(dir, 'ship.config.json');
+	assert.ok(cfg.aso.seedsByLocale['de-DE'].length);
+	assert.match(out, /incumbent titles/);
+});
+
+test('seed says so when the storefront returned no titles to mine', async () => {
+	const dir = await locRepo({ 'aso/en-US/scored.json': { terms: [{ keyword: 'car maintenance log' }] } });
+	const { code, out } = await loc(['seed'], { dir, fetch: storefront([]) });
+	assert.equal(code, 0);
+	assert.match(out, /nothing mined — the storefront returned no titles/);
+});
+
+test('seed --json emits one row per locale and prints no table', async () => {
+	const dir = await locRepo({ 'aso/en-US/scored.json': { terms: [{ keyword: 'car maintenance log' }] } });
+	const { out } = await loc(['seed'], { dir, flags: { json: true } });
+	const doc = JSON.parse(out);
+	assert.equal(doc.source, 'en-US');
+	assert.deepEqual(Object.keys(doc.locales), ['de-DE']);
+});
+
+// ── draft ───────────────────────────────────────────────────────────────────
+
+test('draft packs the keyword field from the locale\'s own scored terms', async () => {
+	const dir = await locRepo({
+		'aso/de-DE/scored.json': { terms: [{ keyword: 'kfz scheckheft' }, { keyword: 'werkstatt kilometerstand' }] },
+	});
+	const { code, out } = await loc(['draft'], { dir });
+	assert.equal(code, 0);
+	const de = await readJson(dir, 'store/staged/de-DE.json');
+	assert.ok(de.keywords.length, 'the field is packed, not left as a marker');
+	assert.ok(!de.keywords.includes('TODO'), 'a locale with its own research does not owe a keyword translation');
+	assert.match(out, /packed \d+\/100 from aso\/de-DE\/scored\.json/);
+	assert.ok(de.provenance.keywords, 'where each keyword came from is recorded beside it');
+});
+
+test('draft keeps a name the glossary already agreed, and passes the brand through untouched', async () => {
+	const dir = await locRepo({
+		'store/glossary.json': { sourceLocale: 'en-US', neverTranslate: ['Glovebox'], terms: { 'Car maintenance log': { 'de-DE': 'Auto-Serviceheft' } } },
+	});
+	const { out } = await loc(['draft'], { dir });
+	const de = await readJson(dir, 'store/staged/de-DE.json');
+	assert.equal(de.subtitle, 'Auto-Serviceheft');
+	assert.equal(de.name, 'Glovebox', 'the brand name is not translated');
+	assert.match(out, /glossary: "Car maintenance log"/);
+	assert.match(out, /brand name — neverTranslate/);
+});
+
+test('a locale a human has finished is refreshed with nothing, and says so', async () => {
+	const done = { locale: 'de-DE', name: 'Glovebox', subtitle: 'Auto-Serviceheft', keywords: 'auto,serviceheft', description: 'Pflege dein Auto.', notes: 'translated by a human' };
+	const dir = await locRepo({ 'store/staged/de-DE.json': done });
+	const { out } = await loc(['draft'], { dir });
+	assert.match(out, /refreshed/, 'the file already existed');
+	assert.match(out, /\(nothing — all human-written\)/);
+	const de = await readJson(dir, 'store/staged/de-DE.json');
+	assert.equal(de.subtitle, 'Auto-Serviceheft', 'nothing a human wrote was overwritten');
+	assert.equal(de.notes.note, 'translated by a human', 'a plain-string note is kept as one entry beside the generated ones');
+});
+
+test('two locales owing a translator are counted in the plural', async () => {
+	const dir = await locRepo({}, { store: { locales: ['en-US', 'de-DE', 'fr-FR'] } });
+	const { out } = await loc(['draft'], { dir });
+	assert.match(out, /2 locales need a translator: de-DE, fr-FR/);
+});
+
+test('--force rewrites a field a human wrote', async () => {
+	const dir = await locRepo({ 'store/staged/de-DE.json': { locale: 'de-DE', name: 'Handschuhfach', subtitle: 'Wartungsheft' } });
+	await loc(['draft'], { dir, flags: { force: true } });
+	const de = await readJson(dir, 'store/staged/de-DE.json');
+	assert.ok(de.subtitle.includes('TODO'), 'with no glossary entry, forcing puts the marker back');
+});
+
+// ── lock and status ─────────────────────────────────────────────────────────
+
+test('lock --dry-run on its own still prints what it would have written', async () => {
+	const dir = await locRepo();
+	const { out } = await loc(['lock'], { dir, flags: { 'dry-run': true } });
+	assert.match(out, /--dry-run: nothing written/);
+});
+
+test('status is green when every locale is staged, clean and shot', async () => {
+	const dir = await repo({
+		config: { ...CONFIG, store: { locales: ['en-US'] } },
+		files: { 'store/staged/en-US.json': EN, 'store/screenshots/en-US/IPHONE_65/1.png': 'x' },
+		prefix: 'ship-loc-',
+	});
+	const { code, out } = await loc(['status'], { dir, flags: { strict: true } });
+	assert.equal(code, 0);
+	assert.match(out, /every locale is staged, clean and has screenshots/);
+});
+
+test('status marks a locale that only warns differently from one that fails', async () => {
+	const dir = await locRepo({ 'store/staged/de-DE.json': { ...EN, locale: 'de-DE' } });
+	const { out } = await loc(['status'], { dir, flags: { locale: 'de-DE' } });
+	assert.match(out, /fail|warn/);
+	const { out: raw } = await loc(['status'], { dir, flags: { json: true, locale: 'de-DE' } });
+	const row = JSON.parse(raw).locales[0];
+	assert.equal(row.locale, 'de-DE');
+	assert.ok(row.review !== 'clean');
+});
+
+test('status counts the seeds and harvested terms a locale already has', async () => {
+	const dir = await locRepo(
+		{ 'aso/de-DE/candidates.json': { locale: 'de-DE', terms: { 'kfz scheckheft': { rank: 1 }, 'werkstatt': { rank: 2 } } } },
+		{ aso: { seedsByLocale: { 'de-DE': ['kfz scheckheft'] } } },
+	);
+	const { out } = await loc(['status'], { dir, flags: { json: true } });
+	const de = JSON.parse(out).locales.find((r) => r.locale === 'de-DE');
+	assert.equal(de.seeds, 1);
+	assert.equal(de.harvested, 2);
+});
+
+test('seed pulls in the competitors the source locale already scored', async () => {
+	const dir = await locRepo({
+		'aso/en-US/scored.json': { terms: [{ keyword: 'car maintenance log', top3: [{ id: 1 }, { id: 2 }] }] },
+	});
+	const { code, out } = await loc(['seed'], { dir });
+	assert.equal(code, 0);
+	// The lookup answers with the German incumbents, so their titles join the
+	// probed ones — which is the point: a competitor's own localized name is the
+	// best vocabulary there is.
+	assert.match(out, /2 incumbent titles|incumbent titles/);
+	assert.ok((await readJson(dir, 'ship.config.json')).aso.seedsByLocale['de-DE'].length);
+});
+
+test('a config that nulls out its lists is read as empty ones, not as a crash', async () => {
+	// deepMerge lets a user replace a default outright, null included. Every list
+	// this command reads has to survive that.
+	const nulled = { store: { locales: null, dir: 'store' }, aso: { seedsByLocale: null, dir: 'aso' } };
+	const dir = await locRepo({ 'store/staged/de-DE.json': { ...EN, locale: 'de-DE' } }, nulled);
+	await assert.rejects(() => loc(['seed'], { dir }), /no target locales to seed/);
+
+	const { code } = await loc(['status'], { dir });
+	assert.equal(code, 0, 'status lists the locales that are staged');
+	const { code: drafted } = await loc(['draft'], { dir });
+	assert.equal(drafted, 0, 'draft still has the staged locale to work on');
+	const { code: locked } = await loc(['lock'], { dir });
+	assert.equal(locked, 0);
+});
+
+test('a source listing with empty fields drafts markers rather than empty strings', async () => {
+	const dir = await repo({
+		config: CONFIG,
+		files: { 'store/staged/en-US.json': { locale: 'en-US', name: 'Glovebox' } },
+		prefix: 'ship-loc-',
+	});
+	const { code } = await loc(['draft'], { dir });
+	assert.equal(code, 0);
+	const de = await readJson(dir, 'store/staged/de-DE.json');
+	assert.ok(de.subtitle.includes('TODO'), 'a subtitle the source never wrote is still a translator\'s job');
+	assert.ok(de.description.includes('TODO'));
+});
+
+test('a name in neverTranslate is passed through even when it is not the app name', async () => {
+	const dir = await locRepo({
+		'store/staged/en-US.json': { ...EN, name: 'Serviceheft' },
+		'store/glossary.json': { sourceLocale: 'en-US', neverTranslate: ['serviceheft'], terms: {} },
+	});
+	const { out } = await loc(['draft'], { dir });
+	assert.equal((await readJson(dir, 'store/staged/de-DE.json')).name, 'Serviceheft');
+	assert.match(out, /brand name — neverTranslate/);
+});
+
+test('review and status work with no listing staged for the source locale', async () => {
+	const dir = await repo({
+		config: CONFIG,
+		files: { 'store/staged/de-DE.json': { locale: 'de-DE', name: 'Handschuhfach', subtitle: 'Wartungsheft', keywords: 'auto', description: 'Pflege.' } },
+		prefix: 'ship-loc-',
+	});
+	const { code } = await loc(['review'], { dir });
+	assert.ok(code === 0 || code === 1);
+	const { out } = await loc(['status'], { dir, flags: { json: true } });
+	assert.ok(JSON.parse(out).locales.some((r) => r.locale === 'de-DE'));
+});
+
+test('a locale whose harvest supports only some of its keywords warns rather than fails', async () => {
+	const dir = await locRepo({
+		'store/staged/de-DE.json': { locale: 'de-DE', name: 'Handschuhfach', subtitle: 'Wartungsheft', keywords: 'auto,serviceheft', description: 'Pflege dein Auto.' },
+		'aso/de-DE/candidates.json': { locale: 'de-DE', terms: { auto: { rank: 1 }, 'kfz werkstatt': { rank: 2 } } },
+	}, { legal: { euTrader: 'Demo GmbH' } });
+	const { out } = await loc(['status'], { dir, flags: { json: true, locale: 'de-DE' } });
+	const row = JSON.parse(out).locales[0];
+	assert.equal(row.fails, 0, 'one keyword the harvest does know is not a failure');
+	assert.match(row.review, /^\d+ warn$/);
+});
+
+test('a staged listing missing a required field is not drafted yet', async () => {
+	const dir = await locRepo({ 'store/staged/de-DE.json': { locale: 'de-DE', name: 'Handschuhfach' } });
+	const { out } = await loc(['status'], { dir, flags: { json: true, locale: 'de-DE' } });
+	const row = JSON.parse(out).locales[0];
+	assert.equal(row.staged, true);
+	assert.equal(row.drafted, false);
+});
+
+test('a glossary with no neverTranslate list still seeds, drafts and locks', async () => {
+	const bare = { sourceLocale: 'en-US', terms: {} };
+	const dir = await locRepo({ 'store/glossary.json': bare, 'aso/en-US/scored.json': { terms: [{ keyword: 'car maintenance log' }] } });
+	assert.equal((await loc(['seed'], { dir })).code, 0);
+	assert.equal((await loc(['draft'], { dir })).code, 0);
+	const { code, out } = await loc(['lock'], { dir });
+	assert.equal(code, 0);
+	assert.match(out, /neverTranslate: .*Glovebox/, 'the app name is added even when the file listed none');
+});
+
+test('draft --locale drafts that locale alone', async () => {
+	const dir = await locRepo({}, { store: { locales: ['en-US', 'de-DE', 'fr-FR'] } });
+	const { code } = await loc(['draft'], { dir, flags: { locale: 'fr-FR' } });
+	assert.equal(code, 0);
+	await readJson(dir, 'store/staged/fr-FR.json');
+	await assert.rejects(() => readJson(dir, 'store/staged/de-DE.json'), /ENOENT/);
+});
+
+test('a storefront that answers nothing at all is no titles, not a crash', async () => {
+	const dir = await locRepo({ 'aso/en-US/scored.json': { terms: [{ keyword: 'car maintenance log' }] } });
+	const dead = async () => new Response('', { status: 500 });
+	const { code, out } = await loc(['seed'], { dir, fetch: dead });
+	assert.equal(code, 0);
+	assert.match(out, /0 incumbents/);
+});
