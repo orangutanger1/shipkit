@@ -2,7 +2,9 @@
 // the fake capture hands back the same observations lib/qa-checks.mjs would get
 // from a real page, so this exercises the whole command offline.
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -11,6 +13,7 @@ import { checkQa } from '../src/lib/preflight-live.mjs';
 import { Report } from '../src/log.mjs';
 import { cellId } from '../src/lib/qa-matrix.mjs';
 import { ARTIFACTS, clone } from './fixtures/artifacts.mjs';
+import { linkNativeDeps } from './fixtures/cmd.mjs';
 
 const quiet = async (fn) => {
 	const saved = { out: process.stdout.write, err: process.stderr.write };
@@ -44,6 +47,25 @@ async function inRepo(dir, args, flags = {}, capture) {
 		return await quiet(() => run({ args, flags, capture }));
 	} finally {
 		process.chdir(cwd);
+	}
+}
+
+/** The same, keeping stdout so a test can read what was printed. */
+async function inRepoLoud(dir, args, flags = {}) {
+	const cwd = process.cwd();
+	const write = process.stdout.write;
+	let out = '';
+	const err = process.stderr.write;
+	process.stdout.write = (chunk) => { out += chunk; return true; };
+	process.stderr.write = (chunk) => { out += chunk; return true; };
+	process.chdir(dir);
+	try {
+		const result = await run({ args, flags });
+		return { out, result };
+	} finally {
+		process.stderr.write = err;
+		process.chdir(cwd);
+		process.stdout.write = write;
 	}
 }
 
@@ -219,4 +241,100 @@ test('preflight carries the qa verdict through, warnings included', async () => 
 		assert.equal(report.rows[0].level, level);
 		assert.match(report.rows[0].detail, /macOS lane|tier 1/);
 	}
+});
+
+// ── the browser half ────────────────────────────────────────────────────────
+//
+// Everything above injects `capture`. These drive the real captureCells against
+// the stand-in puppeteer in test/fixtures/native, which shipkit resolves out of
+// the app repo exactly as it would resolve the real one — so the navigation,
+// the Accept-Language header, the root font-size scaling and the screenshot
+// are the calls the command actually makes.
+
+const puppeteer = createRequire(import.meta.url)('./fixtures/native/puppeteer/index.cjs');
+
+test('the default capture drives one page per cell and screenshots each one', async () => {
+	const dir = await repo();
+	await linkNativeDeps(dir, ['sharp', 'puppeteer']);
+	puppeteer.observed.value = clean({ theme: 'light', state: 'default' });
+	puppeteer.calls.length = 0;
+	// Let the stub run the one piece of page code the command ships — scaling the
+	// root font size — against a document stood up here, the way test/qa.test.mjs
+	// runs the probe itself.
+	const root = { style: {} };
+	globalThis.document = { documentElement: root };
+	puppeteer.inProcess.run = true;
+
+	const code = await inRepo(dir, [], {});
+	assert.ok(code === 0 || code === 1, 'the run completes on its own captures');
+
+	const obs = JSON.parse(await readFile(join(dir, 'qa', '1.0.0', 'observations.json'), 'utf8'));
+	assert.ok(obs.length, 'every cell was observed');
+	assert.ok(obs.every((o) => /^[0-9a-f]{64}$/.test(o.sha256)), 'the sha is of the bytes puppeteer returned');
+
+	const shots = puppeteer.calls.filter(([kind]) => kind === 'screenshot');
+	assert.equal(shots.length, obs.length);
+	assert.ok(existsSync(shots[0][1]), 'the png is on disk beside the report');
+	assert.ok(puppeteer.calls.some(([kind, h]) => kind === 'headers' && h['Accept-Language'] === 'en-US'));
+	assert.ok(puppeteer.calls.some(([kind, , arg]) => kind === 'evaluate' && arg === 1), 'default Dynamic Type is scale 1');
+	assert.ok(puppeteer.calls.some(([kind, , arg]) => kind === 'evaluate' && typeof arg === 'number' && arg > 1), 'xl asks for a larger root font');
+	assert.ok(puppeteer.calls.some(([kind]) => kind === 'browserClose'), 'the browser is closed');
+	assert.match(root.style.fontSize, /^\d+(\.\d+)?px$/, 'the scale landed on the root element, so a rem-only build still grows');
+	puppeteer.inProcess.run = false;
+	delete globalThis.document;
+});
+
+test('a repo without puppeteer is told what to install', async () => {
+	const dir = await repo();
+	await assert.rejects(() => inRepo(dir, [], {}), (err) => {
+		assert.match(err.message, /puppeteer is not installed/);
+		assert.match(err.hint, /npm i -D puppeteer/);
+		return true;
+	});
+});
+
+// ── how a report is presented ───────────────────────────────────────────────
+
+/**
+ * A schema-valid report of `n` open rows. Every third row measured nothing and
+ * says nothing, which is what the table has to render as an empty cell rather
+ * than "undefined".
+ */
+const bare = (n, status = 'WARN') => ({
+	version: '1.0.0',
+	generatedAt: new Date().toISOString(),
+	tier: 1,
+	checks: Array.from({ length: n }, (_, i) => ({
+		id: `row-${i}`,
+		category: 'layout',
+		requiresTier: 1,
+		status,
+		...(i % 3 === 1 ? { measured: 32 } : {}),
+		...(i % 3 === 2 ? { measured: 32, threshold: 44, message: `row ${i} is short` } : {}),
+	})),
+	summary: { pass: 0, warn: status === 'WARN' ? n : 0, fail: status === 'FAIL' ? n : 0, skipped: 0 },
+});
+
+const writeReport = (dir, doc) => writeFile(join(dir, 'qa', '1.0.0', 'report.json'), JSON.stringify(doc));
+
+test('a report of more than forty open rows is truncated, and says how many it dropped', async () => {
+	const dir = await repo();
+	await mkdir(join(dir, 'qa', '1.0.0'), { recursive: true });
+	await writeReport(dir, bare(45));
+	const { out, result } = await inRepoLoud(dir, ['check'], {});
+	assert.equal(result, 0, 'warnings alone do not fail the gate');
+	assert.match(out, /… and 5 more/);
+	assert.match(out, /row-0/);
+	assert.match(out, /32 \/ 44/, 'a measured row prints its threshold beside it');
+	assert.match(out, /row 2 is short/);
+	assert.doesNotMatch(out, /row-44/);
+});
+
+test('--json prints the report and exits on its failures', async () => {
+	const dir = await repo();
+	await mkdir(join(dir, 'qa', '1.0.0'), { recursive: true });
+	await writeReport(dir, bare(2, 'FAIL'));
+	const { out, result } = await inRepoLoud(dir, ['check'], { json: true });
+	assert.equal(result, 1);
+	assert.deepEqual(JSON.parse(out.slice(out.indexOf('{'))).summary, { pass: 0, warn: 0, fail: 2, skipped: 0 });
 });
