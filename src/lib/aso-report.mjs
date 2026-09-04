@@ -16,12 +16,14 @@ import { keywordList, lintListing } from './locales.mjs';
 /** @typedef {import('./locales.mjs').StagedListing} StagedListing */
 /** @typedef {import('./locales.mjs').ListingData} ListingData */
 /** @typedef {import('./util.mjs').Flags} Flags */
+/** @typedef {import('./appstore-client.mjs').Market} Market */
 /** @typedef {{id?: string|number|null, name?: string}} CompetitorRef */
 /** A scored candidate, tolerating the bare-string legacy shape. */
 /** @typedef {{keyword: string, opportunity?: number, demand?: number, demandSource?: string, competition?: number, medianRatings?: number, weakAppsTop10?: number, difficulty?: number, top3?: CompetitorRef[]}} ScoredTerm */
 /** @typedef {{name?: string, trackName?: string, sellerName?: string, userRatingCount?: number, averageUserRating?: number, price?: number, primaryGenreName?: string, subtitle?: string, trackId?: string|number}} StoreApp */
 
 /** Shortest first: one- and two-word queries are the high-volume heads. */
+/** @type {(a: string, b: string) => number} */
 export const byLength = (a, b) => a.length - b.length || a.localeCompare(b);
 
 /**
@@ -84,6 +86,7 @@ export const sourceLocale = (cfg) => cfg.loc.sourceLocale ?? cfg.asc.primaryLoca
  * @returns {Promise<{seeds: string[], origin: string, mismatch: boolean}>}
  */
 export async function seedsFor(cfg, locale, flags, listingFor) {
+	/** @type {(s: unknown) => string[]} */
 	const split = (s) =>
 		String(s ?? '')
 			.split(',')
@@ -299,14 +302,17 @@ export function competitorVocabulary(apps, locale) {
 // --- audit findings ---------------------------------------------------------
 
 /** Apple maps audit severity onto a report level; anything unknown reads as a warning. */
+/** @type {Record<string, 'fail'|'warn'|undefined>} */
 const LEVELS = { error: 'fail', fail: 'fail', failed: 'fail', critical: 'fail', warning: 'warn', warn: 'warn' };
 
 /** Display names for Apple's generated app tags, across raw rows and JSON:API resources. */
+/** @type {(rows: any[]) => string[]} */
 export const tagNames = (rows) => rows.map((t) => t.name ?? t.displayName ?? t.attributes?.name ?? t.id).filter(Boolean);
 
 /** One report entry per keyword-audit row, with level/name/detail already resolved. */
+/** @param {any[]} rows @returns {{level: string, name: string, detail: string}[]} */
 export function auditFindings(rows) {
-	return rows.map((row) => ({
+	return rows.map((/** @type {any} */ row) => ({
 		level: LEVELS[String(row.level ?? row.severity ?? row.status ?? '').toLocaleLowerCase()] ?? 'warn',
 		name: `asc ${row.locale ?? row.field ?? 'keywords'}`,
 		detail: row.message ?? row.detail ?? row.description ?? JSON.stringify(row),
@@ -314,7 +320,9 @@ export function auditFindings(rows) {
 }
 
 /** The offline keywords lint as report entries: an ok per clean listing, one per problem. */
+/** @param {StagedListing[]} staged @returns {{level: string, name: string, detail: string}[]} */
 export function keywordLintFindings(staged) {
+	/** @type {{level: string, name: string, detail: string}[]} */
 	const findings = [];
 	for (const listing of staged) {
 		const problems = lintListing(listing).filter((p) => p.field === 'keywords');
@@ -334,9 +342,15 @@ export function keywordLintFindings(staged) {
 // --- stage renderings -------------------------------------------------------
 
 /** Progress belongs on stdout, which --json owns exclusively. */
+/** @type {(flags: Flags) => typeof progressLine|undefined} */
 export const reporter = (flags) => (flags.json ? undefined : progressLine);
 
 /** Who we tell where the seeds came from, plus the cross-language warning. */
+/**
+ * @param {Config} cfg
+ * @param {{locale: string, market: Market, seeds: string[], origin: string, mismatch: boolean, json: boolean}} ctx
+ * @returns {void}
+ */
 export function announceSeeds(cfg, { locale, market, seeds, origin, mismatch, json }) {
 	if (!json) {
 		heading(`Harvest ${locale} ${c.dim(`(${market.country})`)}`);
@@ -349,6 +363,8 @@ export function announceSeeds(cfg, { locale, market, seeds, origin, mismatch, js
 	}
 }
 
+/** @typedef {{locale: string, file: string, terms: Record<string, {seeds: string[]}>}} HarvestReport */
+/** @param {HarvestReport} out @returns {void} */
 export function printHarvest(out) {
 	const names = Object.keys(out.terms);
 	good(`${names.length} candidate terms → ${c.dim(out.file)}`);
@@ -358,6 +374,15 @@ export function printHarvest(out) {
 	note(c.dim(`next: ship aso score --locale ${out.locale}`));
 }
 
+/**
+ * @typedef {{popularity?: number, difficulty?: number}} VolumeTerm
+ * @typedef {{
+ *   locale: string, file: string, artifact: {terms?: Record<string, VolumeTerm>},
+ *   template?: boolean, source?: string, imported?: number,
+ *   floor?: string[], unanswered?: string[], overBudget?: string[], wanted?: number,
+ * }} VolumeReport
+ */
+/** @param {VolumeReport} out @returns {void} */
 export function printVolume(out) {
 	const rows = Object.entries(out.artifact.terms ?? {}).sort((a, b) => (b[1].popularity ?? 0) - (a[1].popularity ?? 0));
 	if (out.template) {
@@ -384,6 +409,8 @@ export function printVolume(out) {
 	note(c.dim(`next: ship aso score --locale ${out.locale}`));
 }
 
+/** @typedef {{locale: string, file: string, count: number, scored: ScoredTerm[]}} ScoreReport */
+/** @param {ScoreReport} out @returns {void} */
 export function printScore(out) {
 	heading(`Top ${Math.min(20, out.count)} of ${out.count} — ${out.locale}`);
 	table(out.scored.slice(0, 20), [
@@ -393,13 +420,17 @@ export function printScore(out) {
 		{ header: 'comp', get: (s) => String(s.competition) },
 		{ header: 'medRatings', get: (s) => String(s.medianRatings) },
 		{ header: 'weak/10', get: (s) => String(s.weakAppsTop10) },
-		{ header: 'top competitor', get: (s) => s.top3[0]?.name ?? '' },
+		{ header: 'top competitor', get: (s) => s.top3?.[0]?.name ?? '' },
 	]);
 	note(c.dim('* demand measured from analytics or volume.json rather than autocomplete rank'));
 	good(`scored ${out.count} terms → ${c.dim(out.file)}`);
 	note(c.dim(`next: ship aso suggest --locale ${out.locale}`));
 }
 
+/**
+ * @typedef {{locale: string, name?: string, subtitle?: string, keywords: string, limit: number, used: number, covered: string[], added: string[], removed: string[]}} Proposal
+ */
+/** @param {Proposal} p @returns {void} */
 export function printProposal(p) {
 	heading(`Keywords for ${p.locale}`);
 	if (p.name || p.subtitle) info(`indexed free via listing: ${c.cyan(`${p.name} — ${p.subtitle}`)}`);
@@ -412,6 +443,10 @@ export function printProposal(p) {
 	if (!p.added.length && !p.removed.length) good('identical to the current field');
 }
 
+/**
+ * @param {{locale: string, market: Market, ids: (string|number)[], apps: {name?: string, seller?: string, ratings: number, price?: number, genre?: string}[], vocabulary: {apps: number, word: string}[], file: string}} ctx
+ * @returns {number|undefined}
+ */
 export function printCompetitors({ locale, market, ids, apps, vocabulary, file }) {
 	heading(`Competitors ${locale} ${c.dim(`(${market.country})`)}`);
 	if (!apps.length) {

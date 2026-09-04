@@ -17,6 +17,7 @@ const SEARCH = 'https://itunes.apple.com/search';
 const LOOKUP = 'https://itunes.apple.com/lookup';
 
 /** Storefront ids required by the hints endpoint's X-Apple-Store-Front header. */
+/** @type {Record<string, number|undefined>} */
 const STOREFRONT = {
 	US: 143441, GB: 143444, AU: 143460, CA: 143455, FR: 143442, DE: 143443,
 	ES: 143454, MX: 143468, BR: 143503, IT: 143450, NL: 143452, PL: 143478,
@@ -26,7 +27,11 @@ const STOREFRONT = {
 	PT: 143453, GR: 143448, RO: 143487, UA: 143492, IL: 143491, AE: 143481,
 };
 
+/** One storefront: the country code Apple searches in, and the language it answers in. */
+/** @typedef {{country: string, lang: string}} Market */
+
 /** ASC locale → { country, lang } for search + hints. */
+/** @type {Record<string, Market|undefined>} */
 export const LOCALE_MARKETS = {
 	'en-US': { country: 'US', lang: 'en_us' }, 'en-GB': { country: 'GB', lang: 'en_gb' },
 	'en-AU': { country: 'AU', lang: 'en_au' }, 'en-CA': { country: 'CA', lang: 'en_ca' },
@@ -48,6 +53,7 @@ export const LOCALE_MARKETS = {
 	he: { country: 'IL', lang: 'he_il' },
 };
 
+/** @param {string} locale @returns {Market|null} */
 export function marketFor(locale) {
 	return LOCALE_MARKETS[locale] ?? LOCALE_MARKETS[locale?.split('-')[0]] ?? null;
 }
@@ -59,8 +65,11 @@ const BACKOFF_MS = 20_000;
 const REFUSED = new Set([403, 429]);
 
 /** country → { last, until }. One gate per storefront, because that is how Apple counts. */
+/** @typedef {{last: number, until: number}} Gate */
+/** @type {Map<string, Gate>} */
 const gates = new Map();
 
+/** @param {string} country @returns {Gate} */
 export function gateFor(country) {
 	let gate = gates.get(country);
 	if (!gate) gates.set(country, (gate = { last: 0, until: 0 }));
@@ -68,10 +77,12 @@ export function gateFor(country) {
 }
 
 /** ms one storefront still owes: its own request floor, or the rest of its own backoff. */
+/** @type {(gate: Gate, now: number) => number} */
 export const gateWait = (gate, now) => Math.max(gate.until - now, MIN_INTERVAL_MS - (now - gate.last));
 
 /** Apple stopped answering for one storefront; the caller must save its work, not log zeros. */
 export class StorefrontWall extends Error {
+	/** @param {string} country */
 	constructor(country) {
 		super(`App Store refused ${country} after ${BACKOFF_MS / 1000}s backoff (403/429)`);
 		this.name = 'StorefrontWall';
@@ -84,11 +95,12 @@ export const CACHE_TTL_MS = 7 * DAY_MS;
 
 // Off until a command points it at a repo: a library has no business writing
 // into whatever directory the process happens to have been started in.
+/** @type {{dir: string|null, ttl: number, read: boolean, write: boolean}} */
 let cache = { dir: null, ttl: CACHE_TTL_MS, read: false, write: false };
 
 /**
  * Enable the on-disk response cache.
- * @param {{dir: string, ttlMs?: number, mode?: 'on'|'refresh'|'off'}} opts
+ * @param {{dir?: string, ttlMs?: number, mode?: 'on'|'refresh'|'off'}} [opts]
  *   `refresh` re-fetches but still repopulates, so a wall mid-sweep is cheap to resume.
  */
 export function useCache({ dir, ttlMs = CACHE_TTL_MS, mode = 'on' } = {}) {
@@ -96,11 +108,14 @@ export function useCache({ dir, ttlMs = CACHE_TTL_MS, mode = 'on' } = {}) {
 	cache = { dir: off ? null : dir, ttl: ttlMs, read: !off && mode === 'on', write: !off };
 }
 
+/** @param {string} endpoint @param {string} term @param {string} country @returns {string|null} */
 function cacheFile(endpoint, term, country) {
+	if (!cache.dir) return null;
 	const hash = createHash('sha1').update(`${endpoint}\n${term}\n${country}`).digest('hex').slice(0, 16);
 	return join(cache.dir, country, `${endpoint}-${hash}.json`);
 }
 
+/** @param {string} file @returns {Promise<string|null>} */
 async function cacheRead(file) {
 	try {
 		const entry = JSON.parse(await readFile(file, 'utf8'));
@@ -111,6 +126,7 @@ async function cacheRead(file) {
 	}
 }
 
+/** @param {string} file @param {Record<string, string|undefined>} meta @param {string} body @returns {Promise<void>} */
 async function cacheWrite(file, meta, body) {
 	try {
 		await mkdir(dirname(file), { recursive: true });
@@ -168,7 +184,7 @@ export async function throttledFetch(url, { headers = {}, country = 'US', endpoi
 			if (err instanceof StorefrontWall) throw err;
 			gate.last = Date.now();
 			if (attempt === tries - 1) {
-				warn(`request failed: ${err.message}`);
+				warn(`request failed: ${err instanceof Error ? err.message : String(err)}`);
 				return null;
 			}
 			await sleep(3000);
@@ -177,12 +193,14 @@ export async function throttledFetch(url, { headers = {}, country = 'US', endpoi
 	return null;
 }
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** @type {(ms: number) => Promise<void>} */
+const sleep = (ms) => new Promise((r) => setTimeout(() => r(undefined), ms));
 
 /**
  * Live App Store autocomplete suggestions for a prefix, in Apple's own order.
  * That order is the ranking signal {@link import('./appstore-score.mjs').demand} reads — never sort it.
  */
+/** @param {string} term @param {string} [country] @param {{hard?: boolean}} [opts] @returns {Promise<string[]>} */
 export async function hints(term, country = 'US', { hard = false } = {}) {
 	const storefront = STOREFRONT[country];
 	if (!storefront) return [];
@@ -201,6 +219,7 @@ export async function hints(term, country = 'US', { hard = false } = {}) {
 }
 
 /** The seed plus two truncations, so autocomplete has room to complete. */
+/** @param {string} seed @returns {Generator<string>} */
 function* stems(seed) {
 	yield seed;
 	if (seed.length > 6) yield seed.slice(0, -2);
@@ -209,6 +228,7 @@ function* stems(seed) {
 
 /** @typedef {{seeds: string[], rank: number, stemDepth: number}} Candidate */
 
+/** @type {(found: Map<string, {seeds: Set<string>, rank: number, stemDepth: number}>) => Record<string, Candidate>} */
 const candidates = (found) =>
 	Object.fromEntries(
 		[...found].map(([term, e]) => [term, { seeds: [...e.seeds].sort(), rank: e.rank, stemDepth: e.stemDepth }]),
@@ -231,6 +251,7 @@ const BRANDY = /[:：]|—|·|\bapp\b|\bpro$/i;
  * @returns {Promise<Record<string, Candidate>>} term → candidate
  */
 export async function harvest(seeds, country = 'US', { onProgress, onPartial } = {}) {
+	/** @type {Map<string, {seeds: Set<string>, rank: number, stemDepth: number}>} */
 	const found = new Map();
 	let i = 0;
 	try {
@@ -255,13 +276,20 @@ export async function harvest(seeds, country = 'US', { onProgress, onPartial } =
 			onProgress?.(++i, seeds.length, seed, found.size);
 		}
 	} catch (err) {
-		err.partial = candidates(found);
-		await onPartial?.(err.partial);
+		// The partial rides on the error so a caller that only catches still has it.
+		const partial = candidates(found);
+		if (err instanceof Error) /** @type {Error & {partial?: Record<string, Candidate>}} */ (err).partial = partial;
+		await onPartial?.(partial);
 		throw err;
 	}
 	return candidates(found);
 }
 
+/**
+ * @param {string} term
+ * @param {{country?: string, lang?: string, limit?: number}} [opts]
+ * @returns {Promise<any[]|null>}
+ */
 export async function topResults(term, { country = 'US', lang = 'en_us', limit = 10 } = {}) {
 	const url = `${SEARCH}?${new URLSearchParams({ term, country, lang, entity: 'software', limit: String(limit) })}`;
 	const body = await throttledFetch(url, { country, endpoint: `search-${lang}-${limit}`, term });
@@ -274,8 +302,9 @@ export async function topResults(term, { country = 'US', lang = 'en_us', limit =
 }
 
 /** Look up apps by App Store id — used to mine competitor listings. */
+/** @param {string|string[]} ids @param {{country?: string}} [opts] @returns {Promise<any[]>} */
 export async function lookup(ids, { country = 'US' } = {}) {
-	const id = [].concat(ids).join(',');
+	const id = [ids].flat().join(',');
 	const url = `${LOOKUP}?${new URLSearchParams({ id, country, entity: 'software' })}`;
 	const body = await throttledFetch(url, { country, endpoint: 'lookup', term: id });
 	if (!body) return [];
