@@ -3,11 +3,13 @@
 // test wrote — so this is a gate rather than a smoke test.
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { run } from '../src/commands/design.mjs';
 import { ARTIFACTS, clone } from './fixtures/artifacts.mjs';
+import { DEFAULT_SYSTEM } from '../src/lib/design-tokens.mjs';
 
 const quiet = async (fn) => {
 	const out = process.stdout.write.bind(process.stdout);
@@ -181,4 +183,78 @@ test('review refuses to run against a system that is still a draft', async () =>
 	const dir = await repo();
 	await inRepo(dir, ['system']);
 	await assert.rejects(() => inRepo(dir, ['review']), /still a draft/);
+});
+
+// --- `ship design build` --------------------------------------------------
+
+const buildable = () => ({
+	'design/system.json': DEFAULT_SYSTEM,
+	'design/ux.json': {
+		screens: [{
+			id: 'home', route: '/', flow: 'home', purpose: 'Land.',
+			copy: { title: 'Hello' }, states: ['default', 'empty'],
+			events: [{ name: 'home_viewed', flow: 'home', verb: 'viewed' }],
+			elements: [{ component: 'Text', variant: 'largeTitle', copy: 'title' }],
+		}],
+		flows: [{ id: 'home', screens: ['home'], success: 'The first screen renders.' }],
+	},
+});
+
+test('build writes the tokens, the route, the events and the contract', async () => {
+	const dir = await repo({ files: buildable() });
+	assert.equal(await inRepo(dir, ['build']), 0);
+	for (const rel of ['src/theme/tokens.ts', 'src/theme/qa-params.ts', 'src/analytics/events.ts', 'app/index.tsx', 'design/components.json'])
+		assert.ok(existsSync(join(dir, rel)), `missing ${rel}`);
+	const screen = await readFile(join(dir, 'app/index.tsx'), 'utf8');
+	assert.match(screen, /export default function Home\(\)/);
+	assert.match(screen, /kind="empty"/);
+});
+
+test('a second build is a no-op, not a refusal', async () => {
+	const dir = await repo({ files: buildable() });
+	await inRepo(dir, ['build']);
+	assert.equal(await inRepo(dir, ['build']), 0);
+});
+
+test('a hand-edited file is refused by name, and every one at once', async () => {
+	const dir = await repo({ files: buildable() });
+	await inRepo(dir, ['build']);
+	for (const rel of ['app/index.tsx', 'src/theme/tokens.ts']) {
+		const text = await readFile(join(dir, rel), 'utf8');
+		await writeFile(join(dir, rel), `${text}\n// mine\n`);
+	}
+	const err = await inRepo(dir, ['build']).then(() => null, (e) => e);
+	assert.ok(err, 'expected a refusal');
+	assert.match(err.message + err.hint, /app\/index\.tsx/);
+	assert.match(err.message + err.hint, /tokens\.ts/);
+});
+
+test('--force takes an edited file back', async () => {
+	const dir = await repo({ files: buildable() });
+	await inRepo(dir, ['build']);
+	await writeFile(join(dir, 'app/index.tsx'), 'export default function X() { return null; }\n');
+	assert.equal(await inRepo(dir, ['build'], { force: true }), 0);
+	assert.match(await readFile(join(dir, 'app/index.tsx'), 'utf8'), /@generated/);
+});
+
+test('--check writes nothing', async () => {
+	const dir = await repo({ files: buildable() });
+	assert.equal(await inRepo(dir, ['build'], { check: true }), 0);
+	assert.ok(!existsSync(join(dir, 'app/index.tsx')));
+});
+
+test('a spec that violates the contract is refused before a byte is written', async () => {
+	const files = buildable();
+	files['design/ux.json'].screens[0].elements = [{ component: 'Carousel', copy: 'title' }];
+	const dir = await repo({ files });
+	const err = await inRepo(dir, ['build']).then(() => null, (e) => e);
+	assert.ok(err);
+	assert.match(err.message + err.hint, /Carousel/);
+	assert.ok(!existsSync(join(dir, 'app/index.tsx')), 'nothing may be written on a failed validation');
+});
+
+test('the generated tree passes design review', async () => {
+	const dir = await repo({ files: buildable() });
+	await inRepo(dir, ['build']);
+	assert.equal(await inRepo(dir, ['review']), 0);
 });

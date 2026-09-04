@@ -243,6 +243,63 @@ async function writeScaffold({ targetDir, vars, listing, brief, dry }) {
 	if (listing && !dry) note(`${STAGED_LISTING} drafted from "${brief.term}" — edit it, then \`ship meta lint\``);
 }
 
+/**
+ * `DEFAULT_SPEC` with the app's display name as its title. A named helper that
+ * returns a new spec, because mutating a module-level constant would make two
+ * `ship new` calls in one process disagree.
+ * @type {(spec: any, name: string) => any}
+ */
+function withAppName(spec, name) {
+	const screens = [];
+	for (const screen of spec.screens) screens.push({ ...screen, copy: { ...screen.copy, title: name } });
+	return { ...spec, screens };
+}
+
+/**
+ * The scaffold's generated half. It runs through the same emitters `ship design
+ * build` uses, against shipkit's built-in default system and one-screen spec —
+ * so there is one authority per generated file, and the first `design build`
+ * replaces every one of them cleanly rather than colliding with a template.
+ * @type {(targetDir: string, vars: Record<string, string>, dry: boolean) => Promise<void>}
+ */
+async function writeGenerated(targetDir, vars, dry) {
+	if (dry) return;
+	const { emitTokens, DEFAULT_SYSTEM } = await import('../lib/design-tokens.mjs');
+	const { emitScreen } = await import('../lib/design-screen.mjs');
+	const { emitEvents, emitCatalog, emitQaParams, QA_PARAMS_SOURCE, DEFAULT_SPEC } = await import('../lib/design-support.mjs');
+	const { CONTRACT_VERSION, contractDoc } = await import('../lib/design-contract.mjs');
+	const { bodyHash, routeToFile } = await import('../lib/design-emit.mjs');
+	const { writeJSON } = await import('../lib/jsonio.mjs');
+
+	const source = "shipkit's default design system";
+	const system = { ...DEFAULT_SYSTEM, brand: { ...DEFAULT_SYSTEM.brand, name: vars.NAME } };
+	const spec = withAppName(DEFAULT_SPEC, vars.NAME);
+	const files = [
+		{ rel: 'src/theme/tokens.ts', body: emitTokens(system, { source }) },
+		{ rel: 'src/theme/qa-params.ts', body: emitQaParams(await readFile(QA_PARAMS_SOURCE, 'utf8'), { source: 'src/lib/qa-params.mjs' }) },
+		{ rel: 'src/analytics/events.ts', body: emitEvents(spec, { source }) },
+		{ rel: 'src/purchases/catalog.ts', body: emitCatalog(spec, { source }) },
+	];
+	for (const screen of spec.screens) files.push({ rel: routeToFile(screen.route), body: emitScreen(screen, { source }) });
+
+	step('Generating tokens, events and the first screen');
+	for (const file of files) {
+		const dest = join(targetDir, file.rel);
+		await mkdir(dirname(dest), { recursive: true });
+		await writeFile(dest, file.body);
+		note(file.rel);
+	}
+	// The contract the app's implementing agent reads, and the one the first
+	// `ship design build` compares against. Hashed, so it carries no timestamp.
+	const doc = contractDoc();
+	await writeJSON(join(targetDir, 'design', 'components.json'), {
+		...doc,
+		_generated: { by: 'ship design build', contractVersion: CONTRACT_VERSION, hash: bodyHash(JSON.stringify(doc)) },
+	});
+	note('design/components.json');
+	good(`${files.length + 1} generated files`);
+}
+
 function printNextSteps({ targetDir, bundleId, flags }) {
 	if (!flags['bundle-id'] && !flags.bundleId)
 		warn(`bundle id was derived as ${bundleId} — change it before the first EAS build`);
@@ -279,6 +336,7 @@ export async function run({ args, flags }) {
 		brief,
 		dry,
 	});
+	await writeGenerated(targetDir, { SLUG: identity.slug, NAME: identity.name }, dry);
 
 	// Lazy import: init.mjs is a peer command and resolving it at module load
 	// would couple `ship new`'s parse-time to it.

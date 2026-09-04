@@ -1,9 +1,9 @@
 // ship design — the contract between the evidence and the implementation.
 // Node drafts what it can derive and gates what the agent wrote; choosing a
 // hue and naming a direction is the only agent work.
-import { readdir, readFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { loadConfig } from '../config.mjs';
 import { ShipError, c, good, heading, note, step, table, warn } from '../log.mjs';
 import { readJSONIfExists, readJSONStrict, writeJSON } from '../lib/jsonio.mjs';
@@ -11,6 +11,11 @@ import { resolveFlows } from '../lib/research-plan.mjs';
 import { loadRun, resolveSlug } from '../lib/research-run.mjs';
 import { checkSystem } from '../lib/design-system.mjs';
 import { checkSpec } from '../lib/design-spec.mjs';
+import { CONTRACT_VERSION, contractDoc, validateAgainstContract } from '../lib/design-contract.mjs';
+import { bodyHash, classify, routeToFile } from '../lib/design-emit.mjs';
+import { emitTokens } from '../lib/design-tokens.mjs';
+import { emitScreen } from '../lib/design-screen.mjs';
+import { QA_PARAMS_SOURCE, emitCatalog, emitEvents, emitQaParams } from '../lib/design-support.mjs';
 import { reviewSources, tally } from '../lib/design-review.mjs';
 import { draftSpec, draftSystem, draftTodo } from '../lib/design-draft.mjs';
 import { assertArtifact, checkArtifact } from '../lib/schemas.mjs';
@@ -24,6 +29,7 @@ ${c.bold('ship design')} ${c.dim('— the token and screen contracts the impleme
 
   ${c.cyan('system')}    draft design/system.json, or gate the one on disk
   ${c.cyan('spec')}      draft design/ux.json over the researched flows
+  ${c.cyan('build')}     transcribe the system and the spec into the app's generated files
   ${c.cyan('review')}    the same rules against the implementation, not the spec
 
 ${c.bold('Flags')}
@@ -33,6 +39,7 @@ ${c.bold('Flags')}
   ${c.cyan('--slug')}      which research run to resolve citations against
   ${c.cyan('--json')}      print the artifact or the violations instead of a table
 
+${c.dim('build writes tokens.ts, qa-params.ts, events.ts, catalog.ts and one file per route.')}
 ${c.dim('Artifacts: design/system.json · design/ux.json · design/components.json')}
 ${c.dim('Every token cites a ref_, a claim_, or a HIG rule. Uncited is invented.')}
 `;
@@ -72,15 +79,16 @@ function refuseDraft(what, file, doc) {
 }
 
 /**
- * Report a gate's issues the same way in all three subcommands: every one at
- * once, because fixing one error per run is how an artifact takes ten rounds.
+ * Report a gate's issues the same way in every subcommand: every one at once,
+ * because fixing one error per run is how an artifact takes ten rounds. They
+ * ride in the hint rather than being printed separately, so the failure the
+ * caller catches carries the whole list rather than a count.
  * @type {(what: string, issues: string[]) => void}
  */
 function gate(what, issues) {
 	if (!issues.length) return;
-	for (const issue of issues) note(c.red(issue));
 	throw new ShipError(`design ${what}: ${issues.length} issue(s)`, {
-		hint: 'every value is cited, legible in both themes, and on the declared scale',
+		hint: [...issues, 'every value is cited, legible in both themes, and on the declared scale'].join('\n'),
 	});
 }
 
@@ -132,11 +140,23 @@ async function spec({ flags }) {
 	}
 
 	refuseDraft('spec', 'ux.json', existing);
-	const components = await readJSONIfExists(join(cfg.paths.design, 'components.json'));
-	const ids = new Set(Object.keys(/** @type {any} */ (components)?.components ?? {}));
+	// A components.json carrying `contractVersion` is shipkit's primitive
+	// contract, written by `design build` — not an app-authored component map.
+	// Its four primitives are not the vocabulary `screens[].components` names,
+	// so gating one against the other would fail every repo after its first
+	// build. What it can answer is whether this spec is buildable, which is the
+	// same question `build` asks — asked here so a spec that cannot be built
+	// fails at `design spec` rather than three commands later.
+	const components = /** @type {any} */ (await readJSONIfExists(join(cfg.paths.design, 'components.json')));
+	const contract = components?.contractVersion ? components : null;
+	// Without a system.json the token half of that check would report every
+	// token as missing, so an unbuilt system skips it rather than shouting.
+	const system = contract ? await readJSONIfExists(cfg.paths.designSystem) : null;
+	const ids = new Set(contract ? [] : Object.keys(components?.components ?? {}));
 	gate('spec', [
 		...(await checkArtifact('ux-spec', existing, 'ux.json')),
 		...checkSpec(existing, { components: ids }),
+		...(contract && system ? validateAgainstContract(existing, contract, system) : []),
 	]);
 	const doc = /** @type {any} */ (existing);
 	table(doc.flows ?? [], [
@@ -145,6 +165,109 @@ async function spec({ flags }) {
 		{ header: 'success', get: (f) => f.success },
 	]);
 	good(`${(doc.screens ?? []).length} screens over ${(doc.flows ?? []).length} flows, every string specified`);
+	return 0;
+}
+
+
+/**
+ * Everything this repo would generate, as {rel, body} — computed in full before
+ * a byte is written, so a failed validation leaves no half-generated tree.
+ * @type {(system: any, spec: any) => Promise<{rel: string, body: string}[]>}
+ */
+async function planFiles(system, spec) {
+	const qaSrc = await readFile(QA_PARAMS_SOURCE, 'utf8');
+	const files = [
+		{ rel: 'src/theme/tokens.ts', body: emitTokens(system, { source: 'design/system.json' }) },
+		{ rel: 'src/theme/qa-params.ts', body: emitQaParams(qaSrc, { source: 'src/lib/qa-params.mjs' }) },
+		{ rel: 'src/analytics/events.ts', body: emitEvents(spec, { source: 'design/ux.json' }) },
+		{ rel: 'src/purchases/catalog.ts', body: emitCatalog(spec, { source: 'design/ux.json' }) },
+	];
+	for (const screen of /** @type {any} */ (spec)?.screens ?? [])
+		files.push({ rel: routeToFile(screen.route), body: emitScreen(screen, { source: 'design/ux.json' }) });
+	return files;
+}
+
+/** @type {(entry: {action: string}) => boolean} */
+function isRefused(entry) {
+	return entry.action === 'edited' || entry.action === 'foreign';
+}
+
+/** @type {(entry: {rel: string}) => string} */
+function relOf(entry) {
+	return entry.rel;
+}
+
+/** @type {(entry: {action: string}) => string} */
+function actionOf(entry) {
+	return entry.action;
+}
+
+/**
+ * The contract, as design/components.json. `_generated` carries no timestamp:
+ * the document is hashed, and a clock in it would make every run a diff.
+ * @type {() => any}
+ */
+function contractFile() {
+	const doc = contractDoc();
+	return { ...doc, _generated: { by: 'ship design build', contractVersion: CONTRACT_VERSION, hash: bodyHash(JSON.stringify(doc)) } };
+}
+
+/**
+ * What `build` would do to each file, read off disk before anything is written.
+ * @type {(root: string, files: {rel: string, body: string}[]) => Promise<{rel: string, body: string, dest: string, action: string}[]>}
+ */
+async function classifyPlan(root, files) {
+	/** @type {{rel: string, body: string, dest: string, action: string}[]} */
+	const plan = [];
+	for (const file of files) {
+		const dest = join(root, file.rel);
+		const text = existsSync(dest) ? await readFile(dest, 'utf8') : null;
+		plan.push({ ...file, dest, action: classify(text, file.body) });
+	}
+	return plan;
+}
+
+/** @type {(ctx: SubCtx) => Promise<number>} */
+async function build({ flags }) {
+	const cfg = await loadConfig();
+	heading('design build');
+	const system = await readJSONStrict(cfg.paths.designSystem);
+	refuseDraft('build', 'system.json', system);
+	const spec = await readJSONStrict(join(cfg.paths.design, 'ux.json'));
+	refuseDraft('build', 'ux.json', spec);
+
+	// An on-disk contract wins so an app pinned to an older shipkit is not
+	// silently re-transcribed against a newer vocabulary.
+	const onDisk = /** @type {any} */ (await readJSONIfExists(join(cfg.paths.design, 'components.json')));
+	const contract = onDisk?.contractVersion ? onDisk : contractDoc();
+	gate('build', [
+		...(await checkArtifact('ux-spec', spec, 'ux.json')),
+		...validateAgainstContract(spec, contract, system),
+	]);
+
+	const plan = await classifyPlan(cfg.paths.app, await planFiles(system, spec));
+	const refused = plan.filter(isRefused);
+	// Every refusal at once: fixing one file per run is how a build takes ten.
+	if (refused.length && !flags.force)
+		throw new ShipError(`design build: ${refused.length} file(s) would lose changes`, {
+			hint: `${refused.map(relOf).join(', ')} — --force to overwrite, or revert them`,
+		});
+
+	table(plan, [
+		{ header: 'file', get: relOf },
+		{ header: 'action', get: actionOf },
+	]);
+	if (flags.check) {
+		note('--check: nothing written');
+		return 0;
+	}
+	for (const file of plan) {
+		await mkdir(dirname(file.dest), { recursive: true });
+		await writeFile(file.dest, file.body);
+	}
+	const written = await writeJSON(join(cfg.paths.design, 'components.json'), contractFile());
+	note(relative(cfg.paths.root, written));
+	good(`${plan.length + 1} generated file(s) · contract ${CONTRACT_VERSION}`);
 	return 0;
 }
 
@@ -204,7 +327,7 @@ async function review({ flags }) {
 	});
 }
 
-const SUB = { system, spec, review };
+const SUB = { system, spec, build, review };
 
 /** @type {(ctx: SubCtx) => Promise<number>} */
 export async function run({ args, flags }) {
