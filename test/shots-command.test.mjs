@@ -368,3 +368,77 @@ test('verify reports the calibration and safety evidence for a rendered set', as
 	const { out: raw } = await shots(['verify', 'en-US'], { dir, flags: { json: true } });
 	assert.equal(JSON.parse(raw).mode, 'caption-band');
 });
+
+// ── figma ───────────────────────────────────────────────────────────────────
+// The committed layer exports are build inputs. This subcommand exists to say
+// whether the design has moved since they were taken — cheaply, from the file
+// metadata endpoint — and only re-exports when asked.
+
+const FIGMA_SPEC = { ...DEVICE_SPEC, source: { figmaFile: 'FILEKEY', frameIds: { one: '1:2' } } };
+
+/** @param {{version?: string, images?: object, status?: number}} [opts] */
+const figmaApi = ({ version = 'v9', images = { '1:2': 'https://figma.example/img/1.png' }, status = 200 } = {}) =>
+	async (url) => {
+		const href = String(url);
+		if (href.includes('/images/')) return json({ images }, status);
+		if (href.includes('/files/')) return json({ version, lastModified: '2026-09-01T00:00:00Z', name: 'Design' }, status);
+		return new Response(Buffer.from(await sharp({ create: { width: 4, height: 4, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 1 } } }).png().toBuffer()));
+	};
+
+test('figma reports drift against the pinned version, and --pin records the new one', async () => {
+	ascOk();
+	process.env.FIGMA_API_KEY = 'figma-token';
+	const dir = await renderRepo(FIGMA_SPEC);
+	const { code, out } = await shots(['figma'], { dir, fetch: figmaApi() });
+	assert.equal(code, 0);
+	assert.match(out, /spec records no version/);
+
+	const { out: pinned } = await shots(['figma'], { dir, flags: { pin: true }, fetch: figmaApi() });
+	assert.match(pinned, /pinned .* to version v9/);
+	assert.equal(JSON.parse(await readFile(join(dir, 'store', 'figma-geometry.json'), 'utf8')).source.version, 'v9');
+
+	const { code: drifted, out: moved } = await shots(['figma'], { dir, fetch: figmaApi({ version: 'v10' }) });
+	assert.equal(drifted, 1, 'a moved design is a finding, not a surprise later');
+	assert.match(moved, /design has moved since the committed exports/);
+
+	const { code: same } = await shots(['figma'], { dir, fetch: figmaApi({ version: 'v9' }) });
+	assert.equal(same, 0);
+});
+
+test('figma needs a token and a file key', async () => {
+	ascOk();
+	const dir = await renderRepo(FIGMA_SPEC);
+	const saved = process.env.FIGMA_API_KEY;
+	delete process.env.FIGMA_API_KEY;
+	delete process.env.FIGMA_TOKEN;
+	try {
+		await assert.rejects(() => shots(['figma'], { dir, fetch: figmaApi() }), /no Figma token/);
+	} finally {
+		process.env.FIGMA_API_KEY = saved;
+	}
+	const noKey = await renderRepo(DEVICE_SPEC);
+	await assert.rejects(() => shots(['figma'], { dir: noKey, fetch: figmaApi() }), /source.figmaFile is not set/);
+});
+
+test('--export downloads the nodes the spec names, and survives the quota running out', async () => {
+	ascOk();
+	process.env.FIGMA_API_KEY = 'figma-token';
+	const dir = await renderRepo(FIGMA_SPEC);
+	await deviceParts(dir);
+	const { code, out } = await shots(['figma'], { dir, flags: { export: true, scale: 2 }, fetch: figmaApi() });
+	assert.equal(code, 0);
+	assert.match(out, /exported 1 node/);
+	assert.match(out, /commit these/);
+
+	const quota = async (url) => (String(url).includes('/images/') ? new Response('', { status: 429 }) : figmaApi()(url));
+	const { code: survived, out: warned } = await shots(['figma'], { dir, flags: { export: true }, fetch: quota });
+	assert.equal(survived, 0, 'the committed exports are exactly the fallback this buys');
+	assert.match(warned, /quota exhausted/);
+});
+
+test('--export with nothing to export says so', async () => {
+	ascOk();
+	process.env.FIGMA_API_KEY = 'figma-token';
+	const dir = await renderRepo({ ...DEVICE_SPEC, source: { figmaFile: 'FILEKEY' } });
+	await assert.rejects(() => shots(['figma'], { dir, flags: { export: true }, fetch: figmaApi() }), /nothing to export/);
+});
