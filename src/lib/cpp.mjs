@@ -33,7 +33,7 @@ import { charCount } from './text.mjs';
  *
  * @typedef {{
  *   locale?: string, promotionalText?: string, screenshotDir?: string, description?: string,
- *   [key: string]: Json
+ *   [key: string]: Json|undefined
  * }} CppLocaleData
  */
 /** One authored `<locale>.json` beside a cpp.json. */

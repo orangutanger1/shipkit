@@ -20,8 +20,10 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { CONFIG_NAME, SHIPKIT_ROOT, saveConfig } from '../config.mjs';
 import { isDryRun } from '../exec.mjs';
 import { ShipError, c, good, heading, info, note, step, warn } from '../log.mjs';
+import { strOf } from '../lib/util.mjs';
 
 /** @typedef {import('../lib/util.mjs').Flags} Flags */
+/** @typedef {import('../lib/util.mjs').SubCtx} SubCtx */
 /** @typedef {import('../lib/util.mjs').Json} Json */
 /** @typedef {import('../lib/util.mjs').JsonObject} JsonObject */
 /** @typedef {import('../lib/scout-scoring.mjs').ScoutBrief & {file: string, slug?: string, seeds?: string[]}} Brief */
@@ -54,6 +56,7 @@ const TEMPLATE_ROOT = join(SHIPKIT_ROOT, 'templates', 'app');
  * stored prefixed and get their dot back here. Exact names only — `_layout.tsx`
  * is an expo-router convention, not a dotfile.
  */
+/** @type {Record<string, string>} */
 const DOTFILES = { _gitignore: '.gitignore', _npmrc: '.npmrc' };
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
@@ -102,6 +105,7 @@ const STAGED_LISTING = 'store/staged/en-US.json';
  * an npm package name and an Expo slug. A term with nothing latin left in it
  * (and no scout slug to fall back on) is asked for rather than guessed.
  */
+/** @param {Brief|{slug?: string, term?: string}|null} brief @returns {string} */
 export function slugFromBrief(brief) {
 	const slug = String(brief?.slug || brief?.term || '')
 		.normalize('NFKD')
@@ -123,6 +127,7 @@ export function slugFromBrief(brief) {
  * the drafted 100 characters are a first draft, and the notes that say how to
  * spend them are why the draft is editable by someone who did not write it.
  */
+/** @param {string} templateText @param {Listing} listing @returns {string} */
 function stagedFromBrief(templateText, listing) {
 	const { notes = {} } = JSON.parse(templateText);
 	const merged = {
@@ -138,6 +143,7 @@ function stagedFromBrief(templateText, listing) {
  * `ship init` rather than before it: init only fills holes, and --force replaces
  * whatever was on disk before it ran.
  */
+/** @param {string} targetDir @param {Brief} brief @returns {Promise<void>} */
 async function seedAso(targetDir, brief) {
 	const seeds = [
 		...new Set(
@@ -160,6 +166,10 @@ async function seedAso(targetDir, brief) {
 }
 
 /** Slug, display name and bundle id — every one validated at its source. */
+/**
+ * @param {{args: string[], flags: Flags, brief: Brief|null}} ctx
+ * @returns {{slug: string, name: string, scheme: string, bundleId: string}}
+ */
 function resolveIdentity({ args, flags, brief }) {
 	const slug = args[0] ?? (brief ? slugFromBrief(brief) : null);
 	if (!slug)
@@ -171,7 +181,7 @@ function resolveIdentity({ args, flags, brief }) {
 			hint: 'lowercase letters, digits and hyphens; must start alphanumeric',
 		});
 
-	const name = flags.name ?? brief?.listing?.name ?? titleCase(slug);
+	const name = strOf(flags.name) ?? brief?.listing?.name ?? titleCase(slug);
 	// The name is interpolated into app.json as a JSON string; a quote or
 	// backslash would write invalid JSON and leave a half-scaffold on disk.
 	// eslint-disable-next-line eslint/no-control-regex -- the control characters are the point
@@ -181,7 +191,7 @@ function resolveIdentity({ args, flags, brief }) {
 		});
 	// Expo URL schemes must be a single alphanumeric token — hyphens break deep links.
 	const scheme = slug.replace(/[^a-z0-9]/g, '');
-	const bundleId = flags['bundle-id'] ?? flags.bundleId ?? `com.${scheme}.app`;
+	const bundleId = strOf(flags['bundle-id'], flags.bundleId) ?? `com.${scheme}.app`;
 	if (!BUNDLE_RE.test(bundleId))
 		throw new ShipError(`new: invalid bundle id "${bundleId}"`, {
 			hint: 'reverse-DNS, e.g. com.acme.myapp',
@@ -189,8 +199,9 @@ function resolveIdentity({ args, flags, brief }) {
 	return { slug, name, scheme, bundleId };
 }
 
+/** @param {Flags} flags @param {string} slug @returns {Promise<string>} */
 async function resolveTargetDir(flags, slug) {
-	const raw = flags.dir ?? slug;
+	const raw = strOf(flags.dir) ?? slug;
 	const targetDir = isAbsolute(raw) ? resolve(raw) : resolve(process.cwd(), raw);
 	if (existsSync(targetDir)) {
 		const existing = await readdir(targetDir);
@@ -206,6 +217,10 @@ async function resolveTargetDir(flags, slug) {
 	return targetDir;
 }
 
+/**
+ * @param {{name: string, slug: string, bundleId: string, scheme: string, targetDir: string, brief: Brief|null}} ctx
+ * @returns {void}
+ */
 function printIntro({ name, slug, bundleId, scheme, targetDir, brief }) {
 	heading(`New app — ${name}`);
 	info(`slug       ${c.cyan(slug)}`);
@@ -215,14 +230,24 @@ function printIntro({ name, slug, bundleId, scheme, targetDir, brief }) {
 	if (!brief) return;
 	info(`brief      ${c.cyan(relative(process.cwd(), brief.file) || brief.file)}`);
 	info(
-		`term       ${c.cyan(brief.term)} ${c.dim(`(demand ${brief.demand} · competition ${brief.competition} · opportunity ${brief.opportunity})`)}`,
+		`term       ${c.cyan(brief.term ?? '')} ${c.dim(`(demand ${brief.demand} · competition ${brief.competition} · opportunity ${brief.opportunity})`)}`,
 	);
 	if (brief.verdict?.go === false)
-		warn(`the brief is a NO-GO on ${brief.verdict.reasons.map((r) => r.gate).join(', ')} — scaffolding anyway`);
+		warn(`the brief is a NO-GO on ${(brief.verdict.reasons ?? []).map(gateOf).join(', ')} — scaffolding anyway`);
 }
 
+/** @param {{gate: string}} reason @returns {string} */
+function gateOf(reason) {
+	return reason.gate;
+}
+
+/**
+ * @param {{targetDir: string, vars: Record<string, string>, listing: Listing|null, brief: Brief|null, dry: boolean}} ctx
+ * @returns {Promise<void>}
+ */
 async function writeScaffold({ targetDir, vars, listing, brief, dry }) {
 	step(dry ? 'Files that would be written' : 'Writing scaffold');
+	/** @type {string[]} */
 	const written = [];
 	for await (const rel of walk(TEMPLATE_ROOT)) {
 		const out = outputName(rel);
@@ -240,7 +265,7 @@ async function writeScaffold({ targetDir, vars, listing, brief, dry }) {
 	written.sort();
 	for (const f of written) note(f);
 	good(`${written.length} files${dry ? ' (dry run)' : ''}`);
-	if (listing && !dry) note(`${STAGED_LISTING} drafted from "${brief.term}" — edit it, then \`ship meta lint\``);
+	if (listing && brief && !dry) note(`${STAGED_LISTING} drafted from "${brief.term}" — edit it, then \`ship meta lint\``);
 }
 
 /**
@@ -300,6 +325,7 @@ async function writeGenerated(targetDir, vars, dry) {
 	good(`${files.length + 1} generated files`);
 }
 
+/** @param {{targetDir: string, bundleId: string, flags: Flags}} ctx @returns {void} */
 function printNextSteps({ targetDir, bundleId, flags }) {
 	if (!flags['bundle-id'] && !flags.bundleId)
 		warn(`bundle id was derived as ${bundleId} — change it before the first EAS build`);
@@ -317,12 +343,14 @@ function printNextSteps({ targetDir, bundleId, flags }) {
 	process.stdout.write('\n');
 }
 
+/** @param {SubCtx} ctx @returns {Promise<number>} */
 export async function run({ args, flags }) {
 	// scout.mjs owns the brief format and drags in the whole storefront client;
 	// only --from pays for loading it.
-	const scout = flags.from ? await import('./scout.mjs') : null;
-	const brief = scout ? await scout.readBrief(flags.from) : null;
-	const listing = brief ? scout.listingFromBrief(brief) : null;
+	const from = strOf(flags.from);
+	const scout = from ? await import('./scout.mjs') : null;
+	const brief = scout && from ? await scout.readBrief(from) : null;
+	const listing = scout && brief ? scout.listingFromBrief(brief) : null;
 
 	const identity = resolveIdentity({ args, flags, brief });
 	const targetDir = await resolveTargetDir(flags, identity.slug);
