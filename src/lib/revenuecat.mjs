@@ -180,8 +180,9 @@ async function keySees(key, projectId) {
 		const page = await fetchJSON(`${BASE}/projects`, {
 			headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
 		});
-		const items = typeof page === 'object' && page !== null && Array.isArray(page.items) ? page.items : [];
-		return items.some((p) => asRow(p).id === projectId || asRow(p).name === projectId);
+		const items = asRow(page).items;
+		if (!Array.isArray(items)) return false;
+		return items.some((/** @type {Json} */ p) => asRow(p).id === projectId || asRow(p).name === projectId);
 	} catch {
 		return false;
 	}
@@ -347,7 +348,9 @@ export async function resolveProject(cfg) {
  * @returns {Promise<{level:'ok'|'warn'|'fail', name:string, detail:string}[]>}
  */
 export async function auditProject(cfg, project) {
+	/** @type {{level:'ok'|'warn'|'fail', name:string, detail:string}[]} */
 	const rows = [];
+	/** @type {(level: 'ok'|'warn'|'fail', name: string, detail?: string) => number} */
 	const add = (level, name, detail = '') => rows.push({ level, name, detail });
 
 	const [apps, entitlements, offerings, products] = await Promise.all([

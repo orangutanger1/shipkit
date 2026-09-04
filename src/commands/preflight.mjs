@@ -19,6 +19,7 @@
 import { Report, ShipError, c } from '../log.mjs';
 import { loadConfig, requireAppId, resolveVersion } from '../config.mjs';
 import { localizationId } from './shots.mjs';
+
 import {
 	checkAscVersion,
 	checkAgeRating,
@@ -53,6 +54,11 @@ import {
 	COMPLIANCE_CODE_KEY,
 	ENCRYPTION_KEY,
 } from '../lib/preflight-checks.mjs';
+
+import { strOf } from '../lib/util.mjs';
+
+/** @typedef {import('../config.mjs').Config} Config */
+/** @typedef {import('../lib/util.mjs').SubCtx} SubCtx */
 
 // The pure predicates are this command's public surface (tests import them from
 // here; the implementations live in lib/preflight-checks.mjs).
@@ -107,6 +113,11 @@ const ASC_ROWS = ['asc version', 'build', 'screenshots', 'validate'];
 const REVIEW_ROWS = ['age rating', 'content rights', 'privacy labels'];
 const EXTERNAL_ROWS = ['rc', 'privacy url', 'support url'];
 
+/**
+ * @param {Report} report
+ * @param {{cfg: Config, appId: string, version: string}} ctx
+ * @returns {Promise<void>}
+ */
 async function runLiveChecks(report, { cfg, appId, version }) {
 	await checkAscVersion(report, appId, version);
 	await checkBuild(report, appId);
@@ -117,6 +128,7 @@ async function runLiveChecks(report, { cfg, appId, version }) {
 	await checkPrivacy(report, appId);
 }
 
+/** @param {SubCtx} ctx @returns {Promise<number>} */
 async function preflight({ flags }) {
 	const cfg = await loadConfig(process.cwd(), { optional: true });
 	if (!cfg)
@@ -126,9 +138,10 @@ async function preflight({ flags }) {
 	// The offline half has to run in a repo that has never been wired to ASC, so
 	// the app id stops being mandatory exactly there and nowhere else.
 	const appId = offline ? (cfg.asc.appId ?? process.env.ASC_APP_ID ?? null) : String(requireAppId(cfg));
-	const version = await resolveVersion(cfg, flags.version);
+	const version = await resolveVersion(cfg, strOf(flags.version));
 	const report = new Report(`ship preflight ${c.dim(`${cfg.name} ${version}`)}`);
 	const gate = await ascReachable(offline);
+	/** @type {(rows: string[], why: string) => void} */
 	const skipAll = (rows, why) => {
 		for (const row of rows) report.skip(row, `skipped: ${why}`);
 	};
@@ -141,10 +154,13 @@ async function preflight({ flags }) {
 	// A dead key or missing asc is "unknown", not "the version does not exist".
 	// Each live check below still probes on its own, so short-circuiting here
 	// only skips what we already know will be a skip.
-	if (gate.live) await runLiveChecks(report, { cfg, appId, version });
-	else skipAll([...ASC_ROWS, ...REVIEW_ROWS], gate.why);
+	// `gate.live` is only ever true when `offline` is false, which is the branch
+	// where `requireAppId` has already thrown on a missing id — so the second
+	// test never changes which path runs. It is what tells the compiler that.
+	if (gate.live && appId !== null) await runLiveChecks(report, { cfg, appId, version });
+	else skipAll([...ASC_ROWS, ...REVIEW_ROWS], gate.why ?? 'no App Store Connect app id');
 
-	if (offline) skipAll(EXTERNAL_ROWS, gate.why);
+	if (offline) skipAll(EXTERNAL_ROWS, gate.why ?? '--offline');
 	else {
 		await checkRevenueCat(report, cfg);
 		await checkLegal(report, cfg);

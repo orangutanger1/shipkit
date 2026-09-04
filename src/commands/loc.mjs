@@ -46,13 +46,14 @@ import { readJSONIfExists, writeJSON } from '../lib/jsonio.mjs';
 import { emit } from '../lib/output.mjs';
 import { keywordList, readStaged } from '../lib/locales.mjs';
 import { indexedWords, isCovered, keywordFieldLength } from '../lib/text.mjs';
-import { resolveSubcommand, strOf } from '../lib/util.mjs';
+import { objOrEmpty, resolveSubcommand, strOf } from '../lib/util.mjs';
 
 /** @typedef {import('../lib/util.mjs').Json} Json */
 /** @typedef {import('../lib/util.mjs').JsonObject} JsonObject */
 /** @typedef {import('../lib/util.mjs').Flags} Flags */
 /** @typedef {import('../lib/util.mjs').SubCtx} SubCtx */
 /** @typedef {import('../config.mjs').Config} Config */
+/** @typedef {import('../config.mjs').Limits} Limits */
 /** @typedef {import('../lib/locales.mjs').ListingData} ListingData */
 /** @typedef {import('../lib/locales.mjs').StagedListing} StagedListing */
 /** @typedef {import('../lib/listing-audit.mjs').Glossary} Glossary */
@@ -160,7 +161,7 @@ async function seed({ flags }) {
 	/** @type {Record<string, SeedRow>} */
 	const out = {};
 	for (const locale of locales) {
-		const row = await seedLocale({ cfg, locale, probes, ids, glossary, brand, extra, top, json: !!flags.json });
+		const row = await seedLocale({ locale, probes, ids, glossary, brand, extra, top, json: !!flags.json });
 		if (!row) continue;
 		out[locale] = row;
 		cfg.aso.seedsByLocale = { ...cfg.aso.seedsByLocale, [locale]: row.seeds };
@@ -212,7 +213,7 @@ async function seedLocale({ locale, probes, ids, glossary, brand, extra, top, js
 
 /** Titles from the storefront's own top results, one probe term at a time. */
 /**
- * @param {{probes: string[], market: {country: Json, lang: Json}, locale: string, json: boolean}} p
+ * @param {{probes: string[], market: {country: string, lang: string}, locale: string, json: boolean}} p
  * @returns {Promise<string[]>}
  */
 async function probeTitles({ probes, market, locale, json }) {
@@ -308,7 +309,7 @@ async function draftLocale({ cfg, src, glossary, brand, source, locale, force, d
 	const file = stagedFile(cfg, locale);
 	const existing = /** @type {Partial<ListingData>} */ ((await readJSONIfExists(file)) ?? {});
 	/** @type {JsonObject} */
-	const notes = existing.notes && typeof existing.notes === 'object' ? { ...existing.notes } : {};
+	const notes = { ...objOrEmpty(existing.notes) };
 	if (typeof existing.notes === 'string') notes.note = existing.notes;
 
 	/** @type {JsonObject} */
@@ -328,7 +329,7 @@ async function draftLocale({ cfg, src, glossary, brand, source, locale, force, d
 	// A field a human filled in is the whole point of the exercise; only an
 	// empty one or one still carrying our own marker is ours to rewrite.
 	/** @param {string} field @returns {boolean} */
-	const human = (field) => !force && String(existing[field] ?? '').trim() && !hasTodo(existing[field]);
+	const human = (field) => !force && Boolean(String(existing[field] ?? '').trim()) && !hasTodo(existing[field]);
 	const marker = todoMarker(locale);
 
 	for (const field of /** @type {('name'|'subtitle')[]} */ (['name', 'subtitle'])) {
@@ -380,7 +381,7 @@ async function draftLocale({ cfg, src, glossary, brand, source, locale, force, d
  * How one copy field (name/subtitle) is derived when no human wrote it: the
  * glossary agreement, the brand passthrough, or a marked TODO for a translator.
  *
- * @param {{field: string, sourceText: string, locale: string, glossary: Glossary, brand: Set<string>, cfg: Config, marker: string}} p
+ * @param {{field: keyof Limits, sourceText: string, locale: string, glossary: Glossary, brand: Set<string>, cfg: Config, marker: string}} p
  * @returns {{value: string, reason: string}}
  */
 function copyFieldPlan({ field, sourceText, locale, glossary, brand, cfg, marker }) {
@@ -482,8 +483,8 @@ async function lock({ flags }) {
 	if (flags.json) return emit({ file: cfg.paths.glossary, changed: before !== after, dryRun: dry, glossary });
 
 	heading(`Glossary ${c.dim(cfg.paths.glossary)}`);
-	info(`neverTranslate: ${c.cyan(glossary.neverTranslate.join(', ') || '(none)')}`);
-	const rows = Object.entries(glossary.terms).map(([term, row]) => ({
+	info(`neverTranslate: ${c.cyan((glossary.neverTranslate ?? []).join(', ') || '(none)')}`);
+	const rows = Object.entries(glossary.terms ?? {}).map(([term, row]) => ({
 		term,
 		done: targets.filter((l) => row[l]).length,
 		missing: targets.filter((l) => !row[l]).join(', '),
