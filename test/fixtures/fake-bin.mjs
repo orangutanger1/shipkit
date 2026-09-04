@@ -4,8 +4,8 @@
 // argv[1] tells us which name we were invoked under, so the response table is
 // read from SHIP_FAKE_<NAME>. Keeping the table in the environment rather than
 // on disk lets a test retune a binary between cases without rewriting a script.
-import { appendFileSync } from 'node:fs';
-import { basename } from 'node:path';
+import { appendFileSync, writeFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
 
 const name = basename(process.argv[1] ?? 'bin');
 const args = process.argv.slice(2);
@@ -19,7 +19,10 @@ const key = `SHIP_FAKE_${name.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
 const rules = JSON.parse(process.env[key] || '[]');
 // First match wins, so a table reads top-down like the command's own branches.
 const hit = rules.find(([pattern]) => new RegExp(pattern).test(line));
-const { out = '', err = '', code = 0 } = hit ? hit[1] : {};
+const { out = '', err = '', code = 0, files = null } = hit ? hit[1] : {};
+// Some binaries answer by writing files into the working directory they were
+// given (asc analytics download), so a rule can name those too.
+for (const [name, body] of Object.entries(files ?? {})) writeFileSync(join(process.cwd(), name), body);
 if (out) process.stdout.write(typeof out === 'string' ? out : JSON.stringify(out));
 if (err) process.stderr.write(err);
 process.exit(code);

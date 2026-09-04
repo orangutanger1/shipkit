@@ -28,7 +28,7 @@ export async function fakeBins(names) {
  * Teach one fake binary how to answer. Rules are `[argsPattern, response]`
  * pairs, first match wins; anything unmatched exits 0 with empty output.
  * @param {string} name
- * @param {[string, {out?: string|object, err?: string, code?: number}][]} rules
+ * @param {[string, {out?: string|object, err?: string, code?: number, files?: Record<string, string>}][]} rules
  */
 export function setBin(name, rules) {
 	const key = `SHIP_FAKE_${name.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
