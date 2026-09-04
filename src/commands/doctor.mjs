@@ -20,6 +20,11 @@ import { readJSONOrNull } from '../lib/jsonio.mjs';
 import { tilde } from '../lib/util.mjs';
 import { KEY_FILE, apiKey, listProjects, useKeyForProject } from '../lib/revenuecat.mjs';
 
+/** @typedef {import('../config.mjs').Config} Config */
+/** @typedef {import('../exec.mjs').AscAuth} AscAuth */
+/** @typedef {import('../exec.mjs').AscOne} AscOne */
+/** @typedef {import('../lib/util.mjs').SubCtx} SubCtx */
+
 export const help = `
 ${c.bold('ship doctor')} ${c.dim('— check credentials, tooling and MCP wiring')}
 
@@ -46,11 +51,14 @@ const WIRE_HINT = 'run `ship init` to wire MCP';
 
 /**
  * Which file declares each MCP server, searched in the order a client resolves them.
+ * @param {string} root
  * @returns {Promise<Map<string, string>>} server name → declaring file
  */
 async function mcpDeclarations(root) {
+	/** @type {Map<string, string>} */
 	const found = new Map();
 	const claudeFile = join(homedir(), '.claude.json');
+	/** @type {[string, (j: any) => Record<string, unknown>|undefined][]} */
 	const sources = [
 		[join(root, '.mcp.json'), (j) => j.mcpServers],
 		[join(root, '.omp', 'mcp.json'), (j) => j.mcpServers],
@@ -67,6 +75,7 @@ async function mcpDeclarations(root) {
 	return found;
 }
 
+/** @param {Report} report @returns {Promise<void>} */
 async function checkNode(report) {
 	const version = process.versions.node;
 	const major = Number(version.split('.')[0]);
@@ -74,6 +83,7 @@ async function checkNode(report) {
 	else report.ok('node', `v${version}`);
 }
 
+/** @param {Report} report @param {{deep: boolean}} opts @returns {Promise<void>} */
 async function checkAsc(report, { deep }) {
 	const bin = await which(ASC);
 	if (!bin) {
@@ -85,7 +95,7 @@ async function checkAsc(report, { deep }) {
 	report.ok('asc', tilde(bin));
 
 	const args = deep ? ['auth', 'status', '--validate'] : ['auth', 'status'];
-	const status = await asc(args, { fallback: null });
+	const status = /** @type {AscAuth|null} */ (await asc(args, { fallback: null }));
 	const creds = status?.credentials ?? [];
 	if (!creds.length) {
 		report.fail('asc auth', 'no stored App Store Connect credentials — run `asc auth login`');
@@ -101,7 +111,7 @@ async function checkAsc(report, { deep }) {
 	}
 	for (const w of status?.warnings ?? []) report.warn('asc auth', w);
 
-	const ads = await asc(['ads', 'auth', 'status'], { fallback: null });
+	const ads = /** @type {AscAuth|null} */ (await asc(['ads', 'auth', 'status'], { fallback: null }));
 	const adsCreds = ads?.credentials ?? [];
 	if (!adsCreds.length) {
 		report.warn(
@@ -109,11 +119,12 @@ async function checkAsc(report, { deep }) {
 			'no Apple Ads credentials (separate from ASC) — asc ads auth login --name "Ads" --client-id SEARCHADS... --team-id SEARCHADS... --key-id KEY_ID --private-key ./private-key.pem --org ORG_ID',
 		);
 	} else {
-		const active = ads.active?.name ?? adsCreds[0].name;
+		const active = ads?.active?.name ?? adsCreds[0].name;
 		report.ok('asc ads auth', `${active} (${adsCreds.length} credential${adsCreds.length > 1 ? 's' : ''})`);
 	}
 }
 
+/** @param {Report} report @returns {Promise<void>} */
 async function checkEas(report) {
 	const version = await exec('npx', ['--yes', 'eas-cli@latest', '--version'], { allowFail: true });
 	const line = version.stdout.trim().split('\n').filter(Boolean).pop() ?? '';
@@ -131,6 +142,7 @@ async function checkEas(report) {
 	else report.ok('eas account', account);
 }
 
+/** @param {Report} report @param {Config|null} cfg @returns {Promise<void>} */
 async function checkRevenueCat(report, cfg) {
 	const key = await apiKey({ optional: true });
 	if (!key) {
@@ -154,10 +166,11 @@ async function checkRevenueCat(report, cfg) {
 			`${projects.length} project${projects.length === 1 ? '' : 's'}${names ? `: ${names}` : ''}${via}`,
 		);
 	} catch (err) {
-		report.fail('revenuecat', err.message);
+		report.fail('revenuecat', err instanceof Error ? err.message : String(err));
 	}
 }
 
+/** @param {Report} report @param {string} root @returns {Promise<void>} */
 async function checkMcp(report, root) {
 	const declared = await mcpDeclarations(root);
 	for (const name of MCP_SERVERS) {
@@ -183,6 +196,7 @@ async function checkMcp(report, root) {
 		);
 }
 
+/** @param {Report} report @param {Config} cfg @returns {Promise<void>} */
 async function checkRepo(report, cfg) {
 	report.ok('config', tilde(cfg.file));
 
@@ -191,7 +205,7 @@ async function checkRepo(report, cfg) {
 	if (!appId) {
 		report.fail('asc app', 'no asc.appId in ship.config.json — find it with `asc apps list`');
 	} else {
-		const app = await asc(['apps', 'view', '--id', String(appId)], { fallback: null });
+		const app = /** @type {AscOne|null} */ (await asc(['apps', 'view', '--id', String(appId)], { fallback: null }));
 		const attrs = app?.data?.attributes;
 		if (!attrs) {
 			report.fail('asc app', `id ${appId} did not resolve — check asc.appId against \`asc apps list\``);
@@ -236,6 +250,7 @@ async function checkRepo(report, cfg) {
 	else report.ok('aso dir', tilde(aso));
 }
 
+/** @param {SubCtx} ctx @returns {Promise<number>} */
 async function doctor({ flags }) {
 	const report = new Report('ship doctor');
 	const cfg = await loadConfig(process.cwd(), { optional: true });

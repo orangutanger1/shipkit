@@ -20,6 +20,13 @@ import { c, ShipError, note } from './log.mjs';
 /** @typedef {{data?: AscResource[], included?: AscResource[]}} AscList */
 /** @typedef {{data?: AscResource}} AscOne */
 /**
+ * `asc auth status` and `asc ads auth status`. Two commands, one shape: the
+ * stored credentials, which one is active, and whatever the CLI wants to warn
+ * about.
+ * @typedef {{name?: string, keyId?: string, isDefault?: boolean, validation?: string, org?: string}} AscCredential
+ * @typedef {{credentials?: AscCredential[], warnings?: string[], storage?: string, active?: AscCredential & {org?: string, orgId?: string}}} AscAuth
+ */
+/**
  * What `asc status` aggregates: one bag per area of the release. Naming the
  * areas is what stops a misspelled one from reading as a silent `undefined`.
  * @typedef {{app?: Record<string, any>, appstore?: Record<string, any>, builds?: Record<string, any>, testflight?: Record<string, any>, submission?: Record<string, any>, review?: Record<string, any>, phasedRelease?: Record<string, any>, summary?: Record<string, any>, links?: Record<string, string>}} AscDash

@@ -274,9 +274,15 @@ export async function saveConfig(cfg, file = cfg.file) {
 }
 
 /**
+ * app.json's `expo` block. Expo allows far more than this; these are the keys
+ * the pipeline cross-checks against ship.config.json, and the index signature
+ * keeps the rest legal to read.
+ * @typedef {{name?: string, slug?: string, version?: string, ios?: {bundleIdentifier?: string, buildNumber?: string}, extra?: Record<string, any>, [key: string]: any}} ExpoConfig
+ */
+/**
  * Read the Expo config (app.json / app.config.js) for version + project identity.
  * @param {Config} cfg
- * @returns {Promise<JsonObject|null>}
+ * @returns {Promise<ExpoConfig|null>}
  */
 export async function readExpoConfig(cfg) {
 	const appJson = join(cfg.paths.app, 'app.json');

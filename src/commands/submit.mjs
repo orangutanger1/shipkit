@@ -10,6 +10,11 @@
 import { loadConfig, requireAppId, resolveVersion } from '../config.mjs';
 import { asc, ascMutate, eas, isDryRun } from '../exec.mjs';
 import { ShipError, c, good, heading, info, note, step, table, warn } from '../log.mjs';
+import { strOf } from '../lib/util.mjs';
+
+/** @typedef {import('../config.mjs').Config} Config */
+/** @typedef {import('../lib/util.mjs').Flags} Flags */
+/** @typedef {import('../lib/util.mjs').SubCtx} SubCtx */
 
 export const help = `
 ${c.bold('ship submit')} ${c.dim('— upload the latest build and submit it for App Review')}
@@ -36,9 +41,11 @@ ${c.bold('Notes')}
 `;
 
 const POLL_MS = 30_000;
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** @type {(ms: number) => Promise<void>} */
+const sleep = (ms) => new Promise((r) => setTimeout(() => r(undefined), ms));
 
 /** asc payloads arrive as `{data:[...]}`, a bare array, or `{builds:[...]}` depending on subcommand. */
+/** @param {any} payload @returns {any[]} */
 function listOf(payload) {
 	if (!payload) return [];
 	if (Array.isArray(payload)) return payload;
@@ -48,7 +55,9 @@ function listOf(payload) {
 	return [];
 }
 
+/** @type {(row: any) => Record<string, any>} */
 const attrs = (row) => row?.attributes ?? row ?? {};
+/** @type {(b: any) => string} */
 const buildLabel = (b) => {
 	const a = attrs(b);
 	return `${a.version ?? a.buildNumber ?? '?'} (${a.uploadedDate ?? a.expirationDate ?? 'no date'})`;
@@ -57,6 +66,11 @@ const buildLabel = (b) => {
 /**
  * Wait for the newest build to reach VALID.
  * Returns the build row so the caller can hand its id to `asc review submit`.
+ */
+/**
+ * @param {string} appId
+ * @param {number} timeoutSec
+ * @returns {Promise<any>}
  */
 async function waitForProcessing(appId, timeoutSec) {
 	const deadline = Date.now() + timeoutSec * 1000;
@@ -103,6 +117,7 @@ async function waitForProcessing(appId, timeoutSec) {
  * `blocking` is the number that matters: a non-blocking error (e.g. an advisory
  * privacy check) should not stop a submission that Apple would accept.
  */
+/** @param {any} payload */
 function readValidation(payload) {
 	const problems = listOf(payload?.checks).map((row) => ({
 		level: String(row?.severity ?? 'info').toLowerCase(),
@@ -112,7 +127,7 @@ function readValidation(payload) {
 
 	const plan = listOf(payload?.remediation?.steps)
 		.slice()
-		.sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+		.sort((/** @type {any} */ a, /** @type {any} */ b) => (a.order ?? 0) - (b.order ?? 0))
 		.map((s) => ({
 			order: s.order,
 			blocking: !!s.blocking,
@@ -124,8 +139,17 @@ function readValidation(payload) {
 	return { clean: blocking === 0, blocking, summary, problems, plan };
 }
 
+/** @type {Record<string, () => string>} */
 const LEVEL_MARK = { error: () => c.red('✗'), warning: () => c.yellow('!'), info: () => c.dim('·') };
 
+/**
+ * What each step records for `--json`. `validated` and `buildId` start null
+ * rather than false: "we never got that far" is a different answer from "it
+ * failed", and a resumed run has to be able to say which.
+ * @typedef {{app: string, version: string, uploaded: boolean, buildId: string|null, validated: boolean|null, submitted: boolean, dryRun: boolean}} SubmitSummary
+ */
+
+/** @param {{cfg: Config, profile: string, summary: SubmitSummary}} ctx @returns {Promise<void>} */
 async function uploadBinary({ cfg, profile, summary }) {
 	const up = await eas(['submit', '--platform', 'ios', '--profile', profile, '--latest', '--non-interactive'], {
 		cwd: cfg.paths.app,
@@ -142,6 +166,7 @@ async function uploadBinary({ cfg, profile, summary }) {
 	}
 }
 
+/** @param {{appId: string, version: string, force: boolean, summary: SubmitSummary}} ctx @returns {Promise<void>} */
 async function readinessStep({ appId, version, force, summary }) {
 	const validation = await asc(['validate', '--app', appId, '--version', version], {
 		fallback: null,
@@ -175,6 +200,10 @@ async function readinessStep({ appId, version, force, summary }) {
 		});
 }
 
+/**
+ * @param {{cfg: Config, appId: string, version: string, build: any, flags: Flags, dry: boolean, summary: SubmitSummary}} ctx
+ * @returns {Promise<void>}
+ */
 async function submitForReview({ cfg, appId, version, build, flags, dry, summary }) {
 	const buildId = build?.id ?? (flags.build == null ? null : String(flags.build));
 	if (dry) {
@@ -195,6 +224,7 @@ async function submitForReview({ cfg, appId, version, build, flags, dry, summary
 	good(`${cfg.name} ${version} submitted for review (build ${buildId})`);
 }
 
+/** @param {SubCtx} ctx @returns {Promise<number>} */
 export async function run({ args, flags }) {
 	if (args.length)
 		throw new ShipError(`submit: unexpected argument "${args[0]}"`, {
@@ -202,9 +232,9 @@ export async function run({ args, flags }) {
 		});
 
 	const cfg = await loadConfig();
-	const version = await resolveVersion(cfg, flags.version);
-	const appId = requireAppId(cfg);
-	const profile = String(flags.profile ?? cfg.eas.profile);
+	const version = await resolveVersion(cfg, strOf(flags.version));
+	const appId = String(requireAppId(cfg));
+	const profile = String(strOf(flags.profile) ?? cfg.eas.profile);
 	const timeout = Number(flags.timeout ?? 900);
 	const force = !!flags.force;
 	const json = !!flags.json;
@@ -216,6 +246,7 @@ export async function run({ args, flags }) {
 	heading(`submit ${cfg.name} ${version}`);
 	info(`app ${c.cyan(appId)} · profile ${c.cyan(profile)} · processing budget ${c.cyan(`${timeout}s`)}`);
 
+	/** @type {SubmitSummary} */
 	const summary = { app: appId, version, uploaded: false, buildId: null, validated: null, submitted: false, dryRun: dry };
 
 	if (flags['skip-upload']) {
