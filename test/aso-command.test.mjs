@@ -231,3 +231,43 @@ test('--all-locales --json emits one row per locale', async () => {
 	const { out } = await aso(['harvest'], { dir, flags: { 'all-locales': true, json: true, seeds: 'period tracker' } });
 	assert.equal(JSON.parse(out).stage, 'harvest');
 });
+
+test('seeds come from the locale first, then the config, and a cross-language sweep is called out', async () => {
+	const byLocale = await asoRepo({}, { aso: { seedsByLocale: { 'en-US': ['native seed'] }, seeds: ['config seed'] } });
+	const { out } = await aso(['harvest'], { dir: byLocale });
+	assert.match(out, /from aso.seedsByLocale.en-US/);
+
+	const shared = await asoRepo({}, { aso: { seeds: ['config seed'] }, store: { locales: ['en-US', 'de-DE'] } });
+	const { out: warned } = await aso(['harvest'], { dir: shared, flags: { locale: 'de-DE' } });
+	assert.match(warned, /from aso.seeds in/);
+	assert.match(warned, /is being harvested with en-US seeds/);
+	assert.match(warned, /ship loc seed --locale de-DE/);
+});
+
+test('competitors that resolve to nothing exit non-zero rather than writing an empty artifact', async () => {
+	const dir = await asoRepo();
+	const { code, out } = await aso(['competitors'], { dir, flags: { ids: '1,2' }, fetch: storefront({ apps: [] }) });
+	assert.equal(code, 1);
+	assert.match(out, /lookup returned nothing for 1, 2/);
+});
+
+test('competitors defaults to the apps the scored terms named', async () => {
+	const scoredWithApps = { locale: 'en-US', terms: [{ keyword: 'period tracker calendar', top3: [{ id: 1038369065 }, { id: 896501514 }] }] };
+	const dir = await asoRepo({ 'aso/en-US/scored.json': scoredWithApps });
+	const { code } = await aso(['competitors'], { dir });
+	assert.equal(code, 0);
+	assert.deepEqual((await readJson(dir, 'aso/en-US/competitors.json')).ids, ['1038369065', '896501514']);
+});
+
+test('audit reports what the asc keyword audit found, and a clean field as clean', async () => {
+	setBin('asc', [
+		['app-tags list', { out: { data: [] } }],
+		['metadata keywords audit', { out: { data: [{ level: 'error', locale: 'en-US', message: 'keyword repeated in the name' }] } }],
+	]);
+	const dir = await asoRepo({ 'store/staged/en-US.json': { locale: 'en-US', name: 'Demo', subtitle: 'Track your cycle', keywords: 'calendar,ovulation,cycle,fertility,period,log,tracker,reminder,health,notes,history' } });
+	const { code, out } = await aso(['audit'], { dir });
+	assert.equal(code, 1);
+	assert.match(out, /keyword repeated in the name/);
+	assert.match(out, /Apple has generated none yet/);
+	assert.match(out, /keywords en-US/);
+});
