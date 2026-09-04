@@ -12,6 +12,7 @@ import { num, round2 } from './fmt.mjs';
 import { rowsOf } from './asc-report.mjs';
 import { MIN_PROCEEDS_USD, normaliseTerritory, trialDaysOf } from './pricing.mjs';
 import { apiKey, listOfferings, resolveProject } from './revenuecat.mjs';
+import { strOrNull } from './util.mjs';
 
 /** @typedef {import('./util.mjs').Json} Json */
 /** @typedef {import('./util.mjs').JsonObject} JsonObject */
@@ -58,9 +59,6 @@ const isRow = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
  * @returns {Row}
  */
 const asRow = (v) => (isRow(v) ? v : {});
-
-/** @param {Json|undefined} v @returns {string|null} */
-const strOrNull = (v) => (typeof v === 'string' ? v : null);
 
 // ─── asc capability discovery ────────────────────────────────────────────────
 

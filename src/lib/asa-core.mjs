@@ -27,6 +27,7 @@
 //     install 22% of the time. A kill rule needs a sample size, not just a bill.
 import { ShipError } from '../log.mjs';
 import { clamp100, money, num, round2 } from './fmt.mjs';
+import { strOrNull } from './util.mjs';
 
 /** @typedef {import('./util.mjs').Json} Json */
 /** @typedef {import('./util.mjs').JsonObject} JsonObject */
@@ -50,14 +51,6 @@ const pos = (v) => {
 	const n = Number(v);
 	return Number.isFinite(n) && n > 0 ? n : null;
 };
-
-/**
- * Apple's name/status/time fields are strings or absent; anything else in a
- * payload reads as absent, so a corrupt row cannot poison the snapshot.
- * @param {Json|undefined} v
- * @returns {string|null}
- */
-const strOrNull = (v) => (typeof v === 'string' ? v : null);
 
 // ─── bids ────────────────────────────────────────────────────────────────────
 

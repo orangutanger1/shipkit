@@ -25,7 +25,7 @@ import { ShipError, c, good, heading, info, note, step, table, warn } from '../l
 import { emit } from './output.mjs';
 import { readJSONIfExists } from './jsonio.mjs';
 import { rowsOf } from './asc-report.mjs';
-import { strOf } from './util.mjs';
+import { objOrEmpty as asRow, strOf, strOrNull } from './util.mjs';
 import { charCount } from './text.mjs';
 import { requireApplyableState, stderrTail, stateOf } from './listing-sync.mjs';
 // jscpd:ignore-end
@@ -50,16 +50,6 @@ import {
 /** @typedef {import('../config.mjs').Config} Config */
 /** @typedef {import('./cpp.mjs').CppEntry} CppEntry */
 /** @typedef {import('./cpp.mjs').CppProblem} CppProblem */
-
-/**
- * View any JSON value as a row: objects pass through untouched, anything else
- * reads as an empty row — exactly what property access on a scalar would have
- * yielded.
- *
- * @param {Json|undefined} v
- * @returns {JsonObject}
- */
-const asRow = (v) => (typeof v === 'object' && v !== null && !Array.isArray(v) ? v : {});
 
 /** @param {Json|undefined} o @param {string} key @returns {Json|null} */
 const attr = (o, key) => {
@@ -103,7 +93,7 @@ function printCppProblems(entry, problems) {
 
 /**
  * @param {Config} cfg
- * @param {string|undefined} slug
+ * @param {string|null|undefined} slug
  * @returns {Promise<CppEntry[]>}
  */
 async function pagesFor(cfg, slug) {
@@ -375,7 +365,7 @@ async function uploadCppScreenshots(cfg, flags, dry, { entry, locale, versionId,
  */
 async function applyCppPage(run, entry) {
 	const { cfg, dry, flags } = run;
-	const name = entry.page.name ?? entry.slug;
+	const name = strOrNull(entry.page.name) ?? entry.slug;
 	step(`${entry.slug} · "${name}"`);
 	if (!flags['no-stage']) await stagePage(cfg, entry, { write: !dry });
 

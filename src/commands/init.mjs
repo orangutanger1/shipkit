@@ -40,6 +40,7 @@ import {
 	writeMcpServers,
 	writeNpmScripts,
 } from '../lib/init-write.mjs';
+import { strOrNull } from '../lib/util.mjs';
 
 /** @typedef {import('../lib/util.mjs').Flags} Flags */
 /** @typedef {import('../lib/util.mjs').Json} Json */
@@ -284,7 +285,7 @@ async function detectStep({ root, appDir, appPath, storeDir, identity }) {
 	const easChannel = identity.easJson.build?.production?.channel ?? null;
 	printDetections({ root, appDir, identity, easProjectId, easOwner, easChannel });
 
-	const primaryLocale = identity.ascApp?.primaryLocale ?? 'en-US';
+	const primaryLocale = strOrNull(identity.ascApp?.primaryLocale) ?? 'en-US';
 	if (identity.ascApp?.primaryLocale) detection('asc.primaryLocale', primaryLocale, 'App Store Connect');
 
 	const { locales, localeSource } = await detectLocales(storeDir, primaryLocale);

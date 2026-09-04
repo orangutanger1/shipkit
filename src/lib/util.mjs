@@ -86,6 +86,28 @@ export function strOf(...candidates) {
 }
 
 /**
+ * A JSON value narrowed to a string, or `null`. Narrowing rather than casting:
+ * an object where a string was promised stays untrusted instead of being told
+ * it is one.
+ * @param {Json|undefined} value
+ * @returns {string|null}
+ */
+export function strOrNull(value) {
+	return typeof value === 'string' ? value : null;
+}
+
+/**
+ * A JSON value narrowed to an object, or an empty one. Property access on a
+ * scalar would have yielded nothing anyway; this makes that explicit and keeps
+ * a spread from widening into a union no caller can use.
+ * @param {Json|undefined} value
+ * @returns {JsonObject}
+ */
+export function objOrEmpty(value) {
+	return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : {};
+}
+
+/**
  * Resolve a subcommand word. Unknown names raise with the valid set.
  * @template C
  * @template R

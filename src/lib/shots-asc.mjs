@@ -62,7 +62,8 @@ export const fmtDims = (dims) => dims.map((d) => `${d.width}x${d.height}`).join(
 const SIZE_ROWS = new Map();
 /** @param {{all?: boolean}} [opts] @returns {Promise<SizeRow[]>} */
 export async function fetchSizes({ all = true } = {}) {
-	if (SIZE_ROWS.has(all)) return SIZE_ROWS.get(all);
+	const cached = SIZE_ROWS.get(all);
+	if (cached) return cached;
 	const args = ['screenshots', 'sizes'];
 	if (all) args.push('--all');
 	const data = /** @type {{sizes?: SizeRow[], data?: SizeRow[]}|SizeRow[]|null} */ (await asc(args, { fallback: null }));

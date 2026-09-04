@@ -83,7 +83,7 @@ export async function scoredTerms(cfg, locale) {
 				? { term: r, opportunity: 0 }
 				: { term: r.term ?? r.keyword, opportunity: r.opportunity ?? 0 },
 		)
-		.filter(/** @param {{term: string|undefined, opportunity: number}} r @returns {r is ScoredTerm} */ (r) => r.term);
+		.filter(/** @param {{term: string|undefined, opportunity: number}} r @returns {r is ScoredTerm} */ (r) => typeof r.term === 'string');
 }
 
 /** Term strings plus their tokens, so a packed single word still matches the phrase it came from. */

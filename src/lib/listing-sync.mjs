@@ -10,7 +10,7 @@ import { ShipError, c, good, heading, info, note, step, table, warn } from '../l
 import { emit } from './output.mjs';
 import { readJSONIfExists } from './jsonio.mjs';
 import { rowsOf } from './asc-report.mjs';
-import { strOf } from './util.mjs';
+import { objOrEmpty, strOf } from './util.mjs';
 import { charCount } from './text.mjs';
 import { APP_INFO_FIELDS, VERSION_FIELDS, keywordList, lintListing, normaliseKeywords, parseStrings, readStaged, stage as expand } from './locales.mjs';
 
@@ -120,7 +120,7 @@ export async function lint({ flags }) {
 	// Colour lives in the last column only: table() pads on raw string length, so an ANSI escape elsewhere knocks the grid out of alignment.
 	table(rows, [
 		{ header: 'locale', get: (r) => r.locale },
-		...LINT_COLUMNS.map((field) => ({ header: field, get: (r) => cell(r, field) })),
+		...LINT_COLUMNS.map((field) => ({ header: field, get: (/** @type {LintRow} */ r) => cell(r, field) })),
 		{ header: '', get: (r) => (r.problems.some((p) => p.level === 'fail') ? c.red('fail') : r.problems.length ? c.yellow('warn') : c.green('ok')) },
 	]);
 	printProblems(rows);
@@ -212,8 +212,8 @@ export async function pull({ flags }) {
 	let created = 0;
 	let updated = 0;
 	for (const locale of all) {
-		const appInfo = (await readJSONIfExists(join(cfg.paths.appInfo, `${locale}.json`))) ?? {};
-		const versionData = (await readJSONIfExists(join(versionDir, `${locale}.json`))) ?? {};
+		const appInfo = objOrEmpty(await readJSONIfExists(join(cfg.paths.appInfo, `${locale}.json`)));
+		const versionData = objOrEmpty(await readJSONIfExists(join(versionDir, `${locale}.json`)));
 		const target = join(cfg.paths.staged, `${locale}.json`);
 		const existing = await readJSONIfExists(target);
 		// `notes` is research prose (why these keywords, what was rejected) that only
@@ -541,6 +541,7 @@ export async function migrate({ flags }) {
 	if (!dry) await mkdir(cfg.paths.staged, { recursive: true });
 
 	const done = [];
+	/** @type {string[]} */
 	const skipped = [];
 	for (const locale of all) {
 		const row = await convertLocale(cfg, { versionSrc, appInfoSrc, dry, force: flags.force }, locale, skipped);
