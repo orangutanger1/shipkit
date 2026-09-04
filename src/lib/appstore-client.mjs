@@ -60,7 +60,11 @@ export function marketFor(locale) {
 }
 
 export const MIN_INTERVAL_MS = 1000;
-const BACKOFF_MS = 20_000;
+// 20s is what Apple's 403 wall actually costs to wait out. Read from the
+// environment for the same reason SHIP_ASC_BIN is: the refusal path is worth
+// testing and no suite can sit through the real backoff. Read once, at load,
+// like every other constant here.
+const BACKOFF_MS = Number(process.env.SHIP_STOREFRONT_BACKOFF_MS) || 20_000;
 
 /** The two statuses Apple refuses with; everything else is a plain retry. */
 const REFUSED = new Set([403, 429]);
