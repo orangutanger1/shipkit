@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
-import { capture, inDir, repo, withFetch } from './fixtures/cmd.mjs';
+import { capture, fakeBins, inDir, json, repo, withFetch } from './fixtures/cmd.mjs';
 import { STOREFRONT } from './fixtures/storefront.mjs';
 
 const { run } = await import('../src/commands/scout.mjs');
@@ -143,4 +143,105 @@ test('new refuses until exactly one brief names the app', async () => {
 	await scout(['brief', 'period tracker'], { dir });
 	await scout(['brief', 'cycle log'], { dir });
 	await assert.rejects(() => scout(['new', 'demo'], { dir }), /2 briefs under/);
+});
+
+/** The same page, with the descriptions the claims audit reads. */
+const described = APPS.map((a, i) => ({
+	...a,
+	description: i < 7 ? 'Track your cycle offline. No ads, no account, private and on-device.' : 'Sync across devices with iCloud.',
+}));
+
+test('brief names the claims the category has already taken, and the CPI a subscription can support', async () => {
+	const dir = await workdir();
+	const { out } = await scout(['brief', 'period tracker'], {
+		dir,
+		flags: { 'sub-price': 9.99, moat: 9_000_000, 'min-volume': 0, 'max-exact': 99, 'max-saturation': 100, 'max-clones': 99, 'max-commodity': 100 },
+		fetch: storefront({ apps: described }),
+	});
+	assert.match(out, /Positioning already taken/);
+	assert.match(out, /no ads|privacy/);
+	assert.match(out, /already the category norm/);
+	assert.match(out, /Apple Search Ads/);
+	assert.match(out, /a paid install is worth/);
+});
+
+test('a NO-GO brief names the stampede and the clone count that tripped it', async () => {
+	// A page of apps that shipped this year with a handful of ratings each is
+	// what a stampede looks like; the frozen capture of this term is one.
+	const fresh = STOREFRONT['iv drip rate calculator'].apps;
+	const dir = await workdir();
+	const { out } = await scout(['brief', 'iv drip rate calculator'], {
+		dir,
+		flags: { moat: 9_000_000, 'min-volume': 0, 'max-exact': 99, 'max-saturation': 0, 'max-clones': 0, 'max-commodity': 100, 'fresh-days': 3650 },
+		fetch: storefront({ apps: fresh }),
+	});
+	assert.match(out, /is a stampede, not a gap|the app this brief would produce/);
+});
+
+test('terms warns about the terms that are already being built', async () => {
+	const dir = await workdir();
+	const { out } = await scout(['terms', 'period tracker'], { dir, flags: { limit: 5 }, fetch: storefront({ suggestions: ['period tracker', 'period tracker calendar'] }) });
+	assert.match(out, /terms are already being built|sorted by viability/);
+});
+
+test('a sweep that hits the wall keeps what it already harvested', async () => {
+	const dir = await workdir();
+	let calls = 0;
+	const throttled = async (url) => {
+		const href = String(url);
+		if (href.includes('MZSearchHints')) {
+			calls += 1;
+			if (calls > 1) return new Response('', { status: 403 });
+			return new Response(`<dict>${['period tracker calendar', 'cycle log tracker'].map((t) => `<key>term</key><string>${t}</string>`).join('')}</dict>`);
+		}
+		return json({ results: APPS });
+	};
+	const { out } = await scout(['terms', 'period tracker', 'cycle log'], { dir, flags: { limit: 3 }, fetch: throttled });
+	assert.match(out, /keeping the \d+ terms already harvested|sorted by viability/);
+});
+
+test('scout new hands the one brief it found to the scaffolder', async () => {
+	const dir = await workdir();
+	await scout(['brief', 'period tracker'], { dir });
+	const { code } = await scout(['new', 'period-tracker'], { dir });
+	assert.equal(code, 0);
+	assert.ok(await readFile(join(dir, 'period-tracker', 'app.json'), 'utf8'));
+});
+
+test('a brief reuses the demand a previous sweep scored, and says so', async () => {
+	const dir = await workdir();
+	await scout(['terms', 'period tracker'], { dir, flags: { limit: 3 }, fetch: storefront({ suggestions: ['period tracker calendar'] }) });
+	const { out } = await scout(['brief', 'period tracker calendar'], { dir, fetch: storefront({ suggestions: ['period tracker calendar'] }) });
+	assert.match(out, /scored in |autocomplete rank/);
+});
+
+test('a term Apple does not autocomplete is scored anyway, and named as unranked', async () => {
+	const dir = await workdir();
+	const { out } = await scout(['brief', 'period tracker'], { dir, fetch: storefront({ suggestions: [] }) });
+	assert.match(out, /not in autocomplete/);
+});
+
+test('a term too long for the name field is called out on the drafted listing', async () => {
+	const dir = await workdir();
+	const { out } = await scout(['brief', 'period tracker and ovulation calendar log'], { dir });
+	assert.match(out, /does not fit in 30 characters/);
+});
+
+test('incumbents missing their rating, IAP flag or update date render as unknown', async () => {
+	const bare = APPS.map((a) => ({ trackName: a.trackName, trackId: a.trackId, sellerName: a.sellerName, userRatingCount: a.userRatingCount, price: 0 }));
+	const dir = await workdir();
+	const { out } = await scout(['brief', 'period tracker'], { dir, fetch: storefront({ apps: bare }) });
+	assert.match(out, /—/);
+	assert.match(out, /\?/, 'an unknown IAP answer is a question mark, not a no');
+});
+
+test('a sweep over a flooded category marks the terms already being built', async () => {
+	const fresh = STOREFRONT['iv drip rate calculator'].apps;
+	const dir = await workdir();
+	const { out } = await scout(['terms', 'iv drip rate calculator'], {
+		dir,
+		flags: { limit: 3 },
+		fetch: storefront({ apps: fresh, suggestions: ['iv drip rate calculator', 'drip rate calculator'] }),
+	});
+	assert.match(out, /already being built|sorted by viability/);
 });
