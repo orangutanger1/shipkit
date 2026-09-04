@@ -1,4 +1,3 @@
-// src/lib/qa-params.mjs
 // The QA query-parameter contract, and the only place it is interpreted.
 //
 // lib/qa-matrix.mjs sets qaTheme/qaState/qaLocale/qaTextScale on every capture

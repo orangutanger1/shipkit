@@ -93,7 +93,22 @@
 						"items": {
 							"type": "string"
 						},
-						"description": "components.json ids, which is where the RN/Expo primitive behind each one is named."
+					"description": "components.json ids, which is where the RN/Expo primitive behind each one is named."
+					},
+					"elements": {
+						"type": "array",
+						"description": "The screen's structure, in order. `ship design build` transcribes this 1:1 and infers nothing — a screen without it is generated as a plain list of its copy, not as a guessed layout.",
+						"items": {
+							"type": "object",
+							"required": ["component"],
+							"additionalProperties": false,
+							"properties": {
+								"component": { "type": "string", "description": "A component id from design/components.json." },
+								"variant": { "type": "string" },
+								"copy": { "type": "string", "description": "A key of this screen's `copy` object." },
+								"event": { "type": "string", "description": "An event name this screen declares, fired on press." }
+							}
+						}
 					},
 					"copy": {
 						"type": "object",
