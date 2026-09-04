@@ -15,6 +15,7 @@ import {
 	clean,
 	contentRightsAnswer,
 	ageRatingGaps,
+	encryptionAnswer,
 	euLocalesIn,
 	levelOf,
 	missingComplianceCode,
@@ -66,9 +67,9 @@ async function ascProbe(args) {
 function probeRow(report, name, { state, detail }, manual) {
 	if (state === 'ok') return false;
 	if (state === 'unsupported')
-		report.warn(name, `this asc cannot answer it (${detail || 'no such subcommand'}) — confirm it by hand: ${manual}`);
+		report.warn(name, `this asc cannot answer it (${detail}) — confirm it by hand: ${manual}`);
 	else if (state === 'unauthorized' || state === 'unavailable')
-		report.skip(name, `App Store Connect unreachable — ${detail || 'not authenticated'}`);
+		report.skip(name, `App Store Connect unreachable — ${detail}`);
 	else report.fail(name, `asc could not read it — ${detail || 'empty response'} (${manual})`);
 	return true;
 }
@@ -105,8 +106,7 @@ export async function checkListing(report, cfg) {
 /** @param {import('../log.mjs').Report} report @param {import('../config.mjs').Config} cfg @param {string} version @returns {Promise<void>} */
 export async function checkVersion(report, cfg, version) {
 	const expo = await readExpoConfig(cfg);
-	const sub = expo && isJsonObject(expo.expo) ? expo.expo : null;
-	const expoVersion = expo?.version ?? sub?.version ?? null;
+	const expoVersion = expo?.version ?? null;
 	if (!expo) report.skip('version', `${version} — no app.json to cross-check`);
 	else if (!expoVersion) report.skip('version', `${version} — app.json declares no version`);
 	else if (expoVersion !== version)
@@ -211,12 +211,9 @@ export async function checkRevenueCat(report, cfg) {
 		report.skip('rc', 'no revenuecat.projectId in ship.config.json');
 		return;
 	}
-	const findings = await auditProject(cfg, project);
-	if (!findings.length) {
-		report.ok('rc: project', `${project.name ?? project.id} — no findings`);
-		return;
-	}
-	for (const f of findings) report[levelOf(f.level, 'warn')](`rc: ${clean(f.name)}`, clean(f.detail));
+	// auditProject always answers with at least the app, entitlement, offering
+	// and product rows — there is no "nothing to say" case to handle.
+	for (const f of await auditProject(cfg, project)) report[levelOf(f.level, 'warn')](`rc: ${clean(f.name)}`, clean(f.detail));
 }
 
 /** @param {string} url @returns {Promise<number>} */
@@ -321,13 +318,7 @@ export async function checkEncryption(report, cfg) {
 		);
 		return;
 	}
-	const root = expo ? (expo.expo ?? expo) : null;
-	const plist = isJsonObject(root) ? root.ios : null;
-	const entries = isJsonObject(plist) ? plist.infoPlist : null;
-	report.ok(
-		'export compliance',
-		`${ENCRYPTION_KEY}: ${isJsonObject(entries) ? entries[ENCRYPTION_KEY] : undefined}`,
-	);
+	report.ok('export compliance', `${ENCRYPTION_KEY}: ${encryptionAnswer(expo)}`);
 }
 
 /** @param {import('../log.mjs').Report} report @param {import('../config.mjs').Config} cfg @returns {void} */

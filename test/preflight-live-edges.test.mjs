@@ -236,3 +236,162 @@ test('ascReachable: offline, no asc, a refusal, and no credentials each say why'
 	setBin('asc', [['auth status', { out: { credentials: [{ name: 'Team' }] } }]]);
 	assert.deepEqual(await live.ascReachable(false), { live: true, why: null });
 });
+
+test('a listing with nothing to say at all reports clean', async () => {
+	const dir = await appRepo({ 'store/staged/en-US.json': {
+		locale: 'en-US', name: 'Glovebox', subtitle: 'Car maintenance log',
+		keywords: 'oil change,service log,mileage tracker,repair history,garage notes,fuel economy,car care',
+		description: 'Glovebox keeps every service, repair and fill-up for your car in one place, so the next owner — or the next mechanic — can see exactly what was done and when.',
+		promotionalText: 'Now with reminders', whatsNew: 'Reminders for every service interval.',
+		supportUrl: 'https://demo.example/support', privacyPolicyUrl: 'https://demo.example/privacy',
+	} });
+	const cfg = await cfgOf(dir);
+	const rows = await rowsOf((r) => live.checkListing(r, cfg));
+	assert.equal(rows[0].level, 'ok');
+	assert.equal(rows[0].detail, 'clean');
+});
+
+test('a version list that is neither an array nor data-wrapped reads as empty', async () => {
+	setBin('asc', [['versions list', { out: { meta: { total: 0 } } }]]);
+	const row = only(await rowsOf((r) => live.checkAscVersion(r, '111', '1.0.0')), 'asc version');
+	assert.equal(row.level, 'fail');
+	assert.match(row.detail, /does not exist on app 111/);
+});
+
+test('a version row that carries versionString flat is matched too', async () => {
+	setBin('asc', [['versions list', { out: { data: [{ versionString: '1.0.0', appStoreState: 'IN_REVIEW' }] } }]]);
+	const row = only(await rowsOf((r) => live.checkAscVersion(r, '111', '1.0.0')), 'asc version');
+	assert.match(row.detail, /IN_REVIEW/);
+});
+
+test('a build payload with no rows anywhere warns rather than throwing', async () => {
+	setBin('asc', [['builds list', { out: { meta: {} } }]]);
+	assert.match(only(await rowsOf((r) => live.checkBuild(r, '111')), 'build').detail, /no builds on app 111/);
+});
+
+test('a build with neither number nor state still reports', async () => {
+	setBin('asc', [['builds list', { out: { data: [{ attributes: {} }] } }]]);
+	const row = only(await rowsOf((r) => live.checkBuild(r, '111')), 'build');
+	assert.match(row.detail, /newest build \? is UNKNOWN/);
+});
+
+test('validate: a summary that is not an object reads as every field absent', async () => {
+	setBin('asc', [['^validate', { out: { summary: 'clean' } }]]);
+	const row = only(await rowsOf((r) => live.checkValidate(r, '111', '1.0.0')), 'validate');
+	assert.equal(row.level, 'ok');
+	assert.match(row.detail, /0 blocking/);
+});
+
+test('screenshots: an asc that cannot list them says so rather than reporting none', async () => {
+	setBin('asc', [
+		['versions list', { out: { data: [{ id: 'ver-1', attributes: { versionString: '1.0.0' } }] } }],
+		['localizations list', { out: { data: [{ id: 'loc-1', attributes: { locale: 'en-US' } }] } }],
+		['screenshots list', { out: '', err: 'unauthorized', code: 1 }],
+	]);
+	const { localizationId } = await import('../src/lib/shots-asc.mjs');
+	const cfg = await cfgOf(await appRepo());
+	const row = only(await rowsOf((r) => live.checkScreenshots(r, cfg, '111', '1.0.0', localizationId)), 'screenshots');
+	assert.equal(row.level, 'skip');
+});
+
+test('a legal URL whose fetch throws a bare string is still reported', async () => {
+	const cfg = await cfgOf(await appRepo({}, { legal: { privacyUrl: 'https://demo.example/p', supportUrl: null } }));
+	const { withFetch } = await import('./fixtures/cmd.mjs');
+	const report = new Report('t');
+	await withFetch(async () => {
+		throw 'socket hang up';
+	}, () => live.checkLegal(report, cfg));
+	assert.equal(report.rows[0].level, 'fail');
+	assert.match(report.rows[0].detail, /socket hang up/);
+	assert.equal(report.rows[1].level, 'skip', 'an unset URL is not a dead one');
+});
+
+test('screenshots: a localization lookup that throws a bare string skips the row', async () => {
+	const cfg = await cfgOf(await appRepo());
+	const row = only(await rowsOf((r) => live.checkScreenshots(r, cfg, '111', '1.0.0', () => Promise.reject('no session'))), 'screenshots');
+	assert.equal(row.level, 'skip');
+	assert.match(row.detail, /no session/);
+});
+
+test('screenshots: a payload with no sets, and sets with nothing in them, both fail', async () => {
+	const withLoc = (extra) => setBin('asc', [
+		['versions list', { out: { data: [{ id: 'ver-1', attributes: { versionString: '1.0.0' } }] } }],
+		['localizations list', { out: { data: [{ id: 'loc-1', attributes: { locale: 'en-US' } }] } }],
+		...extra,
+	]);
+	const cfg = await cfgOf(await appRepo());
+	const { localizationId } = await import('../src/lib/shots-asc.mjs');
+
+	withLoc([['screenshots list', { out: { meta: {} } }]]);
+	assert.match(only(await rowsOf((r) => live.checkScreenshots(r, cfg, '111', '1.0.0', localizationId)), 'screenshots').detail, /has none on App Store Connect/);
+
+	withLoc([['screenshots list', { out: { sets: ['nonsense', { set: null, screenshots: null }] } }]]);
+	assert.match(only(await rowsOf((r) => live.checkScreenshots(r, cfg, '111', '1.0.0', localizationId)), 'screenshots').detail, /has none on App Store Connect/);
+});
+
+test('export compliance names the value it found, whatever wrapper it was in', async () => {
+	const cfg = await cfgOf(await appRepo({ 'app.json': { expo: { ios: { infoPlist: { ITSAppUsesNonExemptEncryption: false } } } } }));
+	const row = only(await rowsOf((r) => live.checkEncryption(r, cfg)), 'export compliance');
+	assert.equal(row.level, 'ok');
+	assert.match(row.detail, /ITSAppUsesNonExemptEncryption: false/);
+});
+
+test('eu trader: an explicit false reads differently from an unset one', async () => {
+	const explicit = await cfgOf(await appRepo({}, { store: { locales: ['de-DE'] }, legal: { euTrader: false } }));
+	assert.match(only(await rowsOf((r) => live.checkEuTrader(r, explicit)), 'eu trader').detail, /euTrader is false/);
+
+	const unset = await cfgOf(await appRepo({}, { store: { locales: ['de-DE'] }, legal: {} }));
+	assert.match(only(await rowsOf((r) => live.checkEuTrader(r, unset)), 'eu trader').detail, /euTrader is unset/);
+});
+
+test('ota: a tree that matches its lock is reported unchanged', async () => {
+	const dir = await appRepo({ 'package.json': { name: 'demo', dependencies: {} } });
+	const cfg = await cfgOf(dir);
+	const { writeLock } = await import('../src/lib/native.mjs');
+	await writeLock(cfg, { version: '1.0.0', deps: {}, config: {}, builtAt: '2026-01-01T00:00:00.000Z' });
+	const row = only(await rowsOf((r) => live.checkOta(r, cfg, '1.0.0')), 'ota');
+	assert.equal(row.level, 'ok');
+	assert.match(row.detail, /native surface unchanged since lock/);
+});
+
+test('qa: a clean report is an ok row naming the tier', async () => {
+	const cfg = await cfgOf(await appRepo({ 'design/ux.json': { screens: [] }, 'qa/1.0.0/report.json': { version: '1.0.0', tier: 1, summary: { fail: 0, warn: 0, skipped: 0 } } }));
+	const row = only(await rowsOf((r) => live.checkQa(r, cfg, '1.0.0')), 'qa');
+	assert.equal(row.level, 'ok');
+	assert.match(row.detail, /tier 1/);
+});
+
+test('qa: a report with no summary block at all is still read', async () => {
+	const cfg = await cfgOf(await appRepo({ 'design/ux.json': { screens: [] }, 'qa/1.0.0/report.json': { version: '1.0.0', tier: 2 } }));
+	const row = only(await rowsOf((r) => live.checkQa(r, cfg, '1.0.0')), 'qa');
+	assert.equal(row.level, 'ok');
+});
+
+test('ascReachable: a payload that is not an object reads as no credentials', async () => {
+	setBin('asc', [['auth status', { out: '"a string"' }]]);
+	assert.match((await live.ascReachable(false)).why, /no App Store Connect credentials/);
+});
+
+test('an asc that exits non-zero with nothing to say is still a failure that says so', async () => {
+	setBin('asc', [['age-rating view', { out: '', code: 0 }]]);
+	const row = only(await rowsOf((r) => live.checkAgeRating(r, '111')), 'age rating');
+	assert.equal(row.level, 'fail');
+	assert.match(row.detail, /empty response/);
+});
+
+test('a versions payload holding something that is not a row does not crash the match', async () => {
+	setBin('asc', [['versions list', { out: { data: ['nonsense'] } }]]);
+	const row = only(await rowsOf((r) => live.checkAscVersion(r, '111', '1.0.0')), 'asc version');
+	assert.equal(row.level, 'ok', 'the first row stands in, whatever it is');
+});
+
+test('validate: a payload that is not an object at all reports no blockers', async () => {
+	setBin('asc', [['^validate', { out: '"nothing to report"' }]]);
+	const row = only(await rowsOf((r) => live.checkValidate(r, '111', '1.0.0')), 'validate');
+	assert.equal(row.level, 'ok');
+});
+
+test('validate: errors without a blocking count still fail', async () => {
+	setBin('asc', [['^validate', { out: { summary: { blocking: 0, errors: 2, warnings: 0, infos: 0 } } }]]);
+	assert.equal(only(await rowsOf((r) => live.checkValidate(r, '111', '1.0.0')), 'validate').level, 'fail');
+});

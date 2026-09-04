@@ -95,6 +95,12 @@ const infoPlist = (expo) => {
 	return isJsonObject(entries) ? entries : null;
 };
 
+/** The export-compliance answer the Expo config carries, if any.
+ * @param {Json|undefined} expo
+ * @returns {Json|undefined}
+ */
+export const encryptionAnswer = (expo) => infoPlist(expo)?.[ENCRYPTION_KEY];
+
 /** True when the Expo config never answers Apple's export compliance question.
  * @param {Json|undefined} expo
  * @returns {boolean}
