@@ -79,6 +79,51 @@ test('serving the win-back offering as current is a failure', () => {
 	assert.match(row.detail, /current/i);
 });
 
+test('a yearly-only ladder is short-tier and trial-less at once, and both get their own finding', () => {
+	const rows = auditLadder({
+		subscriptions: [{ name: 'Pro Yearly', period: 'P1Y', priceUsd: 49.99, trialDays: 0 }],
+		offerings: HEALTHY.offerings,
+	});
+	const short = rowOf(rows, 'short tier');
+	assert.equal(short.level, 'warn');
+	assert.match(short.detail, /weekly or monthly/);
+	const trial = rowOf(rows, 'trial placement');
+	assert.equal(trial.level, 'warn');
+	assert.match(trial.detail, /no trial on the yearly/);
+});
+
+test('a subscription row missing a name, period or price falls back rather than throwing', () => {
+	const rows = auditLadder({
+		subscriptions: [
+			{ productId: 'com.demo.yearly', period: 'P1Y' }, // no name, no priceUsd
+			{}, // nothing at all
+		],
+		offerings: HEALTHY.offerings,
+	});
+	// No price on the yearly means the "annual price" ok/warn row has nothing to say either way.
+	assert.equal(rowOf(rows, 'annual tier').level, 'ok');
+	assert.equal(rows.find((r) => r.name === 'annual price'), undefined);
+});
+
+test('an offering with neither lookup_key nor id still resolves to an empty string for the win-back pattern', () => {
+	const rows = auditLadder({
+		subscriptions: HEALTHY.subscriptions,
+		offerings: [{ is_current: true }],
+	});
+	const row = rowOf(rows, 'retention offer');
+	assert.equal(row.level, 'warn', 'an offering identified by neither key cannot match the win-back pattern');
+});
+
+test('offerings present but none of them a win-back is a warning, not "unknown"', () => {
+	const rows = auditLadder({
+		subscriptions: HEALTHY.subscriptions,
+		offerings: [{ lookup_key: 'default', is_current: true }],
+	});
+	const row = rowOf(rows, 'retention offer');
+	assert.equal(row.level, 'warn');
+	assert.match(row.detail, /no win-back offering/);
+});
+
 test('offerings we were not given are unknown, not missing', () => {
 	const row = rowOf(auditLadder({ subscriptions: HEALTHY.subscriptions }), 'retention offer');
 	assert.equal(row.level, 'skip');

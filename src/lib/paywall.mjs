@@ -258,7 +258,7 @@ export function auditLadder({ subscriptions = [], offerings = [] } = {}) {
 	const rows = [];
 	/** @param {'ok'|'warn'|'fail'|'skip'} level @param {string} name @param {string} [detail] */
 	const add = (level, name, detail = '') => rows.push({ level, name, detail });
-	const subs = (Array.isArray(subscriptions) ? subscriptions : []).map((s) => ({
+	const subs = subscriptions.map((s) => ({
 		label: s?.name ?? s?.productId ?? '(unnamed)',
 		period: s?.period ?? null,
 		priceUsd: s?.priceUsd == null ? null : num(s.priceUsd),
@@ -298,7 +298,7 @@ export function auditLadder({ subscriptions = [], offerings = [] } = {}) {
 		add('warn', 'trial placement', 'no trial on the yearly — the standard shape is a 7-day trial on the yearly and no trial on the weekly');
 	else if (annual.some((s) => s.trialDays > 0)) add('ok', 'trial placement', `trial on the yearly only`);
 
-	const offers = Array.isArray(offerings) ? offerings : [];
+	const offers = offerings;
 	const winback = offers.filter((o) => WINBACK_PATTERN.test(String(o?.lookup_key ?? o?.id ?? '')));
 	if (!offers.length) add('skip', 'retention offer', 'no offerings passed — cannot tell whether an exit offer exists');
 	else if (!winback.length)

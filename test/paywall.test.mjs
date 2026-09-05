@@ -90,6 +90,31 @@ test('a non-monotonic export is reported as a broken export, not smoothed', () =
 	assert.equal(finding(f, 'export').level, 'fail');
 });
 
+test('a first step with zero users never divides by zero', () => {
+	// entered=0 makes every downstream rate() call's denominator 0; the
+	// division-by-zero guard, not NaN, is what has to answer here.
+	const f = onboardingFunnel([step('welcome', 0), step('paywall', 0, 'paywall')]);
+	assert.equal(f.entered, 0);
+	assert.equal(f.steps[0].dropRate, 0);
+	assert.equal(f.reach, 0);
+});
+
+test('steps keyed by "step" or "event" instead of "name" still resolve a name, a role and a user count', () => {
+	const f = onboardingFunnel([
+		{ step: 'welcome', count: 1000 }, // name and users both fall back off "step"/"count"
+		{ event: 'question about goals', value: 900 }, // and off "event"/"value"
+		{}, // nothing at all: the positional fallback name, and role "screen"
+		step('paywall', 800, 'paywall'),
+	]);
+	assert.equal(f.steps[0].name, 'welcome');
+	assert.equal(f.steps[0].users, 1000);
+	assert.equal(f.steps[1].name, 'question about goals');
+	assert.equal(f.steps[1].users, 900);
+	assert.equal(f.steps[1].role, 'quiz', 'inferred from the event name with no explicit kind');
+	assert.equal(f.steps[2].name, 'step 3');
+	assert.equal(f.steps[2].role, 'screen');
+});
+
 test('an empty or absent funnel is an instrumentation failure, never NaN', () => {
 	for (const input of [[], undefined, null]) {
 		const f = onboardingFunnel(input);
