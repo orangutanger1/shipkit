@@ -3,7 +3,7 @@
 // with SHIP_PORTFOLIO_FILE, App Store Connect and Apple Ads answer through a
 // fake `asc`, and RevenueCat through a fetch stub.
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -215,4 +215,138 @@ test('the rendered dashboard names each sunset candidate and each review state',
 
 test('an unknown subcommand names the ones that exist', async () => {
 	await assert.rejects(() => portfolio(['sunset']), /unknown subcommand "sunset"/);
+});
+
+// ─── the registry, plural and broken ────────────────────────────────────────
+
+test('add takes several paths at once and counts them all', async () => {
+	const a = await appRepo({ name: 'One' });
+	const b = await appRepo({ name: 'Two' });
+	const { out } = await portfolio(['add', a, b]);
+	assert.match(out, /added One/);
+	assert.match(out, /added Two/);
+	assert.match(out, /2 apps in/, 'the count is plural once there is more than one');
+	await portfolio(['rm', a, b]);
+});
+
+test('rm --json names what went and what was never there', async () => {
+	const dir = await appRepo();
+	await portfolio(['add', dir]);
+	const { out } = await portfolio(['rm', dir, 'never-registered'], { flags: { json: true } });
+	const doc = JSON.parse(out);
+	assert.deepEqual(doc.removed.map((r) => r.name), ['Demo']);
+	assert.deepEqual(doc.missing, ['never-registered']);
+	assert.deepEqual(doc.apps, []);
+});
+
+test('list marks a registered app whose config has since gone', async () => {
+	// The repo was moved or deleted after it was registered. The registry is the
+	// only record left, and the row has to say the config is gone rather than
+	// disappear.
+	const dir = await appRepo();
+	await portfolio(['add', dir]);
+	await rm(join(dir, 'ship.config.json'));
+	const { out } = await portfolio(['list']);
+	assert.match(out, /missing/);
+	await portfolio(['rm', dir]);
+});
+
+test('the dashboard --scan keeps an app whose config it cannot parse', async () => {
+	// --scan finds the file, not a valid config; a repo mid-edit must still land
+	// in the table under its directory name rather than aborting the scan.
+	setBin('asc', []);
+	const root = await mkdtemp(join(tmpdir(), 'ship-pf-scan-'));
+	const broken = join(root, 'broken-app');
+	await mkdir(broken, { recursive: true });
+	await writeFile(join(broken, 'ship.config.json'), '{oops');
+	const { out } = await portfolio([], { flags: { scan: root, json: true }, fetch: async () => json({ items: [] }) });
+	const row = JSON.parse(out).apps.find((a) => a.path === broken);
+	assert.equal(row.name, 'broken-app', 'the directory name stands in for a config that will not parse');
+	await portfolio(['rm', broken]);
+});
+
+// ─── the dashboard's cells ──────────────────────────────────────────────────
+
+test('the dashboard counts more than one app in the plural', async () => {
+	ascLive();
+	const a = await appRepo({ name: 'One' });
+	const b = await appRepo({ name: 'Two' });
+	await portfolio(['add', a, b]);
+	const { out } = await portfolio([]);
+	assert.match(out, /2 apps ·/);
+	await portfolio(['rm', a, b]);
+});
+
+test('a state App Store Connect invented is printed as it came', async () => {
+	// The review states are not a closed set — Apple adds them. An unrecognised
+	// one must reach the operator verbatim rather than being blanked.
+	ascLive({ state: 'DEVELOPER_REMOVED_FROM_SALE' });
+	const dir = await appRepo();
+	await portfolio(['add', dir]);
+	const { out } = await portfolio([]);
+	assert.match(out, /DEVELOPER_REMOVED_FROM_SALE/);
+	await portfolio(['rm', dir]);
+});
+
+test('a state still waiting on Apple is called out in yellow', async () => {
+	for (const state of ['IN_REVIEW', 'PENDING_DEVELOPER_RELEASE']) {
+		ascLive({ state });
+		const dir = await appRepo();
+		await portfolio(['add', dir]);
+		const { out } = await portfolio([]);
+		assert.match(out, new RegExp(state));
+		await portfolio(['rm', dir]);
+	}
+});
+
+test('an app App Store Connect has no state for shows a dash, not an error', async () => {
+	setBin('asc', [
+		['^status', { out: { appstore: { version: '1.2.0' } } }],
+		['versions list', { out: {} }],
+		['ads auth status', { out: { credentials: [] } }],
+	]);
+	const dir = await appRepo();
+	await portfolio(['add', dir]);
+	const { out } = await portfolio([]);
+	assert.match(out, /Demo/);
+	assert.match(out, /1\.2\.0/, 'a version with no build number stands alone');
+	await portfolio(['rm', dir]);
+});
+
+test('an app whose ASC probe alone failed shows error in the review cell', async () => {
+	// The other probes answered, so the row is worth printing — but the review
+	// column must not read as "no state" when the truth is "we could not ask".
+	setBin('asc', [['^status', { code: 1, err: 'asc: unauthorized' }], ['versions list', { code: 1, err: 'no' }]]);
+	const dir = await appRepo();
+	await portfolio(['add', dir]);
+	const { out } = await portfolio([], { flags: { json: true } });
+	const row = JSON.parse(out).apps[0];
+	assert.ok(row.errors.asc, 'the asc probe failed on its own');
+	const { out: rendered } = await portfolio([]);
+	assert.match(rendered, /error/);
+	await portfolio(['rm', dir]);
+});
+
+test('an app whose row could not be collected at all is still a row', async () => {
+	// collectRow itself throwing — not a probe inside it — used to lose the app
+	// from the dashboard entirely. It has to appear, as an error.
+	const dir = await appRepo();
+	await portfolio(['add', dir]);
+	await rm(join(dir, 'ship.config.json'));
+	const { out } = await portfolio([], { flags: { json: true }, fetch: async () => json({ items: [] }) });
+	const row = JSON.parse(out).apps[0];
+	assert.equal(row.verdict, 'error');
+	assert.match(row.error, /ship\.config\.json/);
+	const { out: rendered } = await portfolio([]);
+	assert.match(rendered, /Demo|error/);
+	await portfolio(['rm', dir]);
+});
+
+test('the rendered dashboard names the probes it skipped and why', async () => {
+	setBin('asc', [['ads auth status', { out: { credentials: [] } }]]);
+	const bare = await repo({ config: { name: 'Bare', bundleId: 'com.bare.app' }, prefix: 'ship-pf-bare-' });
+	await portfolio(['add', bare]);
+	const { out } = await portfolio([], { fetch: async () => json({ items: [] }) });
+	assert.match(out, /Bare: /, 'a skipped probe is a dimmed note, not a warning');
+	await portfolio(['rm', bare]);
 });

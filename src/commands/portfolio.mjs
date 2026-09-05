@@ -111,7 +111,8 @@ async function cmdAdd(args, flags) {
 		}
 		let name = basename(path);
 		try {
-			name = (await loadConfig(path)).name || name;
+			// loadConfig refuses a config with no name, so this is never blank.
+			name = (await loadConfig(path)).name;
 		} catch {
 			// An unparseable config is still an app worth listing; the dashboard
 			// will say so in red. Registering it is how you notice.
@@ -197,7 +198,9 @@ function renderDashboard(rows, { floor, registry }) {
 
 	for (const r of sunset) {
 		warn(`sunset candidate: ${r.name}`);
-		note(sunsetReason(r) || `all three gates passed at a ${moneyOrDash(floor)} floor`);
+		// `sunset` is only true when every gate passed, so there is always a
+		// gate — and a number — to name here.
+		note(sunsetReason(r));
 	}
 	if (!sunset.length && rows.length) good(`no sunset candidates at a ${moneyOrDash(floor)}/mo floor`);
 
@@ -205,9 +208,9 @@ function renderDashboard(rows, { floor, registry }) {
 		const detail = r.error ?? Object.entries(r.errors).map(([k, v]) => `${k}: ${v}`).join(' · ');
 		warn(`${r.name} — ${detail}`);
 	}
-	const skipped = rows.filter((r) => !errored(r) && Object.keys(r.skipped ?? {}).length);
+	const skipped = rows.filter((r) => !errored(r) && Object.keys(r.skipped).length);
 	for (const r of skipped)
-		note(c.dim(`${r.name}: ${Object.entries(r.skipped ?? {}).map(([k, v]) => `${k} ${v}`).join(' · ')}`));
+		note(c.dim(`${r.name}: ${Object.entries(r.skipped).map(([k, v]) => `${k} ${v}`).join(' · ')}`));
 	note(registry);
 }
 
@@ -260,7 +263,7 @@ async function cmdDashboard(flags) {
 		for (const path of found) {
 			let name = basename(path);
 			try {
-				name = (await loadConfig(path)).name || name;
+				name = (await loadConfig(path)).name;
 			} catch {
 				/* unparseable config still belongs in the table */
 			}
@@ -278,23 +281,9 @@ async function cmdDashboard(flags) {
 
 	const floor = num(flags.floor, DEFAULT_FLOOR);
 	const ctx = liveContext({ floor, now: Date.now() });
-	const rows = await pool(reg.apps, num(flags.concurrency, DEFAULT_CONCURRENCY), (entry) =>
-		collectRow(entry, ctx).catch((err) => /** @type {PortfolioRow} */ ({
-			name: entry.name,
-			path: entry.path,
-			error: err?.message ?? String(err),
-			errors: {},
-			verdict: 'error',
-			sunset: false,
-			state: null,
-			version: null,
-			build: null,
-			ageDays: null,
-			daysSinceRelease: null,
-			revenue: null,
-			spend: null,
-		})),
-	);
+	// collectRow answers with an error row rather than rejecting — a missing
+	// config, a config that will not parse and a probe that threw are all rows.
+	const rows = await pool(reg.apps, num(flags.concurrency, DEFAULT_CONCURRENCY), (entry) => collectRow(entry, ctx));
 
 	const totals = totalsOf(rows);
 	if (flags.json) emit({ generatedAt: new Date().toISOString(), registry: file, floor, totals, apps: rows });

@@ -274,7 +274,7 @@ function verdictOf(row, ctx) {
  * and the dashboard's job is to show that rather than hide the app.
  * @typedef {{
  *   name: string, path: string,
- *   error: string|null, errors: Record<string, string>, skipped?: Record<string, string>,
+ *   error: string|null, errors: Record<string, string>, skipped: Record<string, string>,
  *   bundleId?: string, appId?: string|null,
  *   state: string|null, version: string|null, build: string|null,
  *   ageDays: number|null, daysSinceRelease: number|null,
@@ -296,6 +296,9 @@ export async function collectRow(entry, ctx) {
 		path: entry.path,
 		error: null,
 		errors: {},
+		// Always present, empty when nothing was skipped: a dashboard that has to
+		// ask whether the key exists before reading it gets it wrong once.
+		skipped: {},
 		state: null,
 		version: null,
 		build: null,
