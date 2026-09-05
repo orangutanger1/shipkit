@@ -454,16 +454,19 @@ export function brandCollisions(name, results, { now = Date.now() } = {}) {
 	const bounded = new RegExp(`(^|[^\\p{L}\\p{N}])${needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^\\p{L}\\p{N}]|$)`, 'iu');
 	const out = [];
 	for (const r of results ?? []) {
-		const title = (r.trackName ?? '').toLocaleLowerCase();
-		if (!bounded.test(title)) continue;
+		// A row that matched carries the needle in its title, so `title` is both
+		// present and non-empty by the time it is pushed.
+		const title = r.trackName ?? '';
+		const lower = title.toLocaleLowerCase();
+		if (!bounded.test(lower)) continue;
 		out.push({
-			name: r.trackName ?? null,
+			name: title,
 			id: r.trackId ?? null,
 			seller: r.sellerName ?? null,
 			ratings: r.userRatingCount ?? 0,
 			released: (r.releaseDate ?? '').slice(0, 10) || null,
 			ageDays: ageInDays(r.releaseDate, now),
-			exact: title === needle,
+			exact: lower === needle,
 			url: r.trackViewUrl ?? null,
 		});
 	}
