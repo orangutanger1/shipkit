@@ -72,10 +72,12 @@ function resolveDates(value, now = new Date()) {
 	return value;
 }
 
-/** Recursive object merge; arrays and scalars are replaced wholesale. */
+/**
+ * Recursive object merge; arrays and scalars are replaced wholesale. Both sides
+ * come from parsed JSON, so a value is never `undefined` — only absent.
+ */
 /** @param {any} base @param {any} over @returns {any} */
 function merge(base, over) {
-	if (over === undefined) return base;
 	if (Array.isArray(over) || typeof over !== 'object' || over === null) return over;
 	if (Array.isArray(base) || typeof base !== 'object' || base === null) return over;
 	const out = { ...base };

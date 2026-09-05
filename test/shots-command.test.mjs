@@ -1020,3 +1020,135 @@ test('a caption-band render with a subtitle keeps both runs on the axis the desi
 	const meta = await sharp(join(dir, 'store', 'screenshots', 'en-US', 'IPHONE_65', '01-one.png')).metadata();
 	assert.deepEqual({ w: meta.width, h: meta.height }, { w: 200, h: 400 });
 });
+
+// ── capture: what the browser is told to do ─────────────────────────────────
+
+/** A caption-band spec that downloads its base composites from the live store. */
+const LIVE_SPEC = { ...BAND_SPEC, base: { dir: 'base', live: true }, frames: [{ ...BAND_SPEC.frames[0], base: 'one.png' }] };
+
+test('capture seeds storage, follows the route placeholders, and waits for what the screen asks', async () => {
+	// Every one of these is a screenshot that would otherwise be taken of the
+	// wrong thing: an unseeded empty state, last month's invoice, or a screen
+	// caught mid-render.
+	ascOk();
+	const spec = {
+		...DEVICE_SPEC,
+		capture: {
+			url: 'http://localhost:8081',
+			viewport: { width: 100, height: 200 },
+			localeParam: 'lng',
+			settleMs: 0,
+			storage: { seed: 'seed.json' },
+			screens: [{ frame: 'one', path: '/invoice/{{month}}', waitFor: '#ready', evaluate: 'window.scrollTo(0,0)' }],
+		},
+	};
+	const seed = { default: { currency: 'USD' }, byLocale: { 'de-DE': { currency: 'EUR' } } };
+	const dir = await renderRepo(spec, { 'store/seed.json': seed });
+	const puppeteer = (await import('./fixtures/native/puppeteer/index.cjs', { with: { type: 'commonjs' } }).catch(() => null))?.default
+		?? (await import('node:module')).createRequire(import.meta.url)('./fixtures/native/puppeteer/index.cjs');
+	puppeteer.calls.length = 0;
+
+	const { code } = await shots(['capture', 'de-DE'], { dir });
+	assert.equal(code, 0);
+	const seeded = puppeteer.calls.find((call) => call[0] === 'evaluate' && call[2]);
+	assert.deepEqual(seeded[2], { currency: 'EUR' }, 'the locale overlay is what lands in storage');
+	const routed = puppeteer.calls.filter((call) => call[0] === 'goto').at(-1)[1];
+	assert.match(routed, /\/invoice\/\d{4}-\d{2}\?lng=de-DE/, 'the route resolves its month and carries the locale');
+	assert.ok(puppeteer.calls.some((call) => call[0] === 'waitFor' && call[1] === '#ready'));
+	assert.ok(puppeteer.calls.some((call) => call[0] === 'evaluate' && call[1] === 'window.scrollTo(0,0)'));
+});
+
+test('the seeding that runs in the page writes strings as-is and objects as JSON', async () => {
+	// This is the only code here that executes inside the browser: a seed object
+	// double-encoded, or an already-JSON string encoded twice, is an app that
+	// boots to an empty state and a screenshot of nothing.
+	ascOk();
+	const spec = {
+		...DEVICE_SPEC,
+		capture: { url: 'http://localhost:8081', viewport: { width: 100, height: 200 }, settleMs: 0, storage: { default: { token: 'abc', car: { name: 'Wagon' } } }, screens: [{ frame: 'one' }] },
+	};
+	const dir = await renderRepo(spec);
+	const puppeteer = (await import('./fixtures/native/puppeteer/index.cjs', { with: { type: 'commonjs' } }).catch(() => null))?.default
+		?? (await import('node:module')).createRequire(import.meta.url)('./fixtures/native/puppeteer/index.cjs');
+	/** @type {Record<string, string>} */
+	const store = {};
+	globalThis.localStorage = { setItem: (k, v) => { store[k] = v; } };
+	puppeteer.inProcess.run = true;
+	try {
+		await shots(['capture', 'en-US'], { dir });
+	} finally {
+		puppeteer.inProcess.run = false;
+		delete globalThis.localStorage;
+	}
+	assert.equal(store.token, 'abc', 'a string is stored as it is, not re-encoded');
+	assert.deepEqual(JSON.parse(store.car), { name: 'Wagon' });
+});
+
+test('capture --live falls back to the US storefront when nothing names a locale', async () => {
+	ascOk();
+	const dir = await renderRepo(LIVE_SPEC, {}, { asc: { appId: '111', primaryLocale: null, platform: 'IOS' } });
+	const pixels = await sharp({ create: { width: 200, height: 400, channels: 3, background: { r: 250, g: 250, b: 250 } } }).png().toBuffer();
+	let looked = '';
+	const fetch = async (url) => {
+		if (!String(url).includes('itunes.apple.com')) return new Response(pixels, { status: 200 });
+		looked = String(url);
+		return json({ results: [{ screenshotUrls: ['https://is1.example/app/a/b/392x696bb.png'] }] });
+	};
+	const { code } = await shots(['capture'], { dir, flags: { live: true }, fetch });
+	assert.equal(code, 0);
+	assert.match(looked, /country=us/);
+});
+
+test('capture defaults a screen with no path to the app root', async () => {
+	ascOk();
+	const spec = { ...DEVICE_SPEC, capture: { url: 'http://localhost:8081', viewport: { width: 100, height: 200 }, settleMs: 0, screens: [{ frame: 'one' }] } };
+	const dir = await renderRepo(spec);
+	const { code } = await shots(['capture', 'en-US'], { dir });
+	assert.equal(code, 0);
+	assert.ok(existsSync(join(dir, 'store', 'screenshots-raw', 'en-US', 'IPHONE_65', '01.png')));
+});
+
+test('capture refuses a spec with no screens, and one naming a frame that does not exist', async () => {
+	ascOk();
+	const none = await renderRepo({ ...DEVICE_SPEC, capture: { url: 'http://localhost:8081', viewport: { width: 100, height: 200 } } });
+	await assert.rejects(() => shots(['capture', 'en-US'], { dir: none }), /screens\[\] is empty/);
+
+	const wrong = await renderRepo({ ...DEVICE_SPEC, capture: { url: 'http://localhost:8081', viewport: { width: 100, height: 200 }, screens: [{ frame: 'ghost' }] } });
+	await assert.rejects(() => shots(['capture', 'en-US'], { dir: wrong }), /references unknown frame ghost/);
+});
+
+// ── capture --live: the base composites Apple is already serving ────────────
+
+test('capture --live downloads one base composite per frame at the spec canvas', async () => {
+	ascOk();
+	const dir = await renderRepo(LIVE_SPEC);
+	const pixels = await sharp({ create: { width: 200, height: 400, channels: 3, background: { r: 250, g: 250, b: 250 } } }).png().toBuffer();
+	const fetch = async (url) =>
+		String(url).includes('itunes.apple.com')
+			? json({ results: [{ screenshotUrls: ['https://is1.example/app/a/b/392x696bb.png', 'https://is1.example/app/a/b/second.png'] }] })
+			: new Response(pixels, { status: 200 });
+	const { code, out } = await shots(['capture'], { dir, flags: { live: true }, fetch });
+	assert.equal(code, 0);
+	assert.match(out, /fetched one\.png/);
+	assert.ok(existsSync(join(dir, 'store', 'base', 'one.png')));
+
+	// A second run leaves what is already there alone unless --force says so.
+	const { out: again } = await shots(['capture'], { dir, flags: { live: true }, fetch });
+	assert.match(again, /one\.png already present/);
+});
+
+test('capture --live says so when Apple is serving this app no screenshots', async () => {
+	ascOk();
+	const dir = await renderRepo(LIVE_SPEC);
+	const fetch = async () => json({ results: [{}] });
+	await assert.rejects(
+		() => shots(['capture'], { dir, flags: { live: true }, fetch }),
+		/App Store is serving no screenshots/,
+	);
+});
+
+test('capture --live needs an app id to look up', async () => {
+	ascOk();
+	const dir = await renderRepo(LIVE_SPEC, {}, { asc: { primaryLocale: 'en-US', platform: 'IOS' } });
+	await assert.rejects(() => shots(['capture'], { dir, flags: { live: true } }), /asc\.appId is required/);
+});
