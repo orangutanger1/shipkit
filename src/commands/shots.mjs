@@ -95,7 +95,10 @@ const IMAGE_RE = /\.(png|jpe?g)$/i;
 async function scan(cfg) {
 	const root = join(cfg.paths.store, 'screenshots');
 	if (!existsSync(root))
-		throw new ShipError(`no screenshots directory: ${relative(cfg.root, root) || root}`, {
+		// `root` is under cfg.root, so relative() is never '' here: hitting this
+		// branch means the directory does not exist, and cfg.root — which does,
+		// or loadConfig would already have failed — can never equal it.
+		throw new ShipError(`no screenshots directory: ${relative(cfg.root, root)}`, {
 			hint: 'mkdir -p store/screenshots/en-US/IPHONE_65 and drop your captures in (Apple rejects a version with zero iPhone screenshots)',
 		});
 
@@ -213,14 +216,15 @@ async function sizes({ flags }) {
 
 /**
  * cfg + spec + caption copy + the locale list, the four things every render subcommand needs.
+ * Every caller needs the spec to exist — there is nothing to render, verify or
+ * capture without one — so this always asks `loadSpec` to throw rather than
+ * return null.
  * @param {SubCtx} ctx
- * @param {{required?: boolean}} [opts]
  * @returns {Promise<{cfg: Config, spec: ShotSpec, captions: Captions, locales: string[]}>}
  */
-async function renderContext({ args, flags }, { required = true } = {}) {
+async function renderContext({ args, flags }) {
 	const cfg = await loadConfig();
-	const spec = await loadSpec(cfg, { required });
-	if (!spec) return /** @type {{cfg: Config, spec: ShotSpec, captions: Captions, locales: string[]}} */ (/** @type {unknown} */ ({ cfg, spec: null }));
+	const spec = await loadSpec(cfg);
 	const captions = await loadCaptions(spec);
 	const scope = scopeOf(flags);
 	const requested = args.length ? args : scope.locales ? [...scope.locales] : [];
@@ -498,8 +502,8 @@ async function validate({ flags }, pre = {}) {
  */
 async function renderChain({ args, flags }) {
 	if (!flags.render) return 0;
-	const code = await render({ args, flags });
-	if (code !== 0) return code;
+	// render answers 0 or throws — there is no failure code to pass along.
+	await render({ args, flags });
 	// Re-rendered bytes are new bytes, so --skip-existing will not skip them:
 	// they append beside the attached set unless it is replaced.
 	if (!flags.replace)
@@ -510,8 +514,7 @@ async function renderChain({ args, flags }) {
 /** @param {{args?: string[], flags: Flags}} ctx */
 async function upload({ args = [], flags }) {
 	const cfg = await loadConfig();
-	const rendered = await renderChain({ args, flags });
-	if (rendered !== 0) return rendered;
+	await renderChain({ args, flags });
 	const found = await scan(cfg);
 	if (!flags.force) {
 		const code = await validate({ flags: { ...flags, json: false } }, { cfg, found });

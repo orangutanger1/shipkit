@@ -313,20 +313,18 @@ const BAND_DEFAULTS = {
 const resolver = (cfg) => (p) => (p == null ? null : isAbsolute(p) ? p : join(cfg.paths.store, p));
 
 /**
- * Load `store/<shots.spec>`; `null` when the app has no render pipeline, which
- * is the normal case — most repos bring finished PNGs and only upload them.
+ * Load `store/<shots.spec>`. Every caller needs the spec to exist — there is
+ * nothing to capture, render or verify without one — so a missing spec is an
+ * error naming the repos that legitimately have none, not a null to check.
  * @param {import('../config.mjs').Config} cfg
- * @param {{required?: boolean}} [opts]
- * @returns {Promise<ShotSpec|null>}
+ * @returns {Promise<ShotSpec>}
  */
-export async function loadSpec(cfg, { required = false } = {}) {
+export async function loadSpec(cfg) {
 	const file = join(cfg.paths.store, cfg.shots.spec);
-	if (!existsSync(file)) {
-		if (!required) return null;
+	if (!existsSync(file))
 		throw new ShipError(`no screenshot spec at ${file}`, {
 			hint: 'this repo uploads screenshots but does not render them; see `ship shots --help`',
 		});
-	}
 	/** @type {RawSpec} */
 	let raw;
 	try {

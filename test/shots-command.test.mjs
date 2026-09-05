@@ -5,8 +5,9 @@
 // and trimmed — the one thing the stand-in cannot do is rasterise glyph
 // outlines, so a caption becomes the box its glyph rectangles cover.
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { calls, capture, fakeBins, fakeHome, inDir, json, linkNativeDeps, repo, resetCalls, setBin, withFetch, writeFiles } from './fixtures/cmd.mjs';
@@ -118,6 +119,13 @@ test('validate passes a correctly sized set and fails everything Apple would', a
 	assert.equal(bad, 1);
 	assert.match(badOut, /accepted: 1242x2688/);
 	assert.match(badOut, /move it to IPAD_PRO_3GEN_129/, 'a capture in the wrong directory is a `mv`, not a re-render');
+
+	// A size that fits nothing Apple accepts at all is a bad export, not a
+	// misfiled one — there is no `mv` to suggest.
+	const nowhere = await shotsRepo();
+	await png(nowhere, 'store/screenshots/en-US/IPHONE_65/01.png', 999, 999);
+	const { out: nowhereOut } = await shots(['validate'], { dir: nowhere });
+	assert.match(nowhereOut, /999x999 — accepted: 1242x2688 {2}1284x2778\n/, 'no size anywhere accepts this, so no "move it to" is appended');
 });
 
 test('validate fails an unknown display type, an empty group and an over-full one', async () => {
@@ -149,6 +157,30 @@ test('validate folds in what asc found, and narrows to the requested scope', asy
 	const { out: typo } = await shots(['validate'], { dir, flags: { locale: 'fr-FR' } });
 	assert.match(typo, /locale fr-FR/);
 	assert.match(typo, /no screenshot directory on disk/);
+});
+
+test('validate names a --display-type that exists nowhere on its own', async () => {
+	ascOk();
+	const dir = await shotsRepo();
+	await png(dir, 'store/screenshots/en-US/IPHONE_65/01.png', 1242, 2688);
+	const { out: badType } = await shots(['validate'], { dir, flags: { 'display-type': 'watch-ultra' } });
+	assert.match(badType, /display type WATCHULTRA/);
+});
+
+test('validate names a specific locale/display-type pairing that is missing, even though each axis exists elsewhere', async () => {
+	// en-US never shipped an iPad shot, and de-DE never shipped an iPhone one —
+	// each requested locale and each requested display type exists *somewhere*
+	// in scope, so neither axis alone is the miss; only the pairing is.
+	ascOk();
+	const dir = await shotsRepo();
+	await png(dir, 'store/screenshots/en-US/IPHONE_65/01.png', 1242, 2688);
+	await png(dir, 'store/screenshots/de-DE/IPAD_PRO_3GEN_129/01.png', 2048, 2732);
+	const { out } = await shots(['validate'], {
+		dir,
+		flags: { locale: 'en-US,de-DE', 'display-type': 'iphone-6.5,ipad-pro-3gen-12.9' },
+	});
+	assert.match(out, /en-US\/IPADPRO3GEN129/);
+	assert.match(out, /de-DE\/IPHONE65/);
 });
 
 test('upload pushes each display type app-scoped, and reports what asc said', async () => {
@@ -245,6 +277,11 @@ const BAND_SPEC = {
 
 const CAPTIONS = { 'en-US': { one: 'Track it' }, 'de-DE': { one: 'Verfolge alles' } };
 
+const SUB_TYPE = { ...TYPE, subtitle: { size: 12, lineHeight: 14, colour: '#888888', minSize: 8, step: 1, gap: 20 } };
+const LONG_HEADLINE = 'Every service, repair and fill-up for your car tracked automatically in one place';
+const SUBTITLE_SPEC = { ...DEVICE_SPEC, type: SUB_TYPE };
+const SUBTITLE_CAPTIONS = { 'en-US': { one: { headline: LONG_HEADLINE, subtitle: 'No manual entry' } } };
+
 /** A repo whose native dependencies are the stand-ins, with a spec and a font. */
 async function renderRepo(spec, files = {}, config = {}) {
 	const dir = await shotsRepo({ 'store/figma-geometry.json': spec, 'store/fonts/face.ttf': 'not really a font', 'store/captions.json': CAPTIONS, ...files }, config);
@@ -298,6 +335,39 @@ test('render --json reports each frame, and one locale can be asked for by name'
 	assert.equal(doc.mode, 'device-frame');
 	assert.equal(doc.frames.length, 1);
 	assert.equal(doc.frames[0].locale, 'en-US');
+});
+
+test('render honours --locale when no positional locale is given', async () => {
+	ascOk();
+	const dir = await renderRepo(DEVICE_SPEC);
+	await deviceParts(dir);
+	await png(dir, 'store/screenshots-raw/de-DE/IPHONE_65/01.png', 100, 200);
+	const { out } = await shots(['render'], { dir, flags: { json: true, locale: 'de-DE' } });
+	const doc = JSON.parse(out.slice(out.indexOf('{')));
+	assert.equal(doc.frames.length, 1);
+	assert.equal(doc.frames[0].locale, 'de-DE');
+});
+
+test('render refuses when the configured locales have no caption copy at all', async () => {
+	// `localesFor` with no requested locales falls back to store.locales
+	// filtered by what has captions — a config naming a locale nobody wrote
+	// copy for yet leaves nothing to render, which is not the same failure as
+	// a typo'd --locale (that names the locale; this can only name none).
+	ascOk();
+	const dir = await renderRepo(DEVICE_SPEC, {}, { store: { locales: ['fr-FR'] } });
+	await assert.rejects(() => shots(['render'], { dir }), /no locales to render/);
+});
+
+test('a long headline shrinks below the design size, and a subtitle prints beside it', async () => {
+	ascOk();
+	const dir = await renderRepo(SUBTITLE_SPEC, { 'store/captions.json': SUBTITLE_CAPTIONS }, { store: { locales: ['en-US'] } });
+	await deviceParts(dir);
+	await png(dir, 'store/screenshots-raw/en-US/IPHONE_65/01.png', 100, 200);
+	const { code, out } = await shots(['render'], { dir });
+	assert.equal(code, 0);
+	assert.match(out, /\[\d+px\]/, 'a caption too long for the design size reports the size it actually shrank to');
+	assert.match(out, /No manual entry/, 'the subtitle text prints alongside the headline it sits under');
+	assert.match(out, /caption.*shrunk below 20px/);
 });
 
 test('render refuses a locale with no caption copy, and a missing raw capture', async () => {
@@ -369,6 +439,50 @@ test('verify reports the calibration and safety evidence for a rendered set', as
 	assert.equal(JSON.parse(raw).mode, 'caption-band');
 });
 
+test('caption-band verify skips the ink check on a frame flagged as a deliberate copy change, and reports a narrower caption', async () => {
+	ascOk();
+	// `captionChanged` on the spec is the paper trail for "the ink is supposed
+	// to be a different width now" — a frame without it that renders shorter
+	// than the live composite is exactly the un-flagged drift the check exists
+	// to catch, so both need their own row.
+	const spec = { ...BAND_SPEC, frames: [{ ...BAND_SPEC.frames[0], captionChanged: 'redesigned copy' }] };
+	const dir = await renderRepo(spec, { 'store/captions.json': { 'en-US': { one: 'Hi' } } });
+	await baseComposite(dir);
+	await shots(['render', 'en-US'], { dir });
+	const { out } = await shots(['verify', 'en-US'], { dir });
+	assert.match(out, /copy changed/);
+	assert.doesNotMatch(out, /ink width drifted/, 'a flagged frame is exempt from the drift gate');
+});
+
+test('caption-band verify flags a shorter caption on an unflagged frame as ink drift', async () => {
+	ascOk();
+	const dir = await renderRepo(BAND_SPEC, { 'store/captions.json': { 'en-US': { one: 'Hi' } } });
+	await baseComposite(dir);
+	await shots(['render', 'en-US'], { dir });
+	const { code, out } = await shots(['verify', 'en-US'], { dir });
+	assert.equal(code, 1);
+	assert.match(out, /ink width drifted/);
+});
+
+test('caption-band verify fails a render that changed pixels outside its own band', async () => {
+	// The band composite always copies everything below y0..y1 straight from
+	// the base image — this can only differ if the file on disk was touched
+	// after `render` wrote it, which is exactly the corruption this guards.
+	ascOk();
+	const dir = await renderRepo(BAND_SPEC);
+	await baseComposite(dir);
+	await shots(['render', 'en-US'], { dir });
+	const outFile = join(dir, 'store', 'screenshots', 'en-US', 'IPHONE_65', '01-one.png');
+	const tampered = await sharp(outFile)
+		.composite([{ input: { create: { width: 20, height: 20, channels: 3, background: { r: 255, g: 0, b: 0 } } }, left: 5, top: 200 }])
+		.png()
+		.toBuffer();
+	await sharp(tampered).png().toFile(outFile);
+	const { code, out } = await shots(['verify', 'en-US'], { dir });
+	assert.equal(code, 1);
+	assert.match(out, /pixels changed outside the band/);
+});
+
 // ── figma ───────────────────────────────────────────────────────────────────
 // The committed layer exports are build inputs. This subcommand exists to say
 // whether the design has moved since they were taken — cheaply, from the file
@@ -436,6 +550,38 @@ test('--export downloads the nodes the spec names, and survives the quota runnin
 	assert.match(warned, /quota exhausted/);
 });
 
+test('--export <ids> names the nodes explicitly, overriding source.frameIds, and pluralizes more than one', async () => {
+	ascOk();
+	process.env.FIGMA_API_KEY = 'figma-token';
+	const dir = await renderRepo(FIGMA_SPEC);
+	await deviceParts(dir);
+	const two = figmaApi({ images: { '1:2': 'https://figma.example/img/1.png', '3:4': 'https://figma.example/img/2.png' } });
+	const { code, out } = await shots(['figma'], { dir, flags: { export: '1:2,3:4' }, fetch: two });
+	assert.equal(code, 0);
+	assert.match(out, /exported 2 nodes/);
+});
+
+test('--export rethrows a Figma failure that is not the render quota', async () => {
+	ascOk();
+	process.env.FIGMA_API_KEY = 'figma-token';
+	const dir = await renderRepo(FIGMA_SPEC);
+	await deviceParts(dir);
+	const broken = async (url) => (String(url).includes('/images/') ? new Response('', { status: 500 }) : figmaApi()(url));
+	await assert.rejects(() => shots(['figma'], { dir, flags: { export: true }, fetch: broken }), /Figma 500/);
+});
+
+test('--export surviving the quota with no prior export at all still fails: there is nothing committed to fall back to', async () => {
+	ascOk();
+	process.env.FIGMA_API_KEY = 'figma-token';
+	// No deviceParts this time: the parts/ref directory this spec exports into
+	// has never been written, so the "committed exports" fallback does not exist.
+	const dir = await renderRepo(FIGMA_SPEC);
+	const quota = async (url) => (String(url).includes('/images/') ? new Response('', { status: 429 }) : figmaApi()(url));
+	const { code, out } = await shots(['figma'], { dir, flags: { export: true }, fetch: quota });
+	assert.equal(code, 1, 'a quota hit with nothing committed yet cannot be waved through');
+	assert.match(out, /quota exhausted/);
+});
+
 test('--export with nothing to export says so', async () => {
 	ascOk();
 	process.env.FIGMA_API_KEY = 'figma-token';
@@ -458,6 +604,36 @@ test('capture in caption-band mode downloads the composites the store is serving
 
 	const { out: again } = await shots(['capture'], { dir, fetch: store });
 	assert.match(again, /one.png already present/);
+});
+
+test('caption-band capture reports zero base images, and a failing exit, when the full-size fetch fails', async () => {
+	// The lookup succeeds and names a screenshot, but Apple's own asset host
+	// refuses the full-size composite (a transient CDN hiccup, a size the
+	// device no longer serves) — nothing was written, so this cannot read as
+	// the same success as a real download.
+	ascOk();
+	const dir = await renderRepo(BAND_SPEC);
+	const flaky = async (url) => {
+		const href = String(url);
+		if (href.includes('/lookup')) return json({ results: [{ screenshotUrls: ['https://is1.example/img/source/400x800bb.png'] }] });
+		return new Response('', { status: 500 });
+	};
+	const { code, out } = await shots(['capture'], { dir, fetch: flaky });
+	assert.equal(code, 1);
+	assert.match(out, /0 base images/);
+});
+
+test('device-frame capture reports more than one capture as plural', async () => {
+	ascOk();
+	const spec = {
+		...DEVICE_SPEC,
+		capture: { url: 'http://localhost:8081', viewport: { width: 100, height: 200 }, timeoutMs: 1000, screens: [{ frame: 'one', path: '/' }] },
+		frames: [{ key: 'one', src: '01.png', caption: { x: 10, y: 10, w: 180 }, phone: { x: 40, y: 140 }, bg: '#ffffff', crop: [[1, 0, 0], [0, 1, 0]] }],
+	};
+	const dir = await renderRepo(spec, {}, { store: { locales: ['en-US', 'de-DE'] } });
+	const { code, out } = await shots(['capture'], { dir });
+	assert.equal(code, 0);
+	assert.match(out, /2 captures/);
 });
 
 test('caption-band capture refuses an app the store serves nothing for', async () => {
@@ -490,6 +666,20 @@ test('verify a device-frame render reports its calibration rows', async () => {
 	assert.equal(JSON.parse(raw.slice(raw.indexOf('{'))).mode, 'device-frame');
 });
 
+test('verify reports a frame with no matching reference export as uncalibrated rather than crashing', async () => {
+	// `ref` names a directory that exists (so verify does not refuse outright)
+	// but has nothing for this frame yet — a reference export still pending
+	// from the design tool, not the same failure as no `ref` directory at all.
+	ascOk();
+	const dir = await renderRepo({ ...DEVICE_SPEC, ref: 'figma-export/ref' });
+	await deviceParts(dir);
+	await mkdir(join(dir, 'store', 'figma-export', 'ref'), { recursive: true });
+	await png(dir, 'store/screenshots-raw/en-US/IPHONE_65/01.png', 100, 200);
+	await shots(['render', 'en-US'], { dir });
+	const { out } = await shots(['verify', 'en-US'], { dir });
+	assert.match(out, /none/, 'the missing-reference row reads "none", not a blank cell');
+});
+
 test('upload --render renders first, and says why a re-render is not a skip', async () => {
 	ascOk();
 	const dir = await renderRepo(DEVICE_SPEC, {}, { store: { locales: ['en-US'] } });
@@ -498,4 +688,120 @@ test('upload --render renders first, and says why a re-render is not a skip', as
 	const { code, out } = await shots(['upload'], { dir, flags: { render: true, force: true } });
 	assert.equal(code, 0);
 	assert.match(out, /re-rendered images differ byte-wise/);
+});
+
+test('upload --render --replace skips the byte-diff warning: the set is cleared, not appended to', async () => {
+	ascOk();
+	const dir = await renderRepo(DEVICE_SPEC, {}, { store: { locales: ['en-US'] } });
+	await deviceParts(dir);
+	await png(dir, 'store/screenshots-raw/en-US/IPHONE_65/01.png', 1242, 2688);
+	const { code, out } = await shots(['upload'], { dir, flags: { render: true, force: true, replace: true } });
+	assert.equal(code, 0);
+	assert.doesNotMatch(out, /re-rendered images differ byte-wise/);
+});
+
+test('upload defaults to IOS when the config names no platform', async () => {
+	ascOk();
+	const dir = await shotsRepo({}, { asc: { appId: '111', primaryLocale: 'en-US', platform: undefined } });
+	await png(dir, 'store/screenshots/en-US/IPHONE_65/01.png', 1242, 2688);
+	const { code } = await shots(['upload'], { dir });
+	assert.equal(code, 0);
+	const upload = (await calls()).find((call) => call.args.includes('upload'));
+	assert.ok(upload.args.includes('IOS'));
+});
+
+test('upload refuses a scope where every matched locale has zero display types on disk', async () => {
+	// `--locale`/`--display-type` both absent, so `unmatched` has nothing to
+	// name — but a locale directory with no display-type subdirectories still
+	// yields zero groups, which is just as unsubmittable.
+	ascOk();
+	const dir = await shotsRepo({ 'store/screenshots/en-US/.keep': '' });
+	await assert.rejects(
+		() => shots(['upload'], { dir, flags: { force: true } }),
+		/no screenshot groups match the requested scope/,
+	);
+});
+
+// ── scan: the two structural edges around the tree itself ──────────────────
+
+test('plan ignores a stray file sitting directly in a locale directory, outside any display-type folder', async () => {
+	ascOk();
+	const dir = await shotsRepo({ 'store/screenshots/en-US/read-me.txt': 'not a display type' });
+	await png(dir, 'store/screenshots/en-US/IPHONE_65/01.png', 1242, 2688);
+	const { code, out } = await shots(['plan'], { dir });
+	assert.equal(code, 0);
+	const doc = JSON.parse(await readFile(join(dir, '.asc', 'screenshots.json'), 'utf8'));
+	assert.equal(doc.locales[0].groups.length, 1, 'the stray file names no display type and is skipped, not a phantom group');
+	assert.match(out, /1 image/);
+});
+
+test('a repo whose store directory sits one level above the repo root itself gets the bare path in the error', async () => {
+	// store.dir can be absolute, and nothing stops it from pointing at the repo
+	// root's own parent — if the project directory happens to be named
+	// "screenshots", `store/screenshots` *is* the repo root, and `relative()`
+	// between identical paths is '', not a path to fall back to.
+	const parent = await mkdtemp(join(tmpdir(), 'ship-store-'));
+	const dir = join(parent, 'screenshots');
+	await mkdir(dir, { recursive: true });
+	await writeFile(join(dir, 'ship.config.json'), JSON.stringify({ ...CONFIG, store: { ...CONFIG.store, dir: parent } }));
+	ascOk();
+	await assert.rejects(() => shots(['plan'], { dir }), new RegExp(`${dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} has no locale directories`));
+});
+
+test('plan counts the display types in a locale, not just the images', async () => {
+	// One locale with two device families is the normal shape of a real tree,
+	// and the summary line has to pluralise both halves independently.
+	ascOk();
+	const dir = await shotsRepo();
+	await png(dir, 'store/screenshots/en-US/IPHONE_65/01.png', 1242, 2688);
+	await png(dir, 'store/screenshots/en-US/IPAD_PRO_3GEN_129/01.png', 2048, 2732);
+	const { out } = await shots(['plan'], { dir });
+	assert.match(out, /2 images across 2 display types/);
+});
+
+test('validate names the dimensions it could not read rather than printing undefined', async () => {
+	// A truncated or half-written PNG has no header to read. The failure has to
+	// say the file is unreadable, not claim it is "undefinedxundefined".
+	ascOk();
+	const dir = await shotsRepo({ 'store/screenshots/en-US/IPHONE_65/broken.png': 'not a png' });
+	const { code, out } = await shots(['validate'], { dir });
+	assert.equal(code, 1);
+	assert.match(out, /\?x\?/);
+	assert.doesNotMatch(out, /undefined/);
+});
+
+test('upload asks asc for the platform the repo configured, falling back to iOS', async () => {
+	// `asc.platform` is default-backed, but a config may null it out; the upload
+	// still has to name a platform because asc requires one.
+	ascOk();
+	const dir = await shotsRepo({}, { asc: { appId: '111', primaryLocale: 'en-US', platform: null } });
+	await png(dir, 'store/screenshots/en-US/IPHONE_65/01.png', 1242, 2688);
+	const { code } = await shots(['upload'], { dir });
+	assert.equal(code, 0);
+	const upload = (await calls()).find((call) => call.args.includes('upload'));
+	assert.ok(upload.args.includes('IOS'));
+});
+
+test('capture with no url in the spec is refused before a browser is started', async () => {
+	// The spec is what says where to point the browser. Without a url there is
+	// nothing to capture, and the heading must not read "· undefined".
+	ascOk();
+	const spec = { ...DEVICE_SPEC, capture: { viewport: { width: 100, height: 200 }, screens: [{ frame: 'one', path: '/' }] } };
+	const dir = await renderRepo(spec);
+	const { out } = await shots(['capture', 'en-US'], { dir }).catch((err) => ({ out: String(err) }));
+	assert.doesNotMatch(out, /· undefined/);
+});
+
+test('every locale whose copy had to shrink is named, not just the first', async () => {
+	// The shrink warning is the early signal that a translation is too long. If
+	// it only ever named one locale, the second would ship at the wrong size.
+	ascOk();
+	const long = { 'en-US': { one: LONG_HEADLINE }, 'de-DE': { one: LONG_HEADLINE } };
+	const dir = await renderRepo(DEVICE_SPEC, { 'store/captions.json': long });
+	await deviceParts(dir);
+	await png(dir, 'store/screenshots-raw/en-US/IPHONE_65/01.png', 100, 200);
+	await png(dir, 'store/screenshots-raw/de-DE/IPHONE_65/01.png', 100, 200);
+	const { out } = await shots(['render'], { dir });
+	assert.match(out, /2 captions shrunk below/);
+	assert.match(out, /en-US, de-DE|de-DE, en-US/);
 });
