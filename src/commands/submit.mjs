@@ -40,7 +40,7 @@ ${c.bold('Notes')}
   ${c.dim('--force submits a version validate already told you will be rejected.')}
 `;
 
-const POLL_MS = 30_000;
+const POLL_MS = Number(process.env.SHIP_SUBMIT_POLL_MS) || 30_000;
 /** @type {(ms: number) => Promise<void>} */
 const sleep = (ms) => new Promise((r) => setTimeout(() => r(undefined), ms));
 
@@ -56,7 +56,7 @@ function listOf(payload) {
 }
 
 /** @type {(row: any) => Record<string, any>} */
-const attrs = (row) => row?.attributes ?? row ?? {};
+const attrs = (row) => row?.attributes ?? row;
 /** @type {(b: any) => string} */
 const buildLabel = (b) => {
 	const a = attrs(b);

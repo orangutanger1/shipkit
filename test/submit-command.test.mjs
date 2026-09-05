@@ -8,6 +8,9 @@ import { calls, capture, fakeBins, fakeHome, inDir, repo, resetCalls, setBin } f
 
 await fakeHome();
 await fakeBins(['asc', 'npx']);
+// Real setTimeout backs the poll loop; without this the one test that lets a
+// build clear on a second poll would burn a real 30s.
+process.env.SHIP_SUBMIT_POLL_MS = '5';
 
 const { run } = await import('../src/commands/submit.mjs');
 const { setDryRun } = await import('../src/exec.mjs');
@@ -128,6 +131,125 @@ test('a refused review submission surfaces asc stderr and where to check', async
 	setBin('npx', [['eas-cli@latest submit', { out: 'uploaded' }]]);
 	const dir = await submitRepo();
 	await assert.rejects(() => submit({ dir, flags: { 'skip-upload': true } }), /asc review submit exited 1/);
+});
+
+test('a build with no reportable state yet still resolves once Apple reports one', async () => {
+	// Apple's own dashboard shows builds sitting with no processingState at
+	// all before the pipeline picks them up; the poll message has to say
+	// something honest ("unknown") rather than crash on the missing field,
+	// and has to keep polling — with the real timer — until it clears.
+	await resetCalls();
+	setBin('asc', [
+		['builds list', { out: { data: [{ id: 'b', attributes: {} }] } }],
+		['^validate', { out: CLEAN_VALIDATE }],
+		['review submit', { out: { data: { id: 'sub-1' } } }],
+	]);
+	setBin('npx', [['eas-cli@latest submit', { out: 'uploaded' }]]);
+	const dir = await submitRepo();
+	const pending = capture(() => inDir(dir, () => run({ args: [], flags: { 'skip-upload': true, timeout: 5 } })));
+	while ((await calls()).filter((c) => c.args.join(' ').includes('builds list')).length < 1) {
+		await new Promise((r) => setTimeout(r, 5));
+	}
+	setBin('asc', [
+		['builds list', { out: { data: [{ id: 'b', attributes: { version: '42', processingState: 'VALID', uploadedDate: '2026-09-01' } }] } }],
+		['^validate', { out: CLEAN_VALIDATE }],
+		['review submit', { out: { data: { id: 'sub-1' } } }],
+	]);
+	const { result, out } = await pending;
+	assert.equal(result, 0);
+	assert.match(out, /poll 1: unknown/);
+	assert.match(out, /build 42 \(2026-09-01\) processed/);
+});
+
+test('a validate response this parser has never seen still resolves clean, not crashed', async () => {
+	// Not every ASC account/role returns the documented shape; an object where
+	// `checks` and `remediation` are present but hold none of the recognised
+	// array keys, and no `summary` at all, must read as "nothing blocking"
+	// rather than throw reading .length off something that is not an array.
+	ascOk({ validate: { checks: { note: 'nothing structured' }, remediation: {} } });
+	const dir = await submitRepo();
+	const { code, out } = await submit({ dir, flags: { 'skip-upload': true } });
+	assert.equal(code, 0);
+	assert.match(out, /validate is clean/);
+});
+
+test('the readiness table renders every shape a check and a plan step can arrive in', async () => {
+	const odd = {
+		summary: { errors: 2 }, // no `blocking` key — falls back to `errors`
+		checks: [
+			{ checkId: 'c1', severity: 'WARNING', message: 'needs review' }, // id via checkId, warning mark
+			{ severity: 'NOTICE' }, // unrecognised level, no message, no id/checkId at all
+			{ message: 'no severity given' }, // severity missing entirely
+		],
+		remediation: { steps: [{ order: 1, message: 'do X' }] }, // non-blocking step
+	};
+	ascOk({ validate: odd });
+	const dir = await submitRepo();
+	const { code, out } = await submit({ dir, flags: { 'skip-upload': true, force: true } });
+	assert.equal(code, 0);
+	assert.match(out, /needs review/);
+	assert.match(out, /no severity given/);
+	assert.match(out, /1\. do X/); // no "blocking" prefix on a non-blocking step
+});
+
+test('a failed build is named by whatever identifying field it has, down to none at all', async () => {
+	ascOk({ builds: { data: [{ attributes: { buildNumber: '9', processingState: 'FAILED' } }] } });
+	let dir = await submitRepo();
+	await assert.rejects(() => submit({ dir, flags: { 'skip-upload': true } }), /failed for 9 \(no date\)/);
+
+	ascOk({ builds: { data: [{ attributes: { processingState: 'FAILED' } }] } });
+	dir = await submitRepo();
+	await assert.rejects(() => submit({ dir, flags: { 'skip-upload': true } }), /failed for \? \(no date\)/);
+});
+
+test('a build reported without the usual attributes wrapper still resolves', async () => {
+	// Not every asc version nests build fields under `attributes`.
+	ascOk({ builds: { data: [{ id: 'b', version: '42', processingState: 'VALID', uploadedDate: '2026-09-01' }] } });
+	const dir = await submitRepo();
+	const { code, out } = await submit({ dir, flags: { 'skip-upload': true } });
+	assert.equal(code, 0);
+	assert.match(out, /build 42 \(2026-09-01\) processed/);
+});
+
+test('a processed build with no id refuses to guess which one to submit', async () => {
+	ascOk({ builds: { data: [{ attributes: { version: '42', processingState: 'VALID', uploadedDate: '2026-09-01' } }] } });
+	const dir = await submitRepo();
+	await assert.rejects(() => submit({ dir, flags: { 'skip-upload': true } }), /no processed build id to attach/);
+});
+
+test('--build names the id explicitly when the processed build did not carry one', async () => {
+	ascOk({
+		builds: { data: [{ attributes: { version: '42', processingState: 'VALID', uploadedDate: '2026-09-01' } }] },
+		review: { data: { id: 'sub-2' } },
+	});
+	const dir = await submitRepo();
+	const { code, out } = await submit({ dir, flags: { 'skip-upload': true, build: '77' } });
+	assert.equal(code, 0);
+	assert.match(out, /submitted for review \(build 77\)/);
+});
+
+test('a refused review submission with no stderr at all still points at where to check', async () => {
+	setBin('asc', [['builds list', { out: VALID_BUILD }], ['^validate', { out: CLEAN_VALIDATE }], ['review submit', { out: '', code: 1 }]]);
+	setBin('npx', [['eas-cli@latest submit', { out: 'uploaded' }]]);
+	const dir = await submitRepo();
+	// The remediation hint reads asc's stderr; with none captured it must say
+	// so plainly rather than print an empty line the operator has to guess at.
+	await assert.rejects(() => submit({ dir, flags: { 'skip-upload': true } }), (err) => {
+		assert.match(err.message, /asc review submit exited 1/);
+		assert.match(err.hint, /no stderr/);
+		return true;
+	});
+});
+
+test('a builds-list call that returns unparseable output is "no builds", not a crash', async () => {
+	// asc() falls back to null on empty/unparseable stdout — a different code
+	// path than an empty `data` array, and it must read the same to the operator.
+	setBin('asc', [['builds list', { out: '' }]]);
+	const dir = await submitRepo();
+	await assert.rejects(
+		() => submit({ dir, flags: { 'skip-upload': true, timeout: 1 } }),
+		/last state was no builds returned/,
+	);
 });
 
 test('--dry-run walks every step without touching Apple', async () => {
