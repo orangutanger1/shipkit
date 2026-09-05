@@ -72,14 +72,18 @@ ${c.bold('Exit codes')}
 function driftRows(verdict) {
 	/** @type {DriftRow[]} */
 	const rows = [];
-	for (const name of verdict.added) rows.push({ kind: 'added', name, detail: verdict.current.deps[name] ?? '' });
+	// verdict.current.deps is built by nativeFingerprint, so every name here
+	// (drawn from Object.keys of that same object) already has a string value —
+	// unlike the lock side below, which is untrusted JSON off disk and can hold
+	// anything a hand-edited or stale-schema native-lock.json put there.
+	for (const name of verdict.added) rows.push({ kind: 'added', name, detail: verdict.current.deps[name] });
 	for (const name of verdict.removed)
 		rows.push({ kind: 'removed', name, detail: verdict.lock?.deps?.[name] ?? '' });
 	for (const name of verdict.changed)
 		rows.push({
 			kind: 'changed',
 			name,
-			detail: `${verdict.lock?.deps?.[name] ?? '?'} → ${verdict.current.deps[name] ?? '?'}`,
+			detail: `${verdict.lock?.deps?.[name] ?? '?'} → ${verdict.current.deps[name]}`,
 		});
 	for (const key of verdict.configChanged) rows.push({ kind: 'config', name: key, detail: 'expo config key changed' });
 	return rows;
@@ -94,7 +98,7 @@ const KIND_COLOUR = { added: c.green, removed: c.red, changed: c.yellow, config:
  * @returns {Json|null}
  */
 function salvageJSON(text) {
-	const t = String(text ?? '').trim();
+	const t = String(text).trim();
 	for (const start of [0, t.search(/[[{]/)]) {
 		if (start < 0) continue;
 		try {
@@ -296,7 +300,9 @@ export async function run({ args, flags }) {
 		const rows = driftRows(verdict);
 		if (rows.length) {
 			table(rows, [
-				{ header: 'CHANGE', get: (r) => (KIND_COLOUR[r.kind] ?? c.dim)(r.kind) },
+				// KIND_COLOUR carries every member of DriftRow['kind'] — driftRows()
+				// never produces a fifth kind — so there is no default to fall back to.
+				{ header: 'CHANGE', get: (r) => KIND_COLOUR[r.kind](r.kind) },
 				{ header: 'NAME', get: (r) => r.name },
 				{ header: 'DETAIL', get: (r) => r.detail },
 			]);

@@ -226,6 +226,168 @@ test('without expo.updates.url the inner half says it cannot verify what is serv
 	assert.match(out, /cannot verify what production serves/);
 });
 
+test('a corrupted lock file with no readable version for a dependency still renders the drift table', async () => {
+	// native-lock.json is untrusted JSON off disk — a stale schema or a
+	// hand-edit can leave a dep entry with no string version at all. The table
+	// has to say "unknown" rather than throw building the row.
+	const dir = await otaRepo({ '.asc/native-lock.json': { version: '1.2.0', builtAt: '2026-08-01T00:00:00.000Z', deps: { 'expo-updates': null, 'react-native-purchases': null }, config: {} } });
+	const { out } = await ota({ dir, flags: { check: true } });
+	assert.match(out, /OTA UNSAFE/);
+	assert.match(out, /react-native-purchases/, 'removed: lock had no readable version for it');
+	assert.match(out, /expo-updates/, 'changed: the lock side of the arrow is unknown');
+	assert.match(out, /\? →/);
+});
+
+test('a protocol-1 multipart manifest response is read up to its boundary', async () => {
+	innerBins();
+	process.env.EXPO_PUBLIC_RC_IOS_KEY = 'rc-key-value';
+	const dir = await otaRepo();
+	const multipart = async () => new Response('{"id":"upd-1"}\n---boundary\nContent-Type: text/plain\n\nignored\n');
+	const { code, out } = await ota({ dir, flags: { inner: true, 'message-b64': Buffer.from('fix').toString('base64') }, fetch: multipart });
+	assert.equal(code, 0);
+	assert.match(out, /production serves update upd-1/);
+});
+
+test('a bundle exported as plain .js, not Hermes bytecode, is still found and verified', async () => {
+	process.env.EXPO_PUBLIC_RC_IOS_KEY = 'rc-key-value';
+	setBin('npx', [
+		['expo export', { out: '', files: { 'dist/_expo/static/js/ios/index-abc.js': BUNDLE('rc-key-value') } }],
+		['eas-cli@latest update', { out: JSON.stringify([{ id: 'upd-1', platform: 'ios' }]) }],
+	]);
+	const dir = await otaRepo();
+	const { code, out } = await ota({ dir, flags: { inner: true, 'message-b64': Buffer.from('fix').toString('base64') }, fetch: served('upd-1') });
+	assert.equal(code, 0);
+	assert.match(out, /index-abc\.js verified/);
+});
+
+test('an optional EXPO_PUBLIC_ value that did not inline is a note, not a refusal', async () => {
+	innerBins();
+	process.env.EXPO_PUBLIC_RC_IOS_KEY = 'rc-key-value';
+	process.env.EXPO_PUBLIC_OPTIONAL = 'never-lands-in-the-bundle';
+	const dir = await otaRepo();
+	try {
+		const { code, out } = await ota({ dir, flags: { inner: true, 'message-b64': Buffer.from('fix').toString('base64') }, fetch: served('upd-1') });
+		assert.equal(code, 0);
+		assert.match(out, /EXPO_PUBLIC_OPTIONAL defined but not inlined — fine if they are optional/);
+	} finally {
+		delete process.env.EXPO_PUBLIC_OPTIONAL;
+	}
+});
+
+test('eas update publishing with no id at all for any platform is refused, not silently accepted', async () => {
+	process.env.EXPO_PUBLIC_RC_IOS_KEY = 'rc-key-value';
+	setBin('npx', [
+		['expo export', { out: '', files: { 'dist/_expo/static/js/ios/index-abc.hbc': BUNDLE('rc-key-value') } }],
+		['eas-cli@latest update', { out: JSON.stringify([{ platform: 'android' }]) }],
+	]);
+	const dir = await otaRepo();
+	await assert.rejects(
+		() => ota({ dir, flags: { inner: true, 'message-b64': Buffer.from('fix').toString('base64') } }),
+		/eas update published nothing identifiable for ios/,
+	);
+});
+
+test('eas update publishing one entry for a different platform than requested is still checked, by falling back to it', async () => {
+	process.env.EXPO_PUBLIC_RC_IOS_KEY = 'rc-key-value';
+	setBin('npx', [
+		['expo export', { out: '', files: { 'dist/_expo/static/js/ios/index-abc.hbc': BUNDLE('rc-key-value') } }],
+		['eas-cli@latest update', { out: JSON.stringify([{ id: 'upd-x', platform: 'android' }]) }],
+	]);
+	const dir = await otaRepo();
+	const { code, out } = await ota({ dir, flags: { inner: true, 'message-b64': Buffer.from('fix').toString('base64') }, fetch: served('upd-x') });
+	assert.equal(code, 0);
+	assert.match(out, /ios: production serves update upd-x/);
+});
+
+test('a served manifest with no id of its own is named "no update", not undefined', async () => {
+	innerBins();
+	process.env.EXPO_PUBLIC_RC_IOS_KEY = 'rc-key-value';
+	const dir = await otaRepo();
+	await assert.rejects(
+		() =>
+			ota({
+				dir,
+				flags: { inner: true, 'message-b64': Buffer.from('fix').toString('base64') },
+				fetch: async () => new Response('{"note":"nothing recognisable"}'),
+			}),
+		/production serves no update for ios, not the upd-1 just published/,
+	);
+});
+
+test('an environment nulled out of the config defaults to production, in both halves', async () => {
+	// eas.environment is DEFAULTS-backed like everything else in ship.config.json,
+	// so it is always 'production' unless the operator writes `"environment":
+	// null` — deepMerge honours that the way it honours any other null override.
+	const dir = await otaRepo({}, { eas: { channel: 'production', environment: null } });
+	const { out } = await ota({ dir, flags: { check: true } });
+	assert.match(out, /environment production/);
+
+	innerBins();
+	process.env.EXPO_PUBLIC_RC_IOS_KEY = 'rc-key-value';
+	const { out: innerOut } = await ota({ dir, flags: { inner: true, 'message-b64': Buffer.from('fix').toString('base64') }, fetch: served('upd-1') });
+	assert.match(innerOut, /production serves update upd-1/);
+});
+
+test('an eas update call that answers with no parseable JSON at all is "nothing identifiable", not a crash', async () => {
+	process.env.EXPO_PUBLIC_RC_IOS_KEY = 'rc-key-value';
+	setBin('npx', [
+		['expo export', { out: '', files: { 'dist/_expo/static/js/ios/index-abc.hbc': BUNDLE('rc-key-value') } }],
+		['eas-cli@latest update', { out: '' }],
+	]);
+	const dir = await otaRepo();
+	await assert.rejects(
+		() => ota({ dir, flags: { inner: true, 'message-b64': Buffer.from('fix').toString('base64') } }),
+		/eas update published nothing identifiable for ios/,
+	);
+});
+
+test('--platforms all exports and verifies every platform, not just ios', async () => {
+	process.env.EXPO_PUBLIC_RC_IOS_KEY = 'rc-key-value';
+	setBin('npx', [
+		['expo export --platform ios', { out: '', files: { 'dist/_expo/static/js/ios/index-abc.hbc': BUNDLE('rc-key-value') } }],
+		['expo export --platform android', { out: '', files: { 'dist/_expo/static/js/android/index-abc.hbc': BUNDLE('rc-key-value') } }],
+		['eas-cli@latest update', { out: JSON.stringify([{ id: 'upd-1', platform: 'ios' }, { id: 'upd-2', platform: 'android' }]) }],
+	]);
+	const byPlatform = async (_url, opts) => new Response(`{"id":"${opts.headers['expo-platform'] === 'android' ? 'upd-2' : 'upd-1'}"}`);
+	const dir = await otaRepo();
+	const { code, out } = await ota({ dir, flags: { inner: true, platforms: 'all', 'message-b64': Buffer.from('fix').toString('base64') }, fetch: byPlatform });
+	assert.equal(code, 0);
+	assert.match(out, /ios: production serves update upd-1/);
+	assert.match(out, /android: production serves update upd-2/);
+});
+
+test('eas update answering with a single object, not an array, still publishes and verifies', async () => {
+	process.env.EXPO_PUBLIC_RC_IOS_KEY = 'rc-key-value';
+	setBin('npx', [
+		['expo export', { out: '', files: { 'dist/_expo/static/js/ios/index-abc.hbc': BUNDLE('rc-key-value') } }],
+		['eas-cli@latest update', { out: JSON.stringify({ id: 'upd-1', platform: 'ios' }) }],
+	]);
+	const dir = await otaRepo();
+	const { code, out } = await ota({ dir, flags: { inner: true, 'message-b64': Buffer.from('fix').toString('base64') }, fetch: served('upd-1') });
+	assert.equal(code, 0);
+	assert.match(out, /production serves update upd-1/);
+});
+
+test('ota.requiredEnv nulled out of the config requires nothing, rather than crashing on a missing default', async () => {
+	// DEFAULTS deep-merges `ota: { requiredEnv: [] }` into every config, so this
+	// key is normally always present — the one way around that default is the
+	// operator explicitly writing `"ota": null`, which deepMerge honours.
+	innerBins();
+	delete process.env.EXPO_PUBLIC_RC_IOS_KEY;
+	const dir = await otaRepo({}, { ota: null });
+	const { code } = await ota({ dir, flags: { inner: true, 'message-b64': Buffer.from('fix').toString('base64') }, fetch: served('upd-1') });
+	assert.equal(code, 0, 'no requiredEnv key is missing, so publishing is not refused');
+});
+
+test('an app.json with no expo.platforms at all publishes to "all", not nothing', async () => {
+	setBin('npx', [['env:exec', { out: '' }]]);
+	const dir = await otaRepo({ 'app.json': { expo: { name: 'Demo', version: '1.2.0', ios: { bundleIdentifier: 'com.demo.app' } } } });
+	const { code } = await ota({ dir, flags: { message: 'fix' } });
+	assert.equal(code, 0);
+	const call = (await calls()).find((c) => c.args.includes('env:exec'));
+	assert.match(call.args.join(' '), /--platforms all/);
+});
+
 test('an environment with no EXPO_PUBLIC_ values at all is a warning, not a crash', async () => {
 	const saved = Object.keys(process.env).filter((k) => k.startsWith('EXPO_PUBLIC_'));
 	const values = saved.map((k) => [k, process.env[k]]);
