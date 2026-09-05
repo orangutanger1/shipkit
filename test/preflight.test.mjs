@@ -5,6 +5,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
 	COMPLIANCE_CODE_KEY,
+	levelOf,
+	validationItems,
+	validationRow,
 	ENCRYPTION_KEY,
 	ageRatingGaps,
 	classifyAsc,
@@ -149,4 +152,96 @@ test('asc probe: a banner before the JSON body does not lose the payload', () =>
 test('asc probe: silence is `empty`, not a bogus payload', () => {
 	assert.deepEqual(classifyAsc({ code: 0, stdout: '   ' }), { state: 'empty', payload: null, detail: '' });
 	assert.equal(classifyAsc().state, 'empty');
+});
+
+// ─── severity words, from two different vendors ─────────────────────────────
+
+test('every severity word asc and RevenueCat use maps to a report level', () => {
+	// These arrive as free text from two tools that do not agree with each
+	// other. A word that falls through reads as a failure, which is the safe
+	// direction — but only the ones that really are failures should get there.
+	for (const word of ['error', 'invalid', 'blocker', 'critical']) assert.equal(levelOf(word), 'fail');
+	for (const word of ['warning', 'caution']) assert.equal(levelOf(word), 'warn');
+	for (const word of ['info', 'notice', 'passed', 'pass', 'valid']) assert.equal(levelOf(word), 'ok');
+	for (const word of ['skipped', 'not_applicable']) assert.equal(levelOf(word), 'skip');
+	assert.equal(levelOf('WARNING'), 'warn', 'the comparison is case-insensitive');
+	assert.equal(levelOf('ok'), 'ok', 'a word that is already a level passes through');
+});
+
+test('a severity nobody recognises is a failure, unless the caller says otherwise', () => {
+	// An unknown word must not read as "fine": a new asc severity would then
+	// silently stop blocking submissions.
+	assert.equal(levelOf('kerfuffle'), 'fail');
+	assert.equal(levelOf('kerfuffle', 'warn'), 'warn');
+	assert.equal(levelOf(''), 'fail');
+});
+
+// ─── the validate payload, in the shapes asc has sent ───────────────────────
+
+test('validationItems finds the rows wherever the payload put them', () => {
+	assert.deepEqual(validationItems({ remediation: { steps: [{ id: 'a' }] }, checks: [{ id: 'b' }] }), [{ id: 'a' }],
+		'the remediation plan is already in fix order, so it wins over checks');
+	assert.deepEqual(validationItems({ checks: [{ id: 'b' }] }), [{ id: 'b' }]);
+	assert.deepEqual(validationItems({ data: { attributes: { problems: [{ id: 'c' }] } } }), [{ id: 'c' }]);
+	assert.deepEqual(validationItems([{ id: 'd' }]), [{ id: 'd' }], 'a bare array is the rows themselves');
+	assert.deepEqual(validationItems({ data: { checks: [{ id: 'e' }] } }), [{ id: 'e' }],
+		'a data envelope with no attributes wrapper is read straight through');
+});
+
+test('a validate payload with nothing in it is no rows, not a crash', () => {
+	for (const empty of [undefined, null, '', 0, 'a banner line', { remediation: { steps: [] }, checks: [] }, { data: {} }])
+		assert.deepEqual(validationItems(empty), [], `${JSON.stringify(empty)} is empty`);
+});
+
+test('a validation row names its check, its fix and what it is about', () => {
+	const row = validationRow({
+		checkId: 'ITMS-90683',
+		message: 'Missing purpose string',
+		remediation: 'Add NSCameraUsageDescription',
+		resourceType: 'bundle',
+		resourceId: 'com.demo.app',
+		severity: 'error',
+	}, 0);
+	assert.equal(row.level, 'fail');
+	assert.equal(row.name, 'ITMS-90683');
+	assert.match(row.detail, /Missing purpose string/);
+	assert.match(row.detail, /Add NSCameraUsageDescription/);
+	assert.match(row.detail, /\(bundle com\.demo\.app\)/);
+});
+
+test('a resource named only by type carries no subject', () => {
+	// Half a reference is worse than none: "(bundle)" tells the operator nothing
+	// about which bundle.
+	const row = validationRow({ id: 'x', message: 'Something', resourceType: 'bundle' }, 0);
+	assert.equal(row.detail, 'Something');
+});
+
+test('a validation row reads its severity from whichever field carries it', () => {
+	assert.equal(validationRow({ id: 'a', level: 'warning' }, 0).level, 'warn');
+	assert.equal(validationRow({ id: 'a', status: 'invalid' }, 0).level, 'fail');
+	assert.equal(validationRow({ id: 'a' }, 0).level, 'fail', 'no severity anywhere is still a failure');
+});
+
+test('asc\'s own `blocking` verdict outranks the severity beside it', () => {
+	// asc marks a step blocking when it stops a submission. A step it calls
+	// blocking but labels "warning" still has to fail the preflight.
+	assert.equal(validationRow({ id: 'a', severity: 'warning', blocking: true }, 0).level, 'fail');
+	assert.equal(validationRow({ id: 'a', severity: 'info' }, 0).level, 'skip',
+		'an info step is an unverifiable note, not work');
+});
+
+test('a validation row that is a bare string, or not an object at all, is still a row', () => {
+	assert.deepEqual(validationRow('Missing icon', 0), { level: 'fail', name: '#1', detail: 'Missing icon' });
+	assert.deepEqual(validationRow(42, 3), { level: 'fail', name: '#4', detail: '' });
+	assert.equal(validationRow({ message: 'no id here' }, 6).name, '#7', 'a row with no name is numbered');
+});
+
+// ─── salvaging asc's stdout ─────────────────────────────────────────────────
+
+test('asc probe: a banner before the JSON is stepped over, and unparseable output is not JSON', () => {
+	// asc occasionally prefixes a warning line. Failing on that would report a
+	// broken CLI for a run that succeeded.
+	assert.deepEqual(classifyAsc({ stdout: 'warning: update available\n{"ok":true}' }).payload, { ok: true });
+	assert.equal(classifyAsc({ stdout: 'no json at all here' }).state, 'empty');
+	assert.equal(classifyAsc({ stdout: '{not really json' }).state, 'empty');
 });

@@ -29,7 +29,7 @@ const isLevel = (s) => LEVELS.has(s);
  * @returns {Level}
  */
 export function levelOf(raw, fallback = 'fail') {
-	const s = String(raw ?? '').toLowerCase();
+	const s = String(raw).toLowerCase();
 	if (isLevel(s)) return s;
 	if (s === 'error' || s === 'invalid' || s === 'blocker' || s === 'critical') return 'fail';
 	if (s === 'warning' || s === 'caution') return 'warn';
@@ -203,11 +203,12 @@ const UNAUTHORIZED =
 	/\b40[13]\b|unauthori[sz]ed|forbidden|not authenticated|authentication (failed|required)|no (stored |valid )?credentials|no active session|session (has )?expired|auth login/i;
 
 /** Salvage JSON from asc stdout the way runJSON does, but never throwing.
- * @param {Json|undefined} text
+ * @param {string} text
  * @returns {Json|null}
  */
 function parseSalvagedJSON(text) {
-	const body = String(text ?? '').trim();
+	// Its one caller passes `stdout`, which classifyAsc defaults to ''.
+	const body = String(text).trim();
 	if (!body) return null;
 	for (const start of [0, body.search(/[[{]/), body.indexOf('{')]) {
 		if (start < 0) continue;
