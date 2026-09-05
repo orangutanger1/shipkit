@@ -19,7 +19,7 @@ import { join } from 'node:path';
 const args = process.argv.slice(2);
 const reportAt = args.indexOf('--report');
 const reportDir = reportAt >= 0 ? args[reportAt + 1] : 'coverage';
-const filter = args.filter((a, i) => !a.startsWith('--') && i !== reportAt + 1)[0] ?? '';
+const filter = args.filter((a, i) => !a.startsWith('--') && !(reportAt >= 0 && i === reportAt + 1))[0] ?? '';
 
 const file = join(reportDir, 'coverage-final.json');
 /** @type {Record<string, any>} */
@@ -31,13 +31,21 @@ try {
 	process.exit(1);
 }
 
+/** One istanbul source position. */
+/** @typedef {{line: number, column: number}} Pos */
+/** @typedef {{start: Pos, end?: Pos}} Loc */
+/** One file's uncovered arms, as this report groups them. */
+/** @typedef {{rel: string, statements: number[], functions: string[], branches: {line: number, type: string, text: string}[]}} Row */
+
 /** The source text of one branch arm, trimmed to something readable. */
+/** @param {string[]} src @param {Loc} loc @returns {string} */
 const armText = (src, loc) => {
 	const line = src[loc.start.line - 1] ?? '';
 	const text = loc.end && loc.end.line === loc.start.line ? line.slice(loc.start.column, loc.end.column) : line.slice(loc.start.column);
 	return text.trim().slice(0, 100);
 };
 
+/** @type {Row[]} */
 const rows = [];
 for (const [path, d] of Object.entries(cov)) {
 	const rel = path.replace(`${process.cwd()}/`, '');
@@ -45,9 +53,10 @@ for (const [path, d] of Object.entries(cov)) {
 	const src = readFileSync(path, 'utf8').split('\n');
 	const statements = [...new Set(Object.entries(d.s).filter(([, n]) => n === 0).map(([k]) => d.statementMap[k].start.line))];
 	const functions = Object.entries(d.f).filter(([, n]) => n === 0).map(([k]) => `${d.fnMap[k].name} (line ${d.fnMap[k].decl.start.line})`);
+	/** @type {Row['branches']} */
 	const branches = [];
 	for (const [k, counts] of Object.entries(d.b))
-		counts.forEach((n, i) => {
+		/** @type {number[]} */ (counts).forEach((n, i) => {
 			if (n !== 0) return;
 			const loc = d.branchMap[k].locations[i];
 			branches.push({ line: loc.start.line, type: d.branchMap[k].type, text: armText(src, loc) });
@@ -56,6 +65,7 @@ for (const [path, d] of Object.entries(cov)) {
 }
 
 rows.sort((a, b) => b.statements.length + b.functions.length + b.branches.length - (a.statements.length + a.functions.length + a.branches.length));
+/** @param {'statements'|'functions'|'branches'} key @returns {number} */
 const total = (key) => rows.reduce((n, r) => n + r[key].length, 0);
 console.log(`uncovered: ${total('statements')} statements · ${total('functions')} functions · ${total('branches')} branch arms · ${rows.length} files\n`);
 
