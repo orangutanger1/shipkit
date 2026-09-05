@@ -275,7 +275,7 @@ function verdictOf(row, ctx) {
  * @typedef {{
  *   name: string, path: string,
  *   error: string|null, errors: Record<string, string>, skipped?: Record<string, string>,
- *   bundleId?: string|null, appId?: string|null,
+ *   bundleId?: string, appId?: string|null,
  *   state: string|null, version: string|null, build: string|null,
  *   ageDays: number|null, daysSinceRelease: number|null,
  *   revenue: number|null, spend: number|null,
@@ -315,7 +315,7 @@ export async function collectRow(entry, ctx) {
 	try {
 		cfg = await loadConfig(entry.path);
 	} catch (err) {
-		return fail(/** @type {{message?: string}} */ (err)?.message ?? String(err));
+		return fail(/** @type {Error} */ (err).message);
 	}
 
 	const appId = cfg.asc?.appId ? String(cfg.asc.appId) : (process.env.ASC_APP_ID ?? null);
@@ -327,8 +327,8 @@ export async function collectRow(entry, ctx) {
 
 	const row = {
 		...base,
-		name: cfg.name || entry.name,
-		bundleId: cfg.bundleId ?? null,
+		name: cfg.name,
+		bundleId: cfg.bundleId,
 		appId,
 		state: ascRes.value?.state ?? null,
 		version: ascRes.value?.version ?? null,
