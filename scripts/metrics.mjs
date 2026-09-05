@@ -266,25 +266,50 @@ function halsteadFromNode(root) {
 // --- CRAP ---------------------------------------------------------------------
 
 /**
- * @returns {Map<string, Map<number|undefined, number>>|null}
+ * Statement coverage per file, as `{line, hits}` rows drawn from c8's
+ * `statementMap`/`s`. Statements — not `fnMap` — because c8 only names
+ * *declared* functions there: every arrow and anonymous callback is absent,
+ * so an exact-line join against `fnMap` scores them all as never-run.
+ * @returns {Map<string, {line: number, hits: number}[]>|null}
  */
-function loadFunctionCoverage() {
+function loadStatementCoverage() {
 	if (!existsSync(COVERAGE)) return null;
 	const raw = JSON.parse(readFileSync(COVERAGE, 'utf8'));
-	/** @type {Map<string, Map<number|undefined, number>>} */
+	/** @type {Map<string, {line: number, hits: number}[]>} */
 	const byFile = new Map();
 	for (const entry of Object.values(raw)) {
-		/** @type {Map<number|undefined, number>} */
-		const lines = new Map();
-		const e = /** @type {{fnMap?: Record<string, {decl?: {start?: {line?: number}}|undefined, line?: number}>, f?: Record<string, number>, path?: string}} */ (entry);
-		for (const [id, fn] of Object.entries(e.fnMap ?? {})) {
-			const line = fn.decl?.start?.line ?? fn.line;
-			const hits = e.f?.[id] ?? 0;
-			lines.set(line, (lines.get(line) ?? 0) + hits);
+		const e = /** @type {{statementMap?: Record<string, {start?: {line?: number}}>, s?: Record<string, number>, path?: string}} */ (entry);
+		/** @type {{line: number, hits: number}[]} */
+		const rows = [];
+		for (const [id, stmt] of Object.entries(e.statementMap ?? {})) {
+			const line = stmt.start?.line;
+			if (line === undefined) continue;
+			rows.push({ line, hits: e.s?.[id] ?? 0 });
 		}
-		if (e.path !== undefined) byFile.set(e.path, lines);
+		if (e.path !== undefined) byFile.set(e.path, rows);
 	}
 	return byFile;
+}
+
+/**
+ * The percentage of statements between `start` and `end` that ran. Statements
+ * of a nested function count toward the function enclosing it too, which
+ * slightly flatters a large outer function — the alternative, attributing a
+ * callback's body to nothing, is what made this metric unusable.
+ * @param {{line: number, hits: number}[]} rows
+ * @param {number} start
+ * @param {number} end
+ * @returns {number|null} null when the range holds no statements at all
+ */
+function coverageOfRange(rows, start, end) {
+	let total = 0, covered = 0;
+	for (const { line, hits } of rows) {
+		if (line < start || line > end) continue;
+		total += 1;
+		if (hits > 0) covered += 1;
+	}
+	if (total === 0) return null;
+	return (covered / total) * 100;
 }
 
 /**
@@ -324,7 +349,7 @@ function codeLines(source, comments) {
 // --- main --------------------------------------------------------------------
 
 const files = [...listMJS(SRC), join(BIN, 'ship')].filter((f) => statSync(f).isFile());
-const coverage = loadFunctionCoverage();
+const coverage = loadStatementCoverage();
 const violations = [];
 
 for (const file of files) {
@@ -384,10 +409,13 @@ for (const file of files) {
 			violations.push(`${label}: cognitive ${cog} (limit < ${LIMITS.cognitive})`);
 		}
 		if (fileCoverage) {
-			const hits = fileCoverage.get(line) ?? 0;
-			const c = crap(acc.cyclomatic, hits > 0 ? 100 : 0);
+			// A function whose range holds no statements (an empty body, or an
+			// expression arrow c8 folded into its parent statement) has nothing
+			// to be uncovered, so it is read as covered rather than as dead.
+			const pct = coverageOfRange(fileCoverage, line, node.loc.end.line) ?? 100;
+			const c = crap(acc.cyclomatic, pct);
 			if (c >= LIMITS.crap) {
-				violations.push(`${label}: CRAP ${c.toFixed(0)} (limit < ${LIMITS.crap})`);
+				violations.push(`${label}: CRAP ${c.toFixed(0)} (limit < ${LIMITS.crap}, ${pct.toFixed(0)}% covered)`);
 			}
 		}
 	}
