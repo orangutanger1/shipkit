@@ -87,3 +87,33 @@ test('--dry-run narrates the chain without mutating anything', async () => {
 		setDryRun(false);
 	}
 });
+
+test('a step that throws stops the chain when --force was not passed', async () => {
+	const dir = await releaseRepo();
+	// `build` throws rather than exiting: without --force the throw is re-raised
+	// untouched, so the caller sees the step's own diagnosis, not a summary row.
+	await assert.rejects(() => release([], { dir, flags: { from: 'build', 'skip-submit': true } }));
+});
+
+test('a step that succeeds is reported as ran, and the chain finishes clean', async () => {
+	const dir = await releaseRepo({
+		'store/staged/en-US.json': {
+			locale: 'en-US', name: 'Glovebox', subtitle: 'Car maintenance log',
+			keywords: 'oil change,service log,mileage,repair history,garage notes,fuel economy,car care',
+			description: 'Glovebox keeps every service, repair and fill-up for your car in one place, so the next mechanic can see exactly what was done.',
+			promotionalText: 'Now with reminders', whatsNew: 'Reminders for every service interval.',
+			supportUrl: 'https://demo.example/support', privacyPolicyUrl: 'https://demo.example/privacy',
+		},
+	});
+	setBin('asc', [
+		['versions list', { out: { data: [{ id: 'v1', attributes: { versionString: '1.2.0', appStoreState: 'PREPARE_FOR_SUBMISSION' } }] } }],
+		['metadata apply .*--dry-run', { out: { plan: { localizations: [{ action: 'update', locale: 'en-US' }] } } }],
+		['metadata apply', { out: { applied: [{ locale: 'en-US', ok: true }] } }],
+	]);
+	const { result, out } = await capture(() =>
+		inDir(dir, () => withFetch(async () => json({ items: [] }), () => run({ args: [], flags: { from: 'meta', 'skip-build': true, 'skip-submit': true } }))),
+	);
+	assert.equal(result, 0);
+	assert.match(out, /\bran\b/);
+	assert.doesNotMatch(out, /release completed with failures/);
+});

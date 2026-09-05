@@ -115,11 +115,6 @@ export async function run({ args, flags }) {
 			results.push({ name: entry.name, status: 'skipped', detail: entry.skip });
 			continue;
 		}
-		if (failed && !force) {
-			results.push({ name: entry.name, status: 'skipped', detail: `aborted after ${failed}` });
-			continue;
-		}
-
 		step(entry.name);
 		let outcome;
 		try {
