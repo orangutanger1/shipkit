@@ -255,6 +255,13 @@ and `ship shots verify` fails a caption-band render that touched a single pixel
 outside the caption band. Read its numbers; do not assert the set is right
 because the command exited 0 somewhere else.
 
+Dimensions are read straight out of the PNG/JPEG header, never from the
+filename and never from an image library. A file whose header cannot be parsed
+measures as unreadable rather than as a guess: `plan` warns and prints
+`unreadable` in the DIMENSIONS column, `validate` fails it as `?x?`. Treat that
+warning as a corrupt or half-written export and re-render it — a truncated
+upload is one of the failures Apple reports late.
+
 ## Building and updating
 
 ```bash

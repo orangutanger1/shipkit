@@ -467,6 +467,7 @@ src/lib/design-review.mjs the same rules against the implementation, line by lin
 src/lib/appstore.mjs      autocomplete harvest, demand × competition scoring, keyword packing
 src/lib/revenuecat.mjs    v2 REST client + paywall audit
 src/lib/native.mjs        OTA-vs-build decision
+src/lib/img-size.mjs      PNG/JPEG dimensions from the file header — no image library
 src/lib/shots-spec.mjs    the committed design spec: modes, geometry, type, validation
 src/lib/shots-type.mjs    caption wrapping (greedy vs balanced), size fitting, glyph outlines
 src/lib/shots-render.mjs  compositing both modes, plus calibration and safety diffs
@@ -486,4 +487,14 @@ schema/                   JSON Schema for ship.config.json
 docs/                     Apple Ads Platform API v1 migration; Analytics Reports API
 .oxlintrc.json            static checks — `npx oxlint src bin` must report zero errors
 test/                     `node --test test/` — no deps, no network, no fixtures on disk
+scripts/metrics.mjs       complexity × coverage (CRAP) gate over src/ and bin/
+scripts/coverage-gap.mjs  the uncovered lines behind a c8 run, grouped by file
 ```
+
+`npm run check` is the whole gate in one command: `lint`, `typecheck`,
+`test:c8` (`--100`), `metrics`, `dup`, `deadcode`. `metrics` scores each
+function by cyclomatic complexity against the coverage of its own line range,
+so an untested branch in a branchy function is loud and a long simple one is
+not. Nested functions still count toward the enclosing function's span, which
+flatters a large outer function slightly; read a borderline number against the
+source, not on its own.
