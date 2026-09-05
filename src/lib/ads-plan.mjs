@@ -1,6 +1,6 @@
 import { writeFile } from 'node:fs/promises';
 import { ShipError, good, heading, info, note, step, table, warn } from '../log.mjs';
-import { DASH, money, num, round2 } from './fmt.mjs';
+import { money, num, round2 } from './fmt.mjs';
 import { metric, rowsOf } from './asc-report.mjs';
 import { BID, assertBidSpread, bidFor, resolveBidding, resolveKillRule } from './asa.mjs';
 import { pageForAdGroup } from './cpp.mjs';
@@ -217,7 +217,10 @@ const collectRivals = ({ brand, competitors, picked, branded }) => {
 		const text = keywordText(rival?.name);
 		if (!text || seen.has(text)) continue;
 		seen.add(text);
-		rivals.push({ text, name: rival.name ?? text, id: rival.id ?? null, ratings: rival.ratings ?? null });
+		// `text` is `keywordText(rival?.name)`, which reads `rival.name` through
+		// the same `?? ''`: whenever `text` is truthy here, `rival.name` was
+		// already non-null, so a fallback to `text` could never fire.
+		rivals.push({ text, name: /** @type {string} */ (rival.name), id: rival.id ?? null, ratings: rival.ratings ?? null });
 	}
 	return rivals;
 };
@@ -284,8 +287,13 @@ export function buildPlan({
 	const brandWords = brandTokens(terms.flatMap((t) => (t.top3 ?? []).map((a) => ({ name: a.name, seller: a.seller }))), locale);
 	const support = tokenSupport(terms.map((t) => t.term), locale);
 	const brandFloor = Math.max(3, Math.ceil(Math.max(0, ...support.values()) / 4));
+	// `branded` is only ever asked about a term drawn from `terms` itself (via
+	// `picked`, a filtered slice of it), and `support` is built from that same
+	// `terms` array — so any word of `text` that is also a brand word already
+	// contributed at least 1 to its own support; `support.get(w)` can never
+	// come back `undefined` here.
 	/** @param {string} text @returns {boolean} */
-	const branded = (text) => words(text, locale).some((w) => brandWords.has(w) && (support.get(w) ?? 0) < brandFloor);
+	const branded = (text) => words(text, locale).some((w) => brandWords.has(w) && /** @type {number} */ (support.get(w)) < brandFloor);
 	const rivals = collectRivals({ brand, competitors, picked, branded });
 	const category = picked.filter((t) => !branded(t.term));
 	const weights = { ...SPLIT, ...split };
@@ -658,7 +666,11 @@ export function printPlan(out, ctx) {
 		table(cp.adGroups, [
 			{ header: 'ad group', get: (g) => g.name },
 			{ header: 'keywords', get: (g) => g.keywords.map((k) => `${k.text} ${k.matchType.toLowerCase()}`).join(', ') },
-			{ header: 'demand', get: (g) => (g.demand == null ? DASH : String(Math.round(g.demand))) },
+			// Every role spec in ROLES_SPEC sets `demand` to a number (never leaves
+			// it unset), and `out` here is always fresh from `buildPlan` — never a
+			// hand-edited document off disk, which is `renderPlan`'s job — so the
+			// `?? DASH` this table used to fall back to could never be reached.
+			{ header: 'demand', get: (g) => String(Math.round(/** @type {number} */ (g.demand))) },
 			{ header: 'bid', get: (g) => money(g.defaultBidAmount) },
 			{ header: 'page', get: (g) => g.productPage?.name ?? '' },
 		]);

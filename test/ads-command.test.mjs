@@ -281,6 +281,39 @@ test('plan --render rewrites the markdown from the plan on disk, with no credent
 	assert.notEqual(await readFile(mdFile, 'utf8'), 'stale');
 });
 
+test('plan --render can emit JSON, and reports drift and a live binding to a human', async () => {
+	ascOk();
+	const dir = await planRepo();
+	await ads(['plan'], { flags: { 'no-ltv-check': true }, dir });
+	const planFile = join(dir, 'aso', 'asa', 'campaign-plan.json');
+	const doc = JSON.parse(await readFile(planFile, 'utf8'));
+	// Bind it to a live account, and hand-move a campaign's budget away from what
+	// was stamped, the way an operator or `ship ads sync --adopt` would.
+	doc.campaigns[0].apple = { id: '2144507320', syncedAt: '2026-08-26T22:13:56.193Z' };
+	doc.campaigns[0].dailyBudget = doc.campaigns[0].dailyBudget + 1;
+	await writeFile(planFile, JSON.stringify(doc));
+
+	const { out } = await ads(['plan'], { flags: { render: true }, dir });
+	assert.match(out, /stamped params say/, 'drift against the stamped params is called out');
+	assert.match(out, /Apple object id\(s\) in this plan/, 'a live binding is called out');
+
+	const { out: raw } = await ads(['plan'], { flags: { render: true, json: true }, dir });
+	const parsed = JSON.parse(raw);
+	assert.equal(parsed.bound, true);
+	assert.equal(parsed.totals.drifted, true);
+});
+
+test('plan reports a dropped term and a linked product page to the operator', async () => {
+	ascOk();
+	const dir = await planRepo({
+		'ship.config.json': JSON.stringify({ name: 'Demo', bundleId: 'com.demo.app', version: '1.0.0', ...CONFIG, aso: { minVolume: 50 } }),
+		'store/cpp/oil-change/cpp.json': { adGroup: 'EX · oil change reminder', name: 'Oil Change' },
+	});
+	const { out } = await ads(['plan'], { flags: { 'no-ltv-check': true }, dir });
+	assert.match(out, /not worth bidding on/, 'the term under the new floor is called out');
+	assert.match(out, /Oil Change/, 'the linked product page is named in the ad-group table');
+});
+
 test('plan without scored keywords names the command that produces them', async () => {
 	ascOk();
 	const dir = await repo({ config: CONFIG, prefix: 'ship-ads-' });
@@ -312,6 +345,18 @@ test('snapshot reads the live account and stamps a dated copy beside it', async 
 	assert.match(out, /snapshot/);
 	const { out: raw } = await ads(['snapshot'], { flags: { json: true, performance: false }, dir });
 	assert.equal(JSON.parse(raw).params.performance, false);
+});
+
+test('snapshot refuses before touching Apple when credentials are not configured', async () => {
+	setBin('asc', [['ads auth status', { out: 'No Apple Ads credentials\n', code: 0 }]]);
+	const dir = await planRepo();
+	await assert.rejects(() => ads(['snapshot'], { dir }), /Apple Ads credentials are not configured/);
+});
+
+test('snapshot refuses when the active profile is a different org than ads.orgId', async () => {
+	ascOk([['ads auth status --output json', { out: { active: { org_id: '999', profile: 'other' } } }]]);
+	const dir = await planRepo();
+	await assert.rejects(() => ads(['snapshot'], { dir }), /active Apple Ads profile is org 999, but ads\.orgId is 555/);
 });
 
 test('sync needs a plan before it will touch anything', async () => {

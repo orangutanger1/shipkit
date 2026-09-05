@@ -26,6 +26,10 @@ test('allocation is cents-exact, and the remainder lands on the largest share', 
 	assert.deepEqual(allocate(10, { a: 1 / 3, b: 2 / 3 }), { a: 3.33, b: 6.67 });
 });
 
+test('a named --split entry with no "=" at all is as unreadable as one with no number', () => {
+	assert.throws(() => parseSplit('exact'), /--split: cannot read "exact"/);
+});
+
 test('a plan with no brand word and no category keywords still budgets what it has', () => {
 	const p = buildPlan({ app: { name: '', bundleId: '', appId: null }, terms: [term()], budget: 10, targetCpi: 2 });
 	assert.ok(p.campaigns.length);
@@ -43,6 +47,46 @@ test('a competitor with no name is targeted by its own text', () => {
 	const p = buildPlan({ app, terms: [term()], competitors: [{ trackId: 1 }, { name: 'Rival', trackId: 2 }], budget: 10, targetCpi: 2 });
 	const competitor = p.campaigns.find((c) => c.role === 'competitor');
 	assert.ok(competitor, 'competitors were given, so the campaign exists');
+});
+
+test('a Competitor campaign still negates nothing when the app itself has no brand word', () => {
+	// Normally Competitor negates the app's own name so Brand keeps that traffic
+	// cheaper; an app with no readable name has nothing to negate.
+	const p = buildPlan({ app: { name: '' }, terms: [term()], competitors: [{ name: 'Rival' }], budget: 10, targetCpi: 2 });
+	const competitor = p.campaigns.find((c) => c.role === 'competitor');
+	assert.deepEqual(competitor.negativeKeywords, []);
+});
+
+test('every scored term reading as the rival brand itself leaves nothing for Exact', () => {
+	// If a token appears in the top-3 sellers and is rare across the scored set,
+	// it reads as a brand word — and a term made entirely of such words is not
+	// worth an Exact ad group of its own; it becomes a Competitor candidate.
+	const p = buildPlan({
+		app: { name: '' },
+		terms: [{ term: 'acmeco pro', demand: 80, opportunity: 60, top3: [{ name: 'Rival', seller: 'AcmeCo' }] }],
+		budget: 10,
+		targetCpi: 2,
+	});
+	assert.equal(p.campaigns.find((c) => c.role === 'exact'), undefined, 'nothing survived to bid Exact on');
+	const discovery = p.campaigns.find((c) => c.role === 'discovery');
+	assert.equal(discovery.adGroups[0].demand, 100, 'no category term left to derive a mid demand from, so it defaults');
+});
+
+test('a plan with every role zeroed out builds zero campaigns, not an empty-array crash', () => {
+	// exact is zeroed because every term reads as branded, brand is zeroed
+	// because the app has no name, and this split explicitly zeroes the rest —
+	// nothing is left to bid on, and that has to be a valid, renderable plan.
+	const p = buildPlan({
+		app: { name: '' },
+		terms: [{ term: 'acmeco pro', demand: 80, opportunity: 60, top3: [{ name: 'Rival', seller: 'AcmeCo' }] }],
+		budget: 10,
+		targetCpi: 2,
+		split: { discovery: 0, competitor: 0 },
+	});
+	assert.deepEqual(p.campaigns, []);
+	assert.deepEqual(p.bidding.range, [null, null], 'no bid was ever priced');
+	assert.equal(p.bidding.distinctBids, 0);
+	assert.match(renderPlan(p), /\*\*Bids\*\*: —/, 'the document says so plainly rather than printing "undefined"');
 });
 
 test('a custom product page named for a campaign role rides along to sync', () => {
@@ -78,6 +122,28 @@ test('the markdown renders a plan with one bid, with none, and one bound to an a
 	assert.match(bound, /—/, 'an ad group with no demand, page or incumbents renders as dashes');
 });
 
+test('the markdown shows an incumbent rating when one was scored, and a bound account with no sync timestamp yet', () => {
+	const p = buildPlan({ app, terms: [term({ top3: [{ name: 'Rival', id: 1, ratings: 900 }] })], budget: 10, targetCpi: 2 });
+	assert.match(renderPlan(p), /Rival \(900\)/, 'a rated incumbent is shown with its rating');
+
+	p.campaigns[0].apple = { id: '1' };
+	const md = renderPlan(p);
+	assert.match(md, /bound to a live account/);
+	assert.doesNotMatch(md, /last at/, 'no syncedAt on the stamp means none is claimed');
+});
+
+test('the markdown names the product page an ad group was linked to', () => {
+	const built = buildPlan({ app, terms: [term()], budget: 10, targetCpi: 2 });
+	const adGroup = built.campaigns[0].adGroups[0].name;
+	const p = buildPlan({ app, terms: [term()], budget: 10, targetCpi: 2, pages: [{ slug: 'runners', page: { name: 'Runners Page', adGroup } }] });
+	assert.match(renderPlan(p), /Runners Page/);
+});
+
+test('the markdown reports terms dropped under the demand floor', () => {
+	const p = buildPlan({ app, terms: [term(), term({ term: 'quiet term', demand: 1 })], budget: 10, targetCpi: 2, minVolume: 10 });
+	assert.match(renderPlan(p), /dropped 1 of 2 scored terms/);
+});
+
 test('--render refuses when there is no plan to render, and rewrites the markdown when there is', async () => {
 	const dir = await repo({ config: { name: 'Demo', bundleId: 'com.demo.app' }, prefix: 'ship-adsplan-' });
 	const cfg = await inDir(dir, () => import('../src/config.mjs').then((m) => m.loadConfig()));
@@ -89,6 +155,18 @@ test('--render refuses when there is no plan to render, and rewrites the markdow
 	const doc = buildPlan({ app, terms: [term()], budget: 10, targetCpi: 2 });
 	await capture(() => renderOnly({ cfg, flags: {}, planFile: join(dir, 'plan.json'), mdFile: join(dir, 'plan.md'), onDisk: doc }));
 	assert.match(await readFile(join(dir, 'plan.md'), 'utf8'), /Territory|Campaign|Bids/);
+});
+
+test('--render tells a human about a live binding even before it was ever synced', async () => {
+	// `sync` can stamp an Apple id without a `syncedAt` yet on an older artifact
+	// shape; the note must still name the binding without claiming a time it
+	// does not have.
+	const dir = await repo({ config: { name: 'Demo', bundleId: 'com.demo.app' }, prefix: 'ship-adsplan-' });
+	const cfg = await inDir(dir, () => import('../src/config.mjs').then((m) => m.loadConfig()));
+	const doc = buildPlan({ app, terms: [term()], budget: 10, targetCpi: 2 });
+	doc.campaigns[0].apple = { id: '1' };
+	const { out } = await capture(() => renderOnly({ cfg, flags: {}, planFile: join(dir, 'plan.json'), mdFile: join(dir, 'plan.md'), onDisk: doc }));
+	assert.match(out, /1 Apple object id\(s\) in this plan —/, 'no "last synced" clause when there is no timestamp to report');
 });
 
 test('search-term rows survive a payload with no rows, and rows with no term', () => {
@@ -116,4 +194,82 @@ test('converting terms are folded per term and sorted by installs', () => {
 	assert.deepEqual(folded.map((t) => t.term), ['b', 'a']);
 	assert.equal(folded[1].installs, 3);
 	assert.deepEqual(convertingTerms(), []);
+});
+
+test('a row with no term at all is unattributable, same as one with an empty term', () => {
+	// Apple's export always carries a term; a hand-edited or truncated file might
+	// not, and that row must be skipped rather than folded under "undefined".
+	assert.deepEqual(convertingTerms([{ installs: 4, taps: 4, spend: 4 }]), []);
+});
+
+test('converting terms tied on installs fall back to the term, alphabetically', () => {
+	const tied = convertingTerms([
+		{ term: 'zebra', installs: 3, taps: 3, spend: 3 },
+		{ term: 'apple', installs: 3, taps: 3, spend: 3 },
+	]);
+	assert.deepEqual(tied.map((t) => t.term), ['apple', 'zebra']);
+});
+
+test('a search-term report whose `row` is not a list contributes nothing', () => {
+	// Seen once in a malformed export: `row` present but an object, not an array.
+	// Treating it as "no rows" is the honest read, not a crash.
+	assert.deepEqual(searchTermRows({ data: { reportingDataResponse: { row: {} } } }), []);
+});
+
+test('a flat search-term row with no metadata wrapper reads itself as the metadata', () => {
+	// Some presets do not nest under `metadata`/`total`; the fields sit directly
+	// on the row.
+	const rows = searchTermRows({ rows: [{ searchTermText: 'Direct Term', taps: 7, installs: 2, localSpend: { amount: '1.50' } }] });
+	assert.equal(rows[0].term, 'direct term');
+	assert.equal(rows[0].taps, 7);
+	assert.equal(rows[0].installs, 2);
+	assert.equal(rows[0].spend, 1.5);
+});
+
+test('a metric field that is not a scalar reads as missing, not NaN', () => {
+	// A malformed export could carry an object where a count belongs; the row
+	// should still price out rather than poisoning every sum downstream with NaN.
+	const rows = searchTermRows({
+		rows: [{ metadata: { searchTermText: 'garbled' }, total: { impressions: {}, taps: 5, installs: 1, localSpend: { amount: '1.00' } } }],
+	});
+	assert.equal(rows[0].impressions, 0, 'a non-scalar impressions count is treated as absent');
+	assert.equal(rows[0].taps, 5);
+});
+
+test('decide reads a missing report the same as an empty one', () => {
+	// `mine` can be run before any report exists; `decide(undefined, ...)` must
+	// not throw on the array operations that follow.
+	assert.deepEqual(decide(undefined, { targetCpi: 2 }), decide([], { targetCpi: 2 }));
+});
+
+test('a row with no term is not evidence for or against anything', () => {
+	assert.deepEqual(decide([{ spend: 40 }], { targetCpi: 2 }).negatives, []);
+});
+
+test('decide ties on CPI by installs, then breaks a further tie by term name', () => {
+	const row = (over) => ({ term: 'x', matchType: null, campaignId: null, campaignName: null, adGroupId: null, adGroupName: null, impressions: 10, taps: 10, ...over });
+	const { promotions } = decide(
+		[
+			row({ term: 'zeta', spend: 2, installs: 2 }), // cpi 1, most installs
+			row({ term: 'beta', spend: 1, installs: 1 }), // cpi 1, tied with alpha on installs
+			row({ term: 'alpha', spend: 1, installs: 1 }),
+		],
+		{ targetCpi: 2 },
+	);
+	assert.deepEqual(promotions.map((p) => p.term), ['zeta', 'alpha', 'beta'], 'installs breaks the CPI tie, then the term name breaks that tie');
+});
+
+test('two negated terms are ordered by spend, not by report order', () => {
+	// This exercises the comparator itself (a one-element sort never calls its
+	// callback), because a negatives list an operator reads top-to-bottom had
+	// better already be worst-first.
+	const row = (over) => ({ term: 'x', matchType: null, campaignId: null, campaignName: null, adGroupId: null, adGroupName: null, impressions: 10, taps: 10, installs: 0, ...over });
+	const { negatives } = decide([row({ term: 'cheap waste', spend: 5 }), row({ term: 'expensive waste', spend: 6 })], { targetCpi: 2 });
+	assert.deepEqual(negatives.map((n) => n.term), ['expensive waste', 'cheap waste']);
+});
+
+test('two negated terms that wasted the exact same amount are ordered by name', () => {
+	const row = (over) => ({ term: 'x', matchType: null, campaignId: null, campaignName: null, adGroupId: null, adGroupName: null, impressions: 10, taps: 10, installs: 0, spend: 5, ...over });
+	const { negatives } = decide([row({ term: 'zebra waste' }), row({ term: 'alpha waste' })], { targetCpi: 2 });
+	assert.deepEqual(negatives.map((n) => n.term), ['alpha waste', 'zebra waste'], 'spend ties break alphabetically, not by report order');
 });
