@@ -293,7 +293,10 @@ export async function ascAppIdFor(bundleId) {
 	});
 	const match = rowsOf(payload, { allowSingle: false }).find((a) => attrsOf(a).bundleId === bundleId);
 	if (!match) return null;
-	const id = (isJsonObject(match) ? match.id : undefined) ?? attrsOf(match).id ?? '';
+	// attrsOf(match).bundleId only ever equals bundleId (a non-empty string) when
+	// match is itself a JsonObject — attrsOf returns {} for anything else, whose
+	// .bundleId is undefined. So .find already proved match is a JsonObject.
+	const id = /** @type {JsonObject} */ (match).id ?? attrsOf(match).id ?? '';
 	return id === '' ? null : String(id);
 }
 
