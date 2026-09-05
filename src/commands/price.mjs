@@ -187,7 +187,11 @@ async function show({ flags }) {
 	const appPrices = priceMap(
 		await asc(['pricing', 'current', '--app', appId, '--all-territories'], { fallback: null }),
 	);
-	const schedule = await asc(['pricing', 'schedule', 'view', '--app', appId], { fallback: null });
+	// `fallback: null` answers null for every failure the read can survive, so
+	// this is a payload or null — never undefined.
+	const schedule = /** @type {import('../exec.mjs').AscPayload|null} */ (
+		await asc(['pricing', 'schedule', 'view', '--app', appId], { fallback: null })
+	);
 
 	let subscription = null;
 	let subPrices = new Map();
@@ -237,15 +241,13 @@ async function subscriptionTarget(appId, flags) {
 }
 
 /** The `--json` view: everything the human view prints, as data. */
-/** @param {{cfg: import('../config.mjs').Config, appId: string, flags: Flags, subscription: SubscriptionRow|{id: string, productId: string, name: null}|null, schedule: import('../exec.mjs').AscPayload|null|undefined, appPrices: Map<string, PriceRow>, subPrices: Map<string, PriceRow>, planDoc: PlanDoc|null, diff: ReconcileResult|null}} ctx @returns {number} */
+/** @param {{cfg: import('../config.mjs').Config, appId: string, flags: Flags, subscription: SubscriptionRow|{id: string, productId: string, name: null}|null, schedule: import('../exec.mjs').AscPayload|null, appPrices: Map<string, PriceRow>, subPrices: Map<string, PriceRow>, planDoc: PlanDoc|null, diff: ReconcileResult|null}} ctx @returns {number} */
 function showJson({ cfg, appId, flags, subscription, schedule, appPrices, subPrices, planDoc, diff }) {
 	return emit({
 		app: { name: cfg.name, appId },
 		target: flags['app-price'] ? 'app' : 'subscription',
 		subscription,
-		// fallback: null means the asc read never yields undefined; ?? keeps the
-		// emitted shape stable either way.
-		schedule: schedule ?? null,
+		schedule,
 		appPrices: [...appPrices.values()],
 		subscriptionPrices: [...subPrices.values()],
 		plan: planDoc ? { generatedAt: planDoc.generatedAt, baseUsd: planDoc.baseUsd, rows: planDoc.rows.length } : null,
@@ -253,7 +255,7 @@ function showJson({ cfg, appId, flags, subscription, schedule, appPrices, subPri
 	});
 }
 
-/** @param {import('../exec.mjs').AscPayload|null|undefined} schedule @returns {void} */
+/** @param {import('../exec.mjs').AscPayload|null} schedule @returns {void} */
 function printSchedule(schedule) {
 	const sched = rowsOf(schedule)[0];
 	const obj = sched !== null && typeof sched === 'object' && !Array.isArray(sched) ? sched : null;
@@ -460,7 +462,7 @@ async function audit({ flags }) {
 
 	// Unknown is not wrong. Without a readable period there is no shape to judge,
 	// and the audit would otherwise report a missing yearly it simply cannot see.
-	if (live.why || live.subs === null) report.skip('ladder', live.why ?? 'ladder unreadable');
+	if (live.subs === null) report.skip('ladder', live.why);
 	else if (live.subs.length && !live.subs.some((s) => normalisePeriod(s.period)))
 		report.skip('ladder', 'asc returned no subscription periods — cannot tell a yearly from a weekly');
 	else {

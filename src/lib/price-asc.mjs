@@ -205,7 +205,7 @@ export async function resolveSubscription(appId, flags) {
 			hint: `--subscription ${subs.map((s) => s.productId ?? s.id).join(' | ')}`,
 		});
 	// The `.filter` above guarantees a subscription carries an id or a product id.
-	return subs[0].id ?? subs[0].productId ?? '';
+	return /** @type {string} */ (subs[0].id ?? subs[0].productId);
 }
 
 /**
@@ -254,10 +254,9 @@ export async function readPlanFile(cfg) {
 	if (!existsSync(file)) return null;
 	try {
 		return /** @type {PlanDoc} */ (JSON.parse(await readFile(file, 'utf8')));
-	} catch (err) {
-		throw new ShipError(`${file} is not valid JSON`, {
-			hint: err instanceof Error ? err.message : String(err),
-		});
+	} catch (/** @type {any} */ err) {
+		// Only readFile and JSON.parse throw in here, and both throw Errors.
+		throw new ShipError(`${file} is not valid JSON`, { hint: err.message });
 	}
 }
 
@@ -304,7 +303,7 @@ export async function ascMutate(args) {
  * has no credentials" are different answers, and only the first is a finding.
  *
  * @param {string|null} appId
- * @returns {Promise<{subs: SubscriptionRow[]|null, why: string|null}>}
+ * @returns {Promise<{subs: SubscriptionRow[], why: null} | {subs: null, why: string}>}
  */
 export async function ladderSubscriptions(appId) {
 	if (!appId) return { subs: null, why: 'no App Store Connect app id — set asc.appId in ship.config.json' };
@@ -313,13 +312,15 @@ export async function ladderSubscriptions(appId) {
 	const authRow = asRow(auth);
 	if (!Array.isArray(authRow.credentials) || !authRow.credentials.length)
 		return { subs: null, why: 'no App Store Connect credentials — `asc auth login`' };
-	const subs = await listSubscriptions(appId).catch(() => null);
-	if (!subs) return { subs: null, why: '`asc subscriptions list` did not answer' };
+	// `asc(…, {fallback: null})` answers null for every failure it can survive, so
+	// listSubscriptions resolves to a list or throws past this function entirely.
+	const subs = await listSubscriptions(appId);
 	// One price read per subscription: every edge of the ladder is argued in the
 	// US number, and an unreadable one stays null so the audit can say so.
 	await Promise.all(
 		subs.map(async (s) => {
-			const prices = await subscriptionPrices(s.id ?? s.productId ?? '', appId).catch(() => null);
+			// listSubscriptions' filter guarantees one of the two is a string.
+			const prices = await subscriptionPrices(/** @type {string} */ (s.id ?? s.productId), appId).catch(() => null);
 			s.priceUsd = prices?.get('US')?.price ?? null;
 		}),
 	);
