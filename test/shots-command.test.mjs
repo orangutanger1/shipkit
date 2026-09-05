@@ -805,3 +805,93 @@ test('every locale whose copy had to shrink is named, not just the first', async
 	assert.match(out, /2 captions shrunk below/);
 	assert.match(out, /en-US, de-DE|de-DE, en-US/);
 });
+
+// ── what the spec loader refuses ────────────────────────────────────────────
+//
+// A spec is hand-written and lives in the app repo, so every one of these is a
+// typo somebody will make. Each has to name the key, because "cannot read
+// property of undefined" three files deeper is not an answer.
+
+const specRejects = [
+	['a frame with no key', { ...DEVICE_SPEC, frames: [{ src: '01.png' }] }, /every frame needs a key/],
+	['a device with no layers', { ...DEVICE_SPEC, device: { ...DEVICE_SPEC.device, layers: [] } }, /device\.layers\[\] is required/],
+	['a device with no screenIndex', { ...DEVICE_SPEC, device: { ...DEVICE_SPEC.device, screenIndex: undefined } }, /device\.screenIndex is required/],
+	['a device with no screenGroup', { ...DEVICE_SPEC, device: { ...DEVICE_SPEC.device, screenGroup: undefined } }, /device\.screenGroup and device\.artboard are required/],
+	['a device frame with no src', { ...DEVICE_SPEC, frames: [{ key: 'one', caption: { x: 10, y: 10, w: 180 } }] }, /frame one needs src/],
+	['a subtitle with no size', { ...DEVICE_SPEC, type: { ...TYPE, subtitle: { size: 0, lineHeight: 14 } } }, /type\.subtitle needs a positive size and lineHeight/],
+	['a subtitle that cannot shrink', { ...DEVICE_SPEC, type: { ...TYPE, subtitle: { size: 12, lineHeight: 14, minSize: 8, step: 0 } } }, /type\.subtitle\.step must be positive/],
+];
+
+for (const [what, spec, expected] of specRejects)
+	test(`the spec loader refuses ${what}`, async () => {
+		ascOk();
+		const dir = await renderRepo(spec);
+		await assert.rejects(() => shots(['render', 'en-US'], { dir }), expected);
+	});
+
+test('a font named by absolute path is used where it is, not under store/', async () => {
+	// A monorepo keeps its brand fonts outside the app; the spec has to be able
+	// to point at one without the loader prefixing store/ onto it.
+	ascOk();
+	const shared = join(await mkdtemp(join(tmpdir(), 'ship-shots-fonts-')), 'face.ttf');
+	await writeFile(shared, 'not really a font');
+	const dir = await renderRepo({ ...DEVICE_SPEC, fonts: { default: shared } });
+	await deviceParts(dir);
+	await png(dir, 'store/screenshots-raw/en-US/IPHONE_65/01.png', 100, 200);
+	const { code } = await shots(['render', 'en-US'], { dir });
+	assert.equal(code, 0);
+});
+
+// ── the caption file's shapes ───────────────────────────────────────────────
+
+test('captions may be wrapped in a locales key, and the bookkeeping keys are not locales', async () => {
+	// The loc pipeline writes `{source, notes, locales: {...}}`; a hand-written
+	// file is just `{...}`. Both are the same file to everything downstream, and
+	// "source" must never be rendered as a locale called source.
+	ascOk();
+	const wrapped = {
+		source: 'en-US',
+		notes: 'reviewed 2026-08',
+		_draft: { one: 'ignore me' },
+		locales: { 'en-US': { captions: { one: 'Track it' } }, 'de-DE': { one: 'Verfolge alles' } },
+	};
+	const dir = await renderRepo(DEVICE_SPEC, { 'store/captions.json': wrapped });
+	await deviceParts(dir);
+	await png(dir, 'store/screenshots-raw/en-US/IPHONE_65/01.png', 100, 200);
+	await png(dir, 'store/screenshots-raw/de-DE/IPHONE_65/01.png', 100, 200);
+	const { out } = await shots(['render'], { dir, flags: { json: true } });
+	const locales = new Set(JSON.parse(out.slice(out.indexOf('{'))).frames.map((f) => f.locale));
+	assert.deepEqual([...locales].sort(), ['de-DE', 'en-US']);
+});
+
+test('an unwrapped caption file keeps its bookkeeping keys out of the locale list', async () => {
+	// A hand-written file grows a `notes` key and a `_draft` block beside the
+	// real locales. Rendering either as a locale writes a directory called
+	// "notes" into the upload tree.
+	ascOk();
+	const flat = { notes: 'reviewed 2026-08', _draft: { one: 'ignore me' }, 'en-US': { one: 'Track it' } };
+	const dir = await renderRepo(DEVICE_SPEC, { 'store/captions.json': flat }, { store: {} });
+	await deviceParts(dir);
+	await png(dir, 'store/screenshots-raw/en-US/IPHONE_65/01.png', 100, 200);
+	const { out } = await shots(['render'], { dir, flags: { json: true } });
+	const locales = new Set(JSON.parse(out.slice(out.indexOf('{'))).frames.map((f) => f.locale));
+	assert.deepEqual([...locales], ['en-US']);
+});
+
+test('a caption entry that is not a map of frames is not a locale', async () => {
+	// A file half-edited into `{"en-US": "Track it"}` has no frame keys in it.
+	// Reading it as a locale would render a caption called "0".
+	ascOk();
+	const dir = await renderRepo(DEVICE_SPEC, { 'store/captions.json': { 'en-US': 'Track it' } });
+	await assert.rejects(() => shots(['render'], { dir }), /defines no locales/);
+});
+
+test('with no store.locales configured, every locale with copy is rendered', async () => {
+	ascOk();
+	const dir = await renderRepo(DEVICE_SPEC, {}, { store: {} });
+	await deviceParts(dir);
+	await png(dir, 'store/screenshots-raw/en-US/IPHONE_65/01.png', 100, 200);
+	await png(dir, 'store/screenshots-raw/de-DE/IPHONE_65/01.png', 100, 200);
+	const { out } = await shots(['render'], { dir });
+	assert.match(out, /2 images/, 'the caption file is the locale list when the config names none');
+});

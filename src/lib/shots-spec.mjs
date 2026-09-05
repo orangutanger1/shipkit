@@ -329,10 +329,10 @@ export async function loadSpec(cfg) {
 	let raw;
 	try {
 		raw = JSON.parse(await readFile(file, 'utf8'));
-	} catch (err) {
-		throw new ShipError(`${file} is not valid JSON`, {
-			hint: err instanceof Error ? err.message : String(err),
-		});
+	} catch (/** @type {any} */ err) {
+		// readFile and JSON.parse are the only things that throw here, and both
+		// throw Errors.
+		throw new ShipError(`${file} is not valid JSON`, { hint: err.message });
 	}
 	return normaliseSpec(raw, cfg, file);
 }
