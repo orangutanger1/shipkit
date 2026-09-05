@@ -211,7 +211,7 @@ export const GATES = {
  * @returns {string}
  */
 const moatMessage = (m, t) =>
-	`top-3 median ${fmt(m.top3MedianRatings)} ratings is over the ${fmt(t.moat)} moat, and ${m.freeTop10} of the top ${m.results ?? 10} are free — you would have to out-review an incumbent and undercut free`;
+	`top-3 median ${fmt(m.top3MedianRatings)} ratings is over the ${fmt(t.moat)} moat, and ${m.freeTop10} of the top ${m.results} are free — you would have to out-review an incumbent and undercut free`;
 
 /**
  * The flood gate. Every strength gate reads incumbent strength, so a category
@@ -223,7 +223,7 @@ const moatMessage = (m, t) =>
  * @returns {string}
  */
 const saturationMessage = (m, t) =>
-	`saturation ${m.saturation} is over the ${t.saturationCap} cap — ${m.newEntrants ?? 0} of the top ${m.results ?? 10} first shipped inside ${m.freshDays ?? 365} days, ${m.freshUnproven ?? 0} of those still have under 25 ratings and ${m.cloneTitles ?? 0} already put "${m.term}" in the title. This is not an unserved niche, it is a race that started before you; the weak incumbents this term scores well on are other people's launches from last year`;
+	`saturation ${m.saturation} is over the ${t.saturationCap} cap — ${m.newEntrants} of the top ${m.results} first shipped inside ${m.freshDays} days, ${m.freshUnproven} of those still have under 25 ratings and ${m.cloneTitles} already put "${m.term}" in the title. This is not an unserved niche, it is a race that started before you; the weak incumbents this term scores well on are other people's launches from last year`;
 
 /**
  * The clone gate: not "is this category crowded" but "has somebody already
@@ -235,7 +235,7 @@ const saturationMessage = (m, t) =>
  * @returns {string}
  */
 const clonesMessage = (m, t) =>
-	`${m.clones} of the top ${m.results ?? 10} are already this app — titled after "${m.term}", shipped inside ${m.freshDays ?? 365} days, still under 25 ratings${m.cloneApps?.length ? ` (${m.cloneApps.slice(0, 4).join(', ')})` : ''} — over the ${t.cloneCap} cap. The pipeline that handed you this term handed it to them first; building it again competes with your own idea`;
+	`${m.clones} of the top ${m.results} are already this app — titled after "${m.term}", shipped inside ${m.freshDays} days, still under 25 ratings${m.cloneApps.length ? ` (${m.cloneApps.slice(0, 4).join(', ')})` : ''} — over the ${t.cloneCap} cap. The pipeline that handed you this term handed it to them first; building it again competes with your own idea`;
 
 /**
  * The commodity gate: is this app already the category? `clones` only sees a
@@ -249,8 +249,8 @@ const clonesMessage = (m, t) =>
  * @returns {string}
  */
 const commodityMessage = (m, t) =>
-	`${m.commodityMatches ?? 0} of the top ${m.results ?? 10} are already this product — a subject word plus a logging noun, in any order, at any age (${m.commodityApps?.slice(0, 4).join(', ') ?? ''}) — ${m.commodity}% of the page, over the ${t.commodityCap}% cap. ` +
-	((m.commodityProven ?? 0) > 0
+	`${m.commodityMatches} of the top ${m.results} are already this product — a subject word plus a logging noun, in any order, at any age (${m.commodityApps.slice(0, 4).join(', ')}) — ${m.commodity}% of the page, over the ${t.commodityCap}% cap. ` +
+	(m.commodityProven > 0
 		? `${m.commodityProven} of them carry real ratings, so this is a served market, not a gap: the category is solved and you would be the next identical entry on a page that already converts`
 		: `none of them has traction, so the category is a race nobody has won — the demand that was supposed to justify it has not paid anyone yet`);
 
@@ -285,27 +285,27 @@ const GATE_TABLE = [
 		flag: (t) => t.exactCap,
 		test: (m, t) => m.exactTitleMatches > t.exactCap,
 		message: (m, t) =>
-			`${m.exactTitleMatches} of the top ${m.results ?? 10} put "${m.term}" in the title, over the ${t.exactCap} cap — the phrase is the category's naming convention, not a gap`,
+			`${m.exactTitleMatches} of the top ${m.results} put "${m.term}" in the title, over the ${t.exactCap} cap — the phrase is the category's naming convention, not a gap`,
 	},
 	{
 		gate: 'saturation',
 		metric: 'saturation',
 		flag: (t) => t.saturationCap,
-		test: (m, t) => (m.saturation ?? 0) > t.saturationCap,
+		test: (m, t) => m.saturation > t.saturationCap,
 		message: saturationMessage,
 	},
 	{
 		gate: 'clones',
 		metric: 'clones',
 		flag: (t) => t.cloneCap,
-		test: (m, t) => (m.clones ?? 0) > t.cloneCap,
+		test: (m, t) => m.clones > t.cloneCap,
 		message: clonesMessage,
 	},
 	{
 		gate: 'commodity',
 		metric: 'commodity',
 		flag: (t) => t.commodityCap,
-		test: (m, t) => (m.commodity ?? 0) > t.commodityCap,
+		test: (m, t) => m.commodity > t.commodityCap,
 		message: commodityMessage,
 	},
 ];

@@ -20,6 +20,7 @@ import {
 	harvestBrands,
 	keywordPool,
 	listingFromBrief,
+	slugify as slugifyAscii,
 	supportedPhrases,
 	verdict,
 } from '../src/commands/scout.mjs';
@@ -418,6 +419,48 @@ test('a NO-GO verdict survives into the listing that was scaffolded anyway', () 
 	assert.match(notes.verdict, /demand 2 is under the 10 floor/);
 });
 
+test('listingFromBrief fills null and empty defaults for a brief older than every field it reads', () => {
+	// Every field on ScoutBrief is optional by design — a hand-edited or
+	// pre-migration brief.json can lack any of them — so the reader has to
+	// produce a staged listing rather than throw on a missing key.
+	const listing = listingFromBrief({});
+	assert.equal(listing.name, '');
+	assert.equal(listing.subtitle, '');
+	assert.equal(listing.keywords, '');
+	assert.equal(listing.description, '');
+	assert.deepEqual(listing.notes.scores, {
+		demand: null,
+		competition: null,
+		opportunity: null,
+		saturation: null,
+		commodity: null,
+		viability: null,
+	});
+	assert.deepEqual(listing.notes.evidence, {
+		top3MedianRatings: null,
+		exactTitleMatches: null,
+		freeTop10: null,
+		newEntrants: null,
+		freshUnproven: null,
+		claimsAlreadyTaken: [],
+		incumbents: [],
+	});
+	assert.equal(listing.notes.term, null);
+	assert.equal(listing.notes.brief, null);
+	assert.equal(listing.notes.market, null);
+	assert.equal(listing.notes.researchedAt, null);
+	// No verdict block at all reads as "the gates never ran", not as a NO-GO.
+	assert.equal(listing.notes.verdict, null);
+	assert.match(listing.notes.rewrite[1], /0\/100 characters/);
+});
+
+test('a NO-GO with no reasons array still reads as a NO-GO, not a crash', () => {
+	// A verdict block can arrive with `go` but without `reasons` — the same
+	// tolerance as every other field on an old brief.
+	const { notes } = listingFromBrief({ verdict: { go: false } });
+	assert.equal(notes.verdict, 'NO-GO — ');
+});
+
 // ─── ship new --from ─────────────────────────────────────────────────────────
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
@@ -454,6 +497,17 @@ test("scout's hash stem for a non-latin term is used as-is", () => {
 
 test('a non-latin term with no slug is asked for, not guessed', () => {
 	assert.throws(() => slugFromBrief({ term: 'カレンダー 予定' }), /cannot derive a slug/);
+});
+
+test('slugifyAscii hashes a term that leaves nothing to slugify, and a missing term the same way', () => {
+	// A non-Latin term normalizes to the empty string, not to a name every such
+	// term would collide on — this is the fallback `scout brief` actually
+	// relies on before a slug is chosen.
+	const ja = slugifyAscii('カレンダー 予定');
+	assert.match(ja, /^t-[0-9a-f]{8}$/);
+	// A brief with no term at all hits the same fallback rather than throwing.
+	assert.match(slugifyAscii(undefined), /^t-[0-9a-f]{8}$/);
+	assert.notEqual(ja, slugifyAscii(undefined), 'different input hashes to a different stem');
 });
 
 // ── evidence filters ─────────────────────────────────────────────────────────
@@ -613,4 +667,67 @@ test('the drafted listing spends no character on a competitor', () => {
 	assert.ok(!draft.subtitle.toLowerCase().includes('glovebox'));
 	assert.ok(charCount(draft.keywords) <= LIMITS.keywords);
 	assert.ok(!draft.keywords.includes(', '), 'a space after the comma wastes an indexed character');
+});
+
+test('categoryVocabulary tolerates a storefront row missing a seller or a title', () => {
+	// The payload is unvalidated JSON off the storefront API — every field on
+	// ScoutApp is optional and nullable — so a row that fails to carry one
+	// should not crash the vocabulary scan, just contribute nothing from it.
+	const vocab = categoryVocabulary(
+		[
+			{ trackName: 'Car Log Tracker' },
+			{ sellerName: 'Acme LLC' },
+			{ trackName: 'Car Log Book', sellerName: 'Acme LLC' },
+		],
+		'en-US',
+	);
+	assert.ok(vocab.includes('car'), 'two titles share it despite the missing seller field');
+	assert.ok(vocab.includes('log'));
+});
+
+test('harvestBrands is blind to a blank term and skips a hole in the harvest', () => {
+	// `readBrief`/the CLI always hand a non-empty term and a real array, but the
+	// function is exported and pure, so it has to survive the inputs those
+	// callers cannot produce: no term, no suggestions at all, and a harvest row
+	// that came back null.
+	assert.deepEqual(harvestBrands(['autolog: car log'], undefined, 'en-US'), new Set(), 'no term, nothing to match against');
+	assert.deepEqual(harvestBrands(undefined, 'car log', 'en-US'), new Set(), 'no suggestions to scan');
+	const brands = harvestBrands([null, 'autoteca: car log'], 'car log', 'en-US');
+	assert.deepEqual([...brands], ['autoteca'], 'a hole in the harvest is skipped, not thrown on');
+});
+
+test('draftListing computes its own brand set when the caller has none to hand it', () => {
+	// `brief` always passes the two-source brand set it just built, but the
+	// option defaults to an empty one — draftListing has to fall back to
+	// reading brands off the results itself.
+	const draft = draftListing({
+		term: 'car log',
+		results: [
+			{ trackName: 'CarLog Tracker', sellerName: 'Acme LLC' },
+			{ trackName: 'Car Log Book', sellerName: 'Other Inc' },
+		],
+	});
+	assert.ok(draft.name);
+});
+
+test('draftListing survives a result with no rating count or price, and an empty page', () => {
+	// Both fields are optional on ScoutApp; a delisted or incomplete row can
+	// omit either, and an empty top-10 (a brand-new term) omits the leader
+	// entirely.
+	const withHoles = draftListing({
+		term: 'car log',
+		results: [{ trackName: 'Car Log', sellerName: 'Acme' }],
+	});
+	assert.ok(withHoles.description.includes('one job'));
+
+	const empty = draftListing({ term: 'car log', results: [] });
+	assert.doesNotMatch(empty.description, /led by/, 'no leader to name when the top-10 is empty');
+});
+
+test('a name too long to keep even its first word is hard-cut, not left empty', () => {
+	// fitWords keeps whole words up to the limit; a single "word" longer than
+	// the limit itself has no whole word that fits, so it falls back to a
+	// straight code-point cut rather than producing an empty name.
+	const draft = draftListing({ term: 'a'.repeat(40), results: [] });
+	assert.equal(draft.name.length, 30);
 });
