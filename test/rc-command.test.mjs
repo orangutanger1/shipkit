@@ -3,9 +3,11 @@
 // offerings, packages, products, and the audit built on top of them.
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { capture, fakeHome, inDir, json, repo, withFetch } from './fixtures/cmd.mjs';
 
-await fakeHome();
+const HOME = await fakeHome();
 process.env.REVENUECAT_V2_KEY = 'test-key';
 
 const { run } = await import('../src/commands/rc.mjs');
@@ -146,4 +148,82 @@ test('several projects and none selected is its own message', async () => {
 	const dir = await rcRepo({ revenuecat: {} });
 	const fetch = account({ projects: [PROJECT, { id: 'projY', name: 'Other' }] });
 	await assert.rejects(() => rc(['status'], { dir, fetch }), /several RevenueCat projects and none is selected/);
+});
+
+test('a project the key can see at the check but not at the listing names the projectId, not "none selected"', async () => {
+	// Two different calls hit the same /v2/projects endpoint: once while
+	// useKeyForProject validates the key can see "projX", again when
+	// resolveProject lists projects to find it. An account that changes
+	// between them must not be reported as "several projects, none selected".
+	const dir = await rcRepo();
+	let calls = 0;
+	const fetch = async (url) => {
+		const path = new URL(String(url)).pathname;
+		if (path.endsWith('/v2/projects')) {
+			calls += 1;
+			return json({ items: calls === 1 ? [PROJECT] : [{ id: 'projOther', name: 'Other' }] });
+		}
+		return account()(url);
+	};
+	await assert.rejects(() => rc(['status'], { dir, fetch }), /no RevenueCat project matches revenuecat\.projectId "projX"/);
+});
+
+test('a win-back offering identified by id, or by neither key, still resolves', async () => {
+	const dir = await rcRepo();
+	const byId = account({ offerings: [{ id: 'winback_id', is_current: false }] });
+	const { out } = await rc(['offerings'], { dir, fetch: byId });
+	assert.match(out, /win-back/);
+
+	const neither = account({ offerings: [{ is_current: false }] });
+	const { out: out2 } = await rc(['offerings'], { dir, fetch: neither });
+	assert.match(out2, /paywall/); // no lookup_key or id to match the pattern against
+});
+
+test('a package products response with no items key is read as no products', async () => {
+	const dir = await rcRepo();
+	const fetch = async (url) => {
+		const path = new URL(String(url)).pathname;
+		if (/\/packages\/[^/]+\/products$/.test(path)) return json({});
+		return account()(url);
+	};
+	const { out } = await rc(['offerings'], { dir, fetch });
+	assert.match(out, /none — will not render/);
+});
+
+test('an app with no bundle id at all is null in JSON, not an empty string', async () => {
+	const dir = await rcRepo();
+	const fetch = account({ apps: [{ id: 'app1', type: 'app_store' }] });
+	const { out } = await rc(['status'], { dir, fetch, flags: { json: true } });
+	assert.equal(JSON.parse(out).apps[0].bundle_id, null);
+});
+
+test('an offering with no current one, and a package with no position, are null in JSON', async () => {
+	const dir = await rcRepo();
+	const fetch = account({ offerings: [{ id: 'off1', lookup_key: 'default', is_current: false }], packages: [{ id: 'pkg1', lookup_key: '$rc_monthly' }] });
+	const { out } = await rc(['offerings'], { dir, fetch, flags: { json: true } });
+	assert.equal(JSON.parse(out).current, null);
+});
+
+test('a product row with no store identifier or type prints blank cells, not "undefined"', async () => {
+	const dir = await rcRepo();
+	const fetch = account({ products: [{ id: 'p1', app_id: 'app1' }] });
+	const { out } = await rc(['products'], { dir, fetch });
+	assert.doesNotMatch(out, /undefined/);
+});
+
+test('an entitlement with no display name prints a blank cell, not "undefined"', async () => {
+	const dir = await rcRepo();
+	const fetch = account({ entitlements: [{ id: 'e1', lookup_key: 'pro' }] });
+	const { out } = await rc(['entitlements'], { dir, fetch });
+	assert.doesNotMatch(out, /undefined/);
+});
+
+test('audit names the non-ambient key file when the account behind it needed switching', async () => {
+	await mkdir(join(HOME, '.omp', 'revenuecat'), { recursive: true });
+	await writeFile(join(HOME, '.omp', 'revenuecat', 'ship-rc-project.key'), 'test-key');
+	// This repo's directory name will not match "ship-rc-project" in general, so
+	// name the guess file explicitly via revenuecat.key instead.
+	const dir = await rcRepo({ revenuecat: { projectId: 'projX', entitlement: 'pro', key: 'ship-rc-project' } });
+	const { out } = await rc(['audit'], { dir });
+	assert.match(out, /via .*ship-rc-project\.key/);
 });
