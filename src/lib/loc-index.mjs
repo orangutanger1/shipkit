@@ -185,7 +185,9 @@ function seedsFromTitles(titles, { locale = 'en', exclude = [], top = 8, minApps
 		/** @type {Set<string>} */
 		const seen = new Set();
 		// Store titles are `Brand: the real pitch` far more often than not.
-		for (const segment of String(title ?? '').split(/[:：|—–,·・、]+|\s-\s/)) {
+		// Both title sources filter on `trackName` before pushing, so a title here
+		// is always a non-empty string.
+		for (const segment of title.split(/[:：|—–,·・、]+|\s-\s/)) {
 			const toks = words(segment, locale).filter((w) => w.length >= minLen && !stop.has(w) && !skip.has(w));
 			for (let i = 0; i < toks.length; i++) {
 				seen.add(toks[i]);
