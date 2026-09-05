@@ -895,3 +895,128 @@ test('with no store.locales configured, every locale with copy is rendered', asy
 	const { out } = await shots(['render'], { dir });
 	assert.match(out, /2 images/, 'the caption file is the locale list when the config names none');
 });
+
+// ── compositing: the geometry and the type ──────────────────────────────────
+
+test('render names the font file it cannot find rather than the library error', async () => {
+	// The spec points at the exact face the design used; a repo that renamed it
+	// must be told which path failed, not handed a fontkit stack trace.
+	ascOk();
+	const dir = await renderRepo({ ...DEVICE_SPEC, fonts: { default: 'fonts/missing.ttf' } });
+	await deviceParts(dir);
+	await png(dir, 'store/screenshots-raw/en-US/IPHONE_65/01.png', 100, 200);
+	await assert.rejects(() => shots(['render', 'en-US'], { dir }), /font not found: .*missing\.ttf/);
+});
+
+test('a subtitle set on its own axis loads the face at that variation', async () => {
+	// A variable font inherits the headline's weight unless the subtitle asks
+	// for its own — which is the difference between the design and a subtitle
+	// that silently renders bold.
+	ascOk();
+	const spec = { ...DEVICE_SPEC, type: { ...SUB_TYPE, subtitle: { ...SUB_TYPE.subtitle, variation: { wght: 400 } } } };
+	const dir = await renderRepo(spec, { 'store/captions.json': SUBTITLE_CAPTIONS }, { store: { locales: ['en-US'] } });
+	await deviceParts(dir);
+	await png(dir, 'store/screenshots-raw/en-US/IPHONE_65/01.png', 100, 200);
+	const { code, out } = await shots(['render'], { dir });
+	assert.equal(code, 0);
+	assert.match(out, /No manual entry/);
+});
+
+test('a subtitle that will not fit even at its floor is dropped out loud', async () => {
+	// Silently dropping it is the failure this feature exists to prevent: the
+	// locale would ship a headline-only screenshot and nobody would know.
+	ascOk();
+	const tight = { ...SUB_TYPE, subtitle: { size: 12, lineHeight: 14, colour: '#888888', minSize: 11, step: 1, gap: 20 } };
+	const spec = { ...DEVICE_SPEC, type: tight };
+	const captions = { 'en-US': { one: { headline: 'Track it', subtitle: `${LONG_HEADLINE} ${LONG_HEADLINE} ${LONG_HEADLINE} ${LONG_HEADLINE}` } } };
+	const dir = await renderRepo(spec, { 'store/captions.json': captions }, { store: { locales: ['en-US'] } });
+	await deviceParts(dir);
+	await png(dir, 'store/screenshots-raw/en-US/IPHONE_65/01.png', 100, 200);
+	const { out } = await shots(['render'], { dir });
+	assert.match(out, /subtitle dropped, will not fit at minSize/);
+});
+
+test('a frame set to cover fills the artboard and centre-crops the overflow', async () => {
+	// scaleMode FILL in the design tool. A plain resize would letterbox instead,
+	// and the device screen would show background where the capture should be.
+	ascOk();
+	const spec = { ...DEVICE_SPEC, frames: [{ ...DEVICE_SPEC.frames[0], cover: true, crop: undefined }] };
+	const dir = await renderRepo(spec);
+	await deviceParts(dir);
+	await png(dir, 'store/screenshots-raw/en-US/IPHONE_65/01.png', 300, 200);
+	const { code } = await shots(['render', 'en-US'], { dir });
+	assert.equal(code, 0);
+	const meta = await sharp(join(dir, 'store', 'screenshots', 'en-US', 'IPHONE_65', '01.png')).metadata();
+	assert.deepEqual({ w: meta.width, h: meta.height }, { w: 200, h: 400 });
+});
+
+test('a capture that does not reach the edges of its transform has its edge rows replicated', async () => {
+	// The design tool clamps when the transform samples outside the source. A
+	// crop that leaves a margin must replicate edge pixels, not leave a gap.
+	ascOk();
+	const spec = { ...DEVICE_SPEC, frames: [{ ...DEVICE_SPEC.frames[0], crop: [[2, 0, 0], [0, 2, 0]] }] };
+	const dir = await renderRepo(spec);
+	await deviceParts(dir);
+	await png(dir, 'store/screenshots-raw/en-US/IPHONE_65/01.png', 100, 200);
+	const { code } = await shots(['render', 'en-US'], { dir });
+	assert.equal(code, 0);
+});
+
+test('render refuses a translation that dropped a frame the source locale has', async () => {
+	// A translator returned the file with a frame key missing. The source locale
+	// still lays out, so the hole is only found on the locale that has it, and
+	// rendering the rest would ship a set one screenshot short.
+	ascOk();
+	const spec = { ...DEVICE_SPEC, frames: [DEVICE_SPEC.frames[0], { key: 'two', src: '02.png', caption: { x: 10, y: 10, w: 180 }, phone: { x: 40, y: 140 }, bg: '#ffffff', crop: [[1, 0, 0], [0, 1, 0]] }] };
+	const captions = { 'en-US': { one: 'Track it', two: 'And again' }, 'de-DE': { one: 'Verfolge alles' } };
+	const dir = await renderRepo(spec, { 'store/captions.json': captions });
+	await deviceParts(dir);
+	for (const locale of ['en-US', 'de-DE'])
+		for (const file of ['01.png', '02.png']) await png(dir, `store/screenshots-raw/${locale}/IPHONE_65/${file}`, 100, 200);
+	await assert.rejects(() => shots(['render'], { dir }), /de-DE: no caption for frame two/);
+});
+
+test('caption-band refuses a band that is no longer flat background', async () => {
+	// Repainting a band that has artwork in it destroys the artwork. The check
+	// is the difference between a caption swap and a ruined screenshot.
+	ascOk();
+	const dir = await renderRepo(BAND_SPEC);
+	// Three colours across the band, so no single one is half of it.
+	const busy = await sharp({ create: { width: 200, height: 400, channels: 3, background: { r: 250, g: 250, b: 250 } } })
+		.composite([
+			{ input: { create: { width: 200, height: 40, channels: 3, background: { r: 10, g: 90, b: 200 } } }, left: 0, top: 0 },
+			{ input: { create: { width: 200, height: 40, channels: 3, background: { r: 200, g: 40, b: 10 } } }, left: 0, top: 40 },
+		])
+		.png()
+		.toBuffer();
+	await sharp(busy).png().toFile(join(dir, 'store', 'base', 'one.png'));
+	await assert.rejects(() => shots(['render', 'en-US'], { dir }), /one colour/);
+});
+
+test('caption-band refuses a band with no caption ink to align to', async () => {
+	// The source ink top is what every other locale is aligned on. An empty
+	// band means there is nothing to align to, and guessing would drift the set.
+	ascOk();
+	const dir = await renderRepo(BAND_SPEC);
+	await sharp({ create: { width: 200, height: 400, channels: 3, background: { r: 250, g: 250, b: 250 } } })
+		.png()
+		.toFile(join(dir, 'store', 'base', 'one.png'));
+	await assert.rejects(() => shots(['render', 'en-US'], { dir }), /found no caption ink in the band/);
+});
+
+test('a caption-band render with a subtitle keeps both runs on the axis the design put them on', async () => {
+	// Two runs are trimmed as one block: trimming them separately would close
+	// the gap the design left between headline and subtitle, and centring the
+	// subtitle on its own ink would pull it off the headline's axis.
+	ascOk();
+	const spec = { ...BAND_SPEC, type: SUB_TYPE };
+	const captions = { 'en-US': { one: { headline: 'Track it', subtitle: 'No manual entry' } } };
+	const dir = await renderRepo(spec, { 'store/captions.json': captions }, { store: { locales: ['en-US'] } });
+	await baseComposite(dir);
+	const { code, out } = await shots(['render', 'en-US'], { dir });
+	assert.equal(code, 0);
+	assert.match(out, /No manual entry/, 'the subtitle is set, not dropped');
+	// caption-band numbers its outputs; device-frame keeps the capture's name.
+	const meta = await sharp(join(dir, 'store', 'screenshots', 'en-US', 'IPHONE_65', '01-one.png')).metadata();
+	assert.deepEqual({ w: meta.width, h: meta.height }, { w: 200, h: 400 });
+});

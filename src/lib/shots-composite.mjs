@@ -371,7 +371,9 @@ async function inkStrip(sharp, drawn, twoRun) {
 	}
 	const probe = await sharp(drawn).trim({ threshold: 1 }).toBuffer({ resolveWithObject: true });
 	const full = await sharp(drawn).metadata();
-	const top = Math.abs(probe.info.trimOffsetTop ?? 0);
+	// sharp populates trimOffsetTop on any pipeline that called trim(), and this
+	// one did, one line up.
+	const top = Math.abs(probe.info.trimOffsetTop);
 	const trimmed = await sharp(drawn)
 		.extract({ left: 0, top, width: full.width, height: probe.info.height })
 		.png()
@@ -474,8 +476,9 @@ export async function renderLocales(cfg, spec, captions, locales, { onFrame } = 
 	/** @type {RenderRow[]} */
 	const written = [];
 	for (const locale of locales) {
+		// localesFor only ever answers with locales the caption file defines, so
+		// every locale reaching here has copy.
 		const copy = captions[locale];
-		if (!copy) throw new ShipError(`no caption copy for ${locale}`);
 		for (const [i, frame] of spec.frames.entries()) {
 			const runs = captionRuns(copy[frame.key]);
 			if (!runs) throw new ShipError(`${locale}: no caption for frame ${frame.key}`);
